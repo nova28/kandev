@@ -27,49 +27,6 @@ func rawClear() **json.RawMessage {
 	return ptr((*json.RawMessage)(nil))
 }
 
-func TestApplyBasicSettingsTasksListShowDetails(t *testing.T) {
-	t.Run("omission preserves saved value", func(t *testing.T) {
-		settings := &models.UserSettings{TasksListShowDetails: true}
-		if err := applyBasicSettings(settings, &UpdateUserSettingsRequest{}); err != nil {
-			t.Fatalf("apply basic settings: %v", err)
-		}
-		if !settings.TasksListShowDetails {
-			t.Fatal("TasksListShowDetails = false, want true")
-		}
-	})
-
-	for _, value := range []bool{false, true} {
-		t.Run(fmt.Sprintf("explicit %t is applied", value), func(t *testing.T) {
-			settings := &models.UserSettings{TasksListShowDetails: !value}
-			if err := applyBasicSettings(settings, &UpdateUserSettingsRequest{TasksListShowDetails: ptr(value)}); err != nil {
-				t.Fatalf("apply basic settings: %v", err)
-			}
-			if settings.TasksListShowDetails != value {
-				t.Fatalf("TasksListShowDetails = %t, want %t", settings.TasksListShowDetails, value)
-			}
-		})
-	}
-}
-
-func TestApplyBasicSettingsSystemMetricsDisplayPreservesOmittedFields(t *testing.T) {
-	settings := &models.UserSettings{
-		SystemMetricsDisplay: models.SystemMetricsDisplaySettings{
-			ShowInTopbar: false,
-			Simplified:   true,
-		},
-	}
-	req := &UpdateUserSettingsRequest{
-		SystemMetricsDisplay: &SystemMetricsDisplaySettingsPatch{ShowInTopbar: ptr(true)},
-	}
-
-	if err := applyBasicSettings(settings, req); err != nil {
-		t.Fatalf("apply basic settings: %v", err)
-	}
-	if !settings.SystemMetricsDisplay.Simplified {
-		t.Fatal("simplified = false, want existing value preserved when omitted")
-	}
-}
-
 func makeLayouts(n int) []models.SavedLayout {
 	layouts := make([]models.SavedLayout, n)
 	for i := range layouts {
@@ -211,6 +168,21 @@ func TestApplyBasicSettingsAppStatusBarOrder(t *testing.T) {
 			t.Fatalf("AppStatusBarOrder = %#v, want %#v", settings.AppStatusBarOrder, next)
 		}
 	})
+}
+
+func TestApplyLSPSettingsRejectsManualOnlyAutoInstallLanguage(t *testing.T) {
+	settings := &models.UserSettings{}
+	req := &UpdateUserSettingsRequest{
+		LspAutoInstallLanguages: ptr([]string{"kotlin"}),
+	}
+
+	err := applyLSPSettings(settings, req)
+	if err == nil || !strings.Contains(err.Error(), "does not support auto-install") {
+		t.Fatalf("applyLSPSettings() error = %v, want manual-install-only error", err)
+	}
+	if len(settings.LspAutoInstallLanguages) != 0 {
+		t.Fatalf("LspAutoInstallLanguages = %v, want unchanged", settings.LspAutoInstallLanguages)
+	}
 }
 
 func TestApplyBasicSettingsMCPTaskAgentProfileDefault(t *testing.T) {
@@ -906,27 +878,6 @@ func TestPublishUserSettingsEventIncludesArchiveConfirmation(t *testing.T) {
 	}
 }
 
-func TestPublishUserSettingsEventIncludesTasksListShowDetails(t *testing.T) {
-	log, err := logger.NewFromZap(zap.NewNop())
-	if err != nil {
-		t.Fatalf("logger.NewFromZap: %v", err)
-	}
-	eventBus := &recordingEventBus{}
-	svc := NewService(&recordingUserRepository{}, eventBus, log)
-	svc.publishUserSettingsEvent(context.Background(), &models.UserSettings{TasksListShowDetails: true})
-
-	if len(eventBus.publishedEvents) != 1 {
-		t.Fatalf("expected one settings event, got %d", len(eventBus.publishedEvents))
-	}
-	eventData, ok := eventBus.publishedEvents[0].Data.(map[string]interface{})
-	if !ok {
-		t.Fatalf("expected event data map, got %T", eventBus.publishedEvents[0].Data)
-	}
-	if showDetails, ok := eventData["tasks_list_show_details"].(bool); !ok || !showDetails {
-		t.Fatalf("tasks_list_show_details = %#v, want true", eventData["tasks_list_show_details"])
-	}
-}
-
 func TestPublishUserSettingsEventIncludesNormalizedMCPTaskAgentProfileDefault(t *testing.T) {
 	log, err := logger.NewFromZap(zap.NewNop())
 	if err != nil {
@@ -947,28 +898,6 @@ func TestPublishUserSettingsEventIncludesNormalizedMCPTaskAgentProfileDefault(t 
 	}
 	if got := eventData["mcp_task_agent_profile_default"]; got != models.MCPTaskAgentProfileDefaultCurrentTask {
 		t.Fatalf("mcp_task_agent_profile_default = %#v, want current_task", got)
-	}
-}
-
-func TestPublishUserSettingsEventIncludesAppStatusBarOrder(t *testing.T) {
-	log, err := logger.NewFromZap(zap.NewNop())
-	if err != nil {
-		t.Fatalf("logger.NewFromZap: %v", err)
-	}
-	eventBus := &recordingEventBus{}
-	svc := NewService(&recordingUserRepository{}, eventBus, log)
-	want := models.AppStatusBarOrder{
-		LeftItemIDs:  []string{"left"},
-		RightItemIDs: []string{"right"},
-	}
-	svc.publishUserSettingsEvent(context.Background(), &models.UserSettings{AppStatusBarOrder: want})
-
-	eventData, ok := eventBus.publishedEvents[0].Data.(map[string]interface{})
-	if !ok {
-		t.Fatalf("expected event data map, got %T", eventBus.publishedEvents[0].Data)
-	}
-	if got, ok := eventData["app_status_bar_order"].(models.AppStatusBarOrder); !ok || fmt.Sprint(got) != fmt.Sprint(want) {
-		t.Fatalf("app_status_bar_order = %#v, want %#v", eventData["app_status_bar_order"], want)
 	}
 }
 

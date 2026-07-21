@@ -19,7 +19,6 @@ import (
 	gateways "github.com/kandev/kandev/internal/gateway/websocket"
 	"github.com/kandev/kandev/internal/github"
 	"github.com/kandev/kandev/internal/gitlab"
-	lspinstaller "github.com/kandev/kandev/internal/lsp/installer"
 	notificationcontroller "github.com/kandev/kandev/internal/notifications/controller"
 	notificationservice "github.com/kandev/kandev/internal/notifications/service"
 	notificationstore "github.com/kandev/kandev/internal/notifications/store"
@@ -139,7 +138,7 @@ func provideGateway(
 	scriptSvc := &scriptServiceAdapter{taskSvc: taskSvc}
 	if lifecycleMgr != nil {
 		gateway.SetLifecycleManager(lifecycleMgr, userSvc, scriptSvc)
-		gateway.SetLSPHandler(lifecycleMgr, userSvc, lspinstaller.NewRegistry(dataDir, log))
+		gateway.SetLSPHandler(lifecycleMgr, userSvc)
 		gateway.SetVscodeProxy(lifecycleMgr)
 		gateway.SetPortProxy(lifecycleMgr)
 		gateway.SetPortTunnel(lifecycleMgr)
