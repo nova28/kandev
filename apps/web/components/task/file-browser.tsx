@@ -30,11 +30,13 @@ import {
   useFileBrowserSearch,
   useFileBrowserTree,
   useScrollPersistence,
+  loadNodeChildren,
   toggleFolderExpand,
   fetchAndOpenFile,
 } from "./file-browser-hooks";
 import { resolveFileBrowserPaths } from "./file-browser-path";
-import { getVisiblePaths, moveNodesInTree, computeMoveTargets } from "./file-tree-utils";
+import { computeMoveTargets, getVisiblePaths, moveNodesInTree } from "./file-tree-utils";
+import { useFileTreeReveal } from "./file-tree-reveal";
 
 type FileBrowserHeaderProps = {
   treeLoaded: boolean;
@@ -319,28 +321,8 @@ function useDragAndDrop(
   };
 }
 
-function useAutoExpandAncestors(
-  activeFilePath: string | null | undefined,
-  setExpandedPaths: React.Dispatch<React.SetStateAction<Set<string>>>,
-) {
-  useEffect(() => {
-    if (!activeFilePath) return;
-    const parts = activeFilePath.split("/");
-    if (parts.length <= 1) return;
-    const ancestors: string[] = [];
-    for (let i = 1; i < parts.length; i++) {
-      ancestors.push(parts.slice(0, i).join("/"));
-    }
-    setExpandedPaths((prev) => {
-      if (ancestors.every((p) => prev.has(p))) return prev;
-      const next = new Set(prev);
-      for (const p of ancestors) next.add(p);
-      return next;
-    });
-  }, [activeFilePath, setExpandedPaths]);
-}
-
 function useSelectionInteractions(
+  sessionId: string,
   treeState: ReturnType<typeof useFileBrowserTree>,
   containerRef: React.RefObject<HTMLDivElement | null>,
   activeFilePath: string | null | undefined,
@@ -359,7 +341,15 @@ function useSelectionInteractions(
   );
 
   useKeyboardShortcuts(containerRef, multiSelect.clearSelection, multiSelect.selectAll);
-  useAutoExpandAncestors(activeFilePath, treeState.setExpandedPaths);
+  useFileTreeReveal({
+    activeFilePath,
+    sessionId,
+    tree: treeState.tree,
+    setExpandedPaths: treeState.setExpandedPaths,
+    isLoading: treeState.isLoading,
+    loadChildren: (node, shouldApply) =>
+      loadNodeChildren(node, sessionId, treeState, { force: true, shouldApply }),
+  });
 
   const handleClickOutside = useCallback(
     (e: React.MouseEvent) => {
@@ -490,6 +480,7 @@ function useFileBrowserViewModel({
   useScrollPersistence(sessionId, data.isTreeLoaded, scrollAreaRef, data.treeState.tree);
   const handlers = useFileBrowserHandlers(sessionId, onOpenFile, onCreateFile, data.treeState);
   const selection = useSelectionInteractions(
+    sessionId,
     data.treeState,
     containerRef,
     activeFilePath,
