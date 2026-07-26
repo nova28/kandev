@@ -70,6 +70,11 @@ apps/backend/bin/acpdbg probe --timeout 45s auggie
 
 For `matrix`, prefer `--timeout 60s` so `npx`-spawned agents have time to cold-start.
 
+For Claude ACP, always supply an explicit absolute worktree path (for example,
+`--workdir /tmp/kandev-acpdbg-claude`). An empty `cwd` can cause Claude to
+reject `session/new`; confirm the `cwd` in the recorded request frame before
+diagnosing a provider failure.
+
 ### 3. Read the JSONL file
 
 The JSONL schema is:

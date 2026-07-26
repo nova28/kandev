@@ -89,6 +89,9 @@ func NewRunner(ctx context.Context, jsonlPath string, cfg RunConfig) (*Runner, e
 		workdir = wd
 		tmpDir = wd
 	}
+	// Session creation and loading use cfg.Workdir as their ACP cwd. Preserve
+	// the effective temporary directory there as well as on the child process.
+	cfg.Workdir = workdir
 
 	// Record start meta before spawning so the file always has something
 	// useful even if exec fails.

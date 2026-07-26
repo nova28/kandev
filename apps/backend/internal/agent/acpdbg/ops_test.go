@@ -1,6 +1,73 @@
 package acpdbg
 
-import "testing"
+import (
+	"bufio"
+	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+)
+
+func TestProbe_DefaultWorkdirReachesSessionNew(t *testing.T) {
+	t.Setenv("ACPDBG_HELPER_PROCESS", "1")
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	runner, err := NewRunner(ctx, filepath.Join(t.TempDir(), "frames.jsonl"), RunConfig{
+		AgentID: "helper",
+		Command: []string{os.Args[0], "-test.run=^TestACPDBGHelperProcess$"},
+	})
+	if err != nil {
+		t.Fatalf("NewRunner() error = %v", err)
+	}
+	defer runner.Close("completed")
+
+	if _, err := Probe(ctx, runner); err != nil {
+		t.Fatalf("Probe() error = %v", err)
+	}
+}
+
+func TestACPDBGHelperProcess(t *testing.T) {
+	if os.Getenv("ACPDBG_HELPER_PROCESS") != "1" {
+		return
+	}
+
+	scanner := bufio.NewScanner(os.Stdin)
+	encoder := json.NewEncoder(os.Stdout)
+	for scanner.Scan() {
+		var request map[string]any
+		if err := json.Unmarshal(scanner.Bytes(), &request); err != nil {
+			os.Exit(1)
+		}
+		switch request["method"] {
+		case "initialize":
+			_ = encoder.Encode(map[string]any{
+				"jsonrpc": "2.0",
+				"id":      request["id"],
+				"result":  map[string]any{"protocolVersion": 1},
+			})
+		case "session/new":
+			params, _ := request["params"].(map[string]any)
+			cwd, _ := params["cwd"].(string)
+			if !filepath.IsAbs(cwd) {
+				_ = encoder.Encode(map[string]any{
+					"jsonrpc": "2.0",
+					"id":      request["id"],
+					"error":   map[string]any{"message": "cwd must be absolute"},
+				})
+				continue
+			}
+			_ = encoder.Encode(map[string]any{
+				"jsonrpc": "2.0",
+				"id":      request["id"],
+				"result":  map[string]any{"sessionId": "session-1"},
+			})
+		}
+	}
+	os.Exit(0)
+}
 
 func TestSessionLoadParamsIncludeChangedWorkdir(t *testing.T) {
 	t.Parallel()

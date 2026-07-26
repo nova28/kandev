@@ -19,6 +19,12 @@ SHA (`git diff <last-passing-sha>..HEAD`) instead of against `main`.
 
 ## Infrastructure Failures
 
+**Merge-ref validation drift:** GitHub can run a PR check against the synthetic
+merge ref, where a current-base deletion makes a cited path or coverage entry
+appear missing even though it exists on the PR head. Compare the failing path
+with `origin/<baseRefName>` before changing the PR. Update a genuinely stale
+manifest or coverage entry, but do not rebase solely to satisfy this check.
+
 **Cancelled concurrency duplicates:** A required check with
 `conclusion=cancelled`, 0s job durations, unexpanded `${{ matrix.* }}` job
 names, or a "Canceling since a higher priority waiting request ..." annotation

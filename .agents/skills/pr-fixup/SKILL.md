@@ -93,9 +93,13 @@ the PR/CI finding requires it.
 ## 5. Re-check
 
 After every push, run `scripts/pr-state --summary <PR>` again for the new head.
-Treat prior review evidence as stale. Repeat this workflow only for a new CI
-failure or actionable current-head review finding; otherwise report the PR as
-ready or CI as still in progress.
+Require `checks_head_sha` to match that head, report pending checks separately
+from failures, and rerun `scripts/pr-resolve list <PR>` before declaring the
+PR clean. Treat prior review evidence as stale. A duplicate or stale bot thread
+still needs an explicit reply and resolution once current source proves the
+finding is already fixed. Repeat this workflow only for a new CI failure or
+actionable current-head review finding; otherwise report the PR as ready or CI
+as still in progress.
 
 ## Guardrails
 

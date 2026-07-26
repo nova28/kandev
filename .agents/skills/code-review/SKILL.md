@@ -80,6 +80,9 @@ Check every changed file for the following layers. Skip layers that don't apply 
 
 **Security** (blockers if found):
 - No secrets, tokens, or credentials in code
+- When persisted configuration is copied into UI or session metadata, trace it
+  through the applicable sanitizer/redaction boundary; storage-safe values are
+  not automatically presentation-safe.
 - Input validation at system boundaries (user input, API handlers, external data)
 - No SQL injection, XSS, command injection, or path traversal risks
 - Authentication and authorization checks in place for new endpoints

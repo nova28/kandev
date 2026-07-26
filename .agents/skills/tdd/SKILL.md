@@ -99,6 +99,10 @@ Run the targeted tests named in the task file and report their results. Commit
 and open the PR after all affected task checks pass; do not add broad local
 verification by default.
 
+After the final production-code edit, rerun every new or changed regression
+test and report the exact command and result. A prior green run does not cover
+a later patch.
+
 ## Testing anti-patterns
 
 **Don't test implementation details:**

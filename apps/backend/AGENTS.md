@@ -159,6 +159,11 @@ replace state verification, installation association, or HMAC verification.
 
 **agentctl client** (`internal/agent/runtime/agentctl/`) is the HTTP/WS client used by the lifecycle manager to talk to a running agentctl instance. It is a runtime-tier package and should not be imported outside `internal/agent/runtime/`.
 
+**Agent discovery vs. ACP probing:** discovery answers only whether an agent
+executable is available. Authentication, protocol compatibility, and supported
+models or modes belong to the ACP probe path; do not reintroduce those checks
+as installation gates.
+
 **agentctl** is an HTTP server that:
 - Runs inside Docker containers or as standalone process
 - Manages agent subprocess via stdin/stdout (ACP protocol)
