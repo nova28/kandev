@@ -45,16 +45,11 @@ when `review_evidence.trusted_producer` is `"true"`; never use that shortcut
 for forks, security, or architecture.
 Treat `trusted_producer=true` as qualifying provenance only for the dedicated OpenCode App, never merely because a reviewer name matches.
 
-For pending CI, do not run a rapid parent polling loop. Wait at a reasonable
-interval, then run the same summary again. Stop after about 20 minutes and
-report the exact pending checks as "CI in progress."
-
-When the user explicitly asks to wait or monitor, the main conversation may
-delegate one platform `pr-poller`. Give it the PR number and any selected
-reviewer, then use its report only as status evidence. The poller is read-only,
-time-bounded, and must not edit, push, comment, resolve threads, inspect source,
-or spawn children. The primary conversation owns all triage and remediation;
-never launch a poller automatically or relaunch one after a denied approval.
+For pending CI, do not run a rapid polling loop. Wait at a reasonable interval,
+then run the same summary again. Stop after about 20 minutes and report the
+exact pending checks as "CI in progress." If the user specifies a fixed
+monitoring duration, remain in this direct loop until that duration elapses or
+the PR reaches a terminal clean/failed state; do not return an early status.
 
 Treat the state as clean only when the current head has no failed or pending
 checks, no merge conflict, no actionable review thread or issue comment, and
@@ -100,6 +95,15 @@ still needs an explicit reply and resolution once current source proves the
 finding is already fixed. Repeat this workflow only for a new CI failure or
 actionable current-head review finding; otherwise report the PR as ready or CI
 as still in progress.
+
+## 6. User-Requested Merge
+
+Merge only after the user explicitly asks and the current-head state is clean.
+From a linked worktree, run `gh pr merge <PR> --squash` without
+`--delete-branch`: that flag can attempt a local checkout of the base branch
+and fail when another worktree owns it, even after the remote merge succeeds.
+Report the remote merge separately. Delete a remote or local branch only when
+requested and through a worktree-safe cleanup flow.
 
 ## Guardrails
 

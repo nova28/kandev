@@ -63,6 +63,7 @@ pnpm e2e:run tests/task/my-test.spec.ts        # single file (extra args pass th
 pnpm e2e:run tests/path/spec.ts -- --grep "exact test name"  # exact CI failure with a fresh build
 pnpm e2e:run --shards 3                          # 3 shards concurrently on this machine (isolated)
 pnpm e2e:run --no-build -- --grep "task creation"  # skip rebuild; forward flags after --
+pnpm e2e:run --no-build --project mobile-chrome e2e/tests/layout/mobile-capture.spec.ts
 pnpm e2e:docker                                # force the docker CI image (full isolation from a host dev instance)
 pnpm e2e:clean                                 # remove build/test artifacts, incl. root-owned ones from prior docker runs
 ```
@@ -141,7 +142,9 @@ Without this, tests run against stale code and failures are misleading. `make bu
 
 For a touch-specific interaction, use Playwright `.tap()` rather than `.click()`
 so the app receives a touch `pointerType`. Run focused mobile specs with
-`-- --project=mobile-chrome`; otherwise Playwright can report no matching tests.
+`pnpm e2e:run --project mobile-chrome e2e/tests/<area>/mobile-<name>.spec.ts`.
+`--project` is a runner option and must precede `--`; the mobile project only
+matches `mobile-*.spec.ts` files, so another filename can produce no tests.
 After the interaction settles, assert the resulting state and exercise a later
 mouse or pen entry when the UI maintains hybrid-device pointer state.
 
