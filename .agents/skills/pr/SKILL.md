@@ -87,7 +87,7 @@ required screenshot embedding in step 7 is complete.
      publication; do not create the PR first.
    - For a mobile capture through `pnpm e2e:run`, select the runner project
      before the Playwright separator and use a `mobile-*.spec.ts` filename:
-     `pnpm e2e:run --no-build --project mobile-chrome e2e/tests/<area>/mobile-<capture>.spec.ts`.
+     `pnpm e2e:run --project mobile-chrome e2e/tests/<area>/mobile-<capture>.spec.ts`.
      `--project` after `--` is only a Playwright argument and leaves the
      runner on its default Chromium project.
    - Reject any asset that exposes secrets, authentication tokens, or personally
