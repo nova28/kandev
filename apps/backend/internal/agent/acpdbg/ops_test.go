@@ -51,11 +51,20 @@ func TestACPDBGHelperProcess(t *testing.T) {
 		case "session/new":
 			params, _ := request["params"].(map[string]any)
 			cwd, _ := params["cwd"].(string)
-			if !filepath.IsAbs(cwd) {
+			workdir, err := os.Getwd()
+			if err != nil {
 				_ = encoder.Encode(map[string]any{
 					"jsonrpc": "2.0",
 					"id":      request["id"],
-					"error":   map[string]any{"message": "cwd must be absolute"},
+					"error":   map[string]any{"message": "could not get test workdir"},
+				})
+				continue
+			}
+			if cwd != workdir {
+				_ = encoder.Encode(map[string]any{
+					"jsonrpc": "2.0",
+					"id":      request["id"],
+					"error":   map[string]any{"message": "cwd does not match test workdir"},
 				})
 				continue
 			}
@@ -63,6 +72,15 @@ func TestACPDBGHelperProcess(t *testing.T) {
 				"jsonrpc": "2.0",
 				"id":      request["id"],
 				"result":  map[string]any{"sessionId": "session-1"},
+			})
+		default:
+			_ = encoder.Encode(map[string]any{
+				"jsonrpc": "2.0",
+				"id":      request["id"],
+				"error": map[string]any{
+					"code":    -32601,
+					"message": "method not found",
+				},
 			})
 		}
 	}
