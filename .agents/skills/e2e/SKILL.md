@@ -346,6 +346,13 @@ When a test fails:
 - **"Backend did not become healthy"** — run `make build-backend build-web`, check with `E2E_DEBUG=1`
 - **"Cannot find module"** — run `cd apps && pnpm install`
 - **Port conflicts** — backends use 18080+ and frontends use 13000+ (per worker), auto-offset by `E2E_PORT_OFFSET` (derived from PID). Set `E2E_PORT_OFFSET=0` for deterministic ports
+- **Responsive layout stays stale after `page.setViewportSize()`** — record
+  `window.innerWidth`, the affected element and parent `clientWidth`, and any
+  layout-library width before changing waits. Headless Chromium reliably
+  resizes the DOM/container and fires `ResizeObserver`, while an
+  application-only `window.resize` listener may not be observed in the test.
+  Prefer synchronizing with the layout container/observer and assert the
+  intended result after both viewport and container-only changes.
 - **Auto-started session never goes idle** — for sessions started by the same call that creates them, the mock agent can finish before the client WS subscription registers, so a raw `idleInput()` visibility wait hangs. Use `SessionPage.waitForChatIdle()` instead; it reloads once and re-derives state from the Go boot payload.
 - **Flaky timeouts** — **never increase locator timeouts to fix flaky tests.** If a locator times out, the root cause is almost always something else: a setup failure, missing navigation, race condition, or the element genuinely not rendering. Investigate why the element never appears instead of giving it more time. Note: infrastructure health timeouts (30s in `fixtures/backend.ts`) and overall test timeouts (60s in `playwright.config.ts`) are separate and should not be modified either.
 - Screenshots on failure, video on first retry (CI)

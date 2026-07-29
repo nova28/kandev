@@ -32,6 +32,28 @@ gh api repos/<owner>/<repo>/actions/jobs/<job_id>/logs > /tmp/kandev-job-<job_id
 ```
 
 Treat an unavailable log stream as unknown evidence, not a product failure.
+If the direct job-log request returns 404 while the job is queued or in progress,
+wait for that job to complete before retrying; it is not missing evidence.
+
+**CodeQL code-scanning upload failure:** If CodeQL completes extraction and
+query evaluation, then fails immediately after `Uploading code scanning
+results` without a source finding or actionable log error, treat it as GitHub
+code-scanning upload infrastructure. On the current head, rerun the failed job
+once and re-check the PR state:
+
+```bash
+gh run rerun <run-id> --failed
+scripts/pr-state --summary <PR>
+```
+
+If a newer head has already been pushed, rely on its newly triggered CodeQL
+run. Report an unchanged upload failure rather than changing product code.
+
+**Third-party deployment fetch failure:** For a deployment action that cannot
+fetch its third-party resource, compare adjacent successful runs for the same
+branch/head and rerun the failed job once before changing workflow or product
+code. Treat a one-off fetch failure as infrastructure unless it repeats with
+an actionable configuration error.
 
 **Merge-ref validation drift:** GitHub can run a PR check against the synthetic
 merge ref, where a current-base deletion makes a cited path or coverage entry
