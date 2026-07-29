@@ -44,6 +44,9 @@ named reviewer is the semantic evidence source, use `--trusted-reviewer` only
 when `review_evidence.trusted_producer` is `"true"`; never use that shortcut
 for forks, security, or architecture.
 Treat `trusted_producer=true` as qualifying provenance only for the dedicated OpenCode App, never merely because a reviewer name matches.
+If `hidden_unresolved_threads` is non-empty, immediately run
+`scripts/pr-resolve list <PR>` and triage its output. A zero current-head
+unresolved count does not make hidden threads clean.
 
 For pending CI, do not run a rapid polling loop. Wait at a reasonable interval,
 then run the same summary again. Stop after about 20 minutes and report the
@@ -92,9 +95,12 @@ Require `checks_head_sha` to match that head, report pending checks separately
 from failures, and rerun `scripts/pr-resolve list <PR>` before declaring the
 PR clean. Treat prior review evidence as stale. A duplicate or stale bot thread
 still needs an explicit reply and resolution once current source proves the
-finding is already fixed. Repeat this workflow only for a new CI failure or
-actionable current-head review finding; otherwise report the PR as ready or CI
-as still in progress.
+finding is already fixed, including a thread surfaced only in
+`hidden_unresolved_threads`; only current-head actionable threads drive code
+changes. Declare the PR clean only when `failed_checks=[]`, `pending_checks=[]`,
+there is no merge conflict, and `scripts/pr-resolve list <PR>` is empty. Within
+the user's monitoring limit, continue checking after resolutions until automated
+review jobs are terminal; otherwise report the exact pending check names.
 
 ## 6. User-Requested Merge
 

@@ -14,9 +14,11 @@
 #     on the host and are served by the Go backend.
 #   • Runs N shards concurrently (--shards N): N isolated containers in docker
 #     mode, or N host processes with distinct E2E_PORT_OFFSET + output dirs.
-#   • Never leaves root-owned junk in the repo: points Playwright output at a
-#     container-local dir. `clean`
-#     removes any pre-existing root-owned artifacts via a throwaway container.
+#   • Never leaves root-owned junk in the repo: points normal Playwright output
+#     at a container-local dir. With CAPTURE_PR_ASSETS, captures are written to
+#     the mounted workspace and ownership is restored after the run. `clean`
+#     removes any pre-existing root-owned normal artifacts via a throwaway
+#     container.
 #
 # Usage:
 #   run-e2e.sh [run] [options] [-- <playwright args>]   # default subcommand: run
@@ -67,6 +69,13 @@ clean_artifacts() {
       'rm -rf /web/e2e/test-results* /web/e2e/blob-report' \
       2>/dev/null || true
   fi
+}
+
+prepare_pr_assets() {
+  [[ -n "${CAPTURE_PR_ASSETS:-}" ]] || return
+  log "preparing PR asset directory"
+  rm -rf "$WEB_DIR/.pr-assets"
+  mkdir -p "$WEB_DIR/.pr-assets"
 }
 
 build_fe() {
@@ -168,6 +177,7 @@ STRICT_ENV=()
 # HOST mode
 # ---------------------------------------------------------------------------
 run_host() {
+  prepare_pr_assets
   [[ "$DO_BUILD" == 1 ]] && { build_backend_host; build_fe; build_plugin_package; }
   local base_args=(playwright test --config e2e/playwright.config.ts --project="$PROJECT")
   if [[ "$SHARDS" -le 1 ]]; then
@@ -198,10 +208,13 @@ run_docker() {
   local img; img="$(resolve_runtime_image)"
   log "runtime image: $img"
   clean_artifacts
+  prepare_pr_assets
   [[ "$DO_BUILD" == 1 ]] && { build_backend_for_docker "$img"; build_fe; build_plugin_package; }
 
   local strict_flag=()
   [[ "$STRICT" == 1 ]] && strict_flag=(-e KANDEV_E2E_WS_ASSERT=1)
+  local capture_flag=()
+  [[ -n "${CAPTURE_PR_ASSETS:-}" ]] && capture_flag=(-e CAPTURE_PR_ASSETS)
   local pw="git config --global --add safe.directory /work 2>/dev/null; cd /work/apps/web && pnpm exec playwright test --config e2e/playwright.config.ts --project=\"$PROJECT\""
 
   run_one() {  # $1=shard index (or 0 for unsharded)
@@ -210,13 +223,19 @@ run_docker() {
     docker run --rm --ipc=host \
       -v "$REPO_ROOT":/work -w /work/apps/web \
       ${strict_flag[@]+"${strict_flag[@]}"} \
+      ${capture_flag[@]+"${capture_flag[@]}"} \
       -e NODE_OPTIONS=--dns-result-order=ipv4first \
       -e PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
       "$img" \
       bash -lc "$pw $shardflag --output=$out --reporter=list \"\$@\"" e2e-runner ${PW_ARGS[@]+"${PW_ARGS[@]}"}
   }
 
-  if [[ "$SHARDS" -le 1 ]]; then run_one 0; return $?; fi
+  if [[ "$SHARDS" -le 1 ]]; then
+    run_one 0
+    local rc=$?
+    [[ -z "${CAPTURE_PR_ASSETS:-}" ]] || docker run --rm -v "$WEB_DIR":/web alpine sh -c "chown -R $(id -u):$(id -g) /web/.pr-assets" >/dev/null
+    return $rc
+  fi
   log "running $SHARDS isolated containers"
   local pids=() rc=0 i
   for ((i=1; i<=SHARDS; i++)); do
@@ -227,6 +246,7 @@ run_docker() {
   for ((i=1; i<=SHARDS; i++)); do
     printf '  shard %s: %s\n' "$i" "$(grep -Eo '[0-9]+ (passed|failed|flaky)' "/tmp/e2e-docker-shard-$i.log" | paste -sd' ')" >&2
   done
+  [[ -z "${CAPTURE_PR_ASSETS:-}" ]] || docker run --rm -v "$WEB_DIR":/web alpine sh -c "chown -R $(id -u):$(id -g) /web/.pr-assets" >/dev/null
   log "docker shard logs: /tmp/e2e-docker-shard-*.log"
   return $rc
 }

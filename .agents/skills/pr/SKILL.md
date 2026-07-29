@@ -47,7 +47,9 @@ explicitly requests task tracking.
    the local `HEAD`. If not, run `/push` before creating the PR.
 
 4. **Screenshots — capture and validate before publication.** For a UI-visible
-   change, capture fresh desktop and mobile screenshots before creating the PR.
+   change, capture fresh screenshots for every affected viewport before creating
+   the PR. When the changed surface is structurally absent on another viewport,
+   record that rationale instead of capturing an unrelated screen.
    Use synthetic or redacted data, validate the assets, and compress PNGs using
    the recipe in step 7. If capture is impossible, report the concrete blocker
    and stop before PR publication. For non-UI changes, record that screenshots
@@ -79,7 +81,7 @@ explicitly requests task tracking.
 6. **If ready (not draft):** For GitHub, do not begin `/pr-fixup` until any
 required screenshot embedding in step 7 is complete.
 
-7. **Screenshots — publish already captured assets.** If the diff touches user-visible UI (typically under `apps/web/`, excluding e2e-only or backend-only edits), publish the desktop and mobile assets captured and validated in step 4 through the host-specific flow before treating the PR as complete — do not wait to be asked.
+7. **Screenshots — publish already captured assets.** If the diff touches user-visible UI (typically under `apps/web/`, excluding e2e-only or backend-only edits), publish the affected-viewport assets captured and validated in step 4 through the host-specific flow before treating the PR as complete — do not wait to be asked. Preserve any structural-absence rationale recorded in step 4.
 
    **Capture prerequisite:**
    - Reuse only fresh entries from `apps/web/.pr-assets/manifest.json`.
@@ -90,6 +92,10 @@ required screenshot embedding in step 7 is complete.
      `pnpm e2e:run --project mobile-chrome e2e/tests/<area>/mobile-<capture>.spec.ts`.
      `--project` after `--` is only a Playwright argument and leaves the
      runner on its default Chromium project.
+   - In managed Docker E2E, write capture files directly to the mounted
+     workspace path `/work/apps/web/.pr-assets/<name>.png`, not
+     `testInfo.outputPath(...)`, which is container-local. After the run,
+     confirm the host has the files before inspecting or compressing them.
    - Reject any asset that exposes secrets, authentication tokens, or personally
      identifiable information and stop for recapture.
    - Compress PNGs before embedding. Prefer a system `pngquant`; when it is
@@ -146,8 +152,8 @@ required screenshot embedding in step 7 is complete.
    is created, so never PATCH a body reconstructed from the creation-time
    template or a stale `/tmp/pr-body.md`. Before every post-creation update:
 
-   1. Fetch the current body from GitHub and use that exact response as the
-      merge base:
+   1. Fetch the current body from GitHub and keep that pristine live response
+      as the merge base:
       `gh pr view <PR_NUMBER> --json body --jq .body > /tmp/pr-body-latest.md`.
    2. Change only the section owned by this operation. For screenshots, wrap
       the section in `<!-- kandev-screenshots-start -->` and
@@ -155,9 +161,10 @@ required screenshot embedding in step 7 is complete.
       `## Screenshots` block if those markers are not present). Preserve every
       byte outside that range, including
       `<!-- kandev-preview-start --> ... <!-- kandev-preview-end -->`.
-   3. Re-fetch the body immediately before PATCH and compare it with the
-      snapshot used in step 1. If it changed, discard the pending payload,
-      re-fetch, and merge again; do not overwrite the newer body.
+   3. Build a separate merged candidate, then re-fetch the live body immediately
+      before PATCH and compare the two live snapshots (not the candidate with a
+      snapshot). If it changed, discard the candidate, re-fetch, and merge
+      again; do not overwrite the newer body.
    4. After PATCH, read the body back and verify both the intended change and
       all previously present sentinel sections are still present.
 

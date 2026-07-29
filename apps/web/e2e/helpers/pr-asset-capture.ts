@@ -21,18 +21,6 @@ const FRAMES_DIR = ".frames";
 const RECORDING_FPS = 5;
 const RECORDING_INTERVAL = 1000 / RECORDING_FPS;
 
-// Ensures the output directory is wiped exactly once per process (per e2e run).
-let _cleanedForRun = false;
-
-function cleanOutputDir(outputDir: string): void {
-  if (_cleanedForRun) return;
-  _cleanedForRun = true;
-  if (fs.existsSync(outputDir)) {
-    fs.rmSync(outputDir, { recursive: true });
-  }
-  fs.mkdirSync(outputDir, { recursive: true });
-}
-
 function sanitizeName(name: string): string {
   return name
     .toLowerCase()
@@ -82,7 +70,7 @@ export class PrAssetCapture {
     this.testSlug = getTestSlug(testFile);
 
     if (this.enabled) {
-      cleanOutputDir(this.outputDir);
+      ensureDir(this.outputDir);
     }
   }
 

@@ -222,7 +222,7 @@ KANDEV_LOG_LEVEL=warn apps/backend/bin/kandev &
 
 Start the dev frontend:
 ```bash
-KANDEV_API_BASE_URL=http://localhost:$BACKEND_PORT NEXT_PUBLIC_KANDEV_API_PORT=$BACKEND_PORT \
+KANDEV_API_BASE_URL=http://localhost:$BACKEND_PORT VITE_KANDEV_API_PORT=$BACKEND_PORT \
 pnpm --filter @kandev/web dev --port $FRONTEND_PORT &
 ```
 

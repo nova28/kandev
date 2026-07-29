@@ -205,3 +205,6 @@ When you hit a limit, extract a helper function, custom hook, or sub-component. 
   solely because `mouseenter` or `pointerMove` failed in jsdom.
 - In Playwright tests, avoid strict locators that assume only one `terminal-panel` or `.xterm` exists. Mobile and dockview layouts can mount multiple terminal instances; scope to the active panel or use `.first()` / `.last()` deliberately with a comment or helper.
 - Shared E2E helpers that inspect mounted React/DOM internals must be scoped to the active panel/container, not global selectors, because hidden or stale mounted panels can coexist in dock/mobile layouts.
+- When seeded data can create multiple tasks or repositories, scope actions to
+  the seeded/API ID or an exact labelled container. Do not use `.first()` on a
+  generic action locator unless list order is the tested contract.
