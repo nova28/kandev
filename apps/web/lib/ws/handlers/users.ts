@@ -5,6 +5,7 @@ import type { WsHandlers } from "@/lib/ws/handlers/types";
 import {
   parseChangesPanelLayout,
   parseAppStatusBarOrder,
+  parseLspStatusLocation,
   parseSystemMetricsDisplay,
   taskCreateLastUsedHasValue,
   parseVoiceMode,
@@ -50,6 +51,9 @@ function buildLspSettings(payload: UserSettingsUpdatedPayload) {
   return {
     lspAutoStartLanguages: payload.lsp_auto_start_languages ?? [],
     lspAutoInstallLanguages: payload.lsp_auto_install_languages ?? [],
+    ...(payload.lsp_status_location === undefined
+      ? {}
+      : { lspStatusLocation: parseLspStatusLocation(payload.lsp_status_location) }),
   };
 }
 

@@ -44,6 +44,7 @@ export const defaultSettingsState: SettingsSliceState = {
     lspAutoStartLanguages: [],
     lspAutoInstallLanguages: [],
     lspServerConfigs: {},
+    lspStatusLocation: "toolbar",
     savedLayouts: [],
     sidebarViews: [],
     sidebarActiveViewId: null,

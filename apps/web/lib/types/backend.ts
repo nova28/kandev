@@ -16,6 +16,7 @@ import type {
   SidebarTaskPrefsApi,
   TaskCreateLastUsedApi,
   AppStatusBarOrderApi,
+  LspStatusLocation,
   MCPTaskAgentProfileDefault,
   TaskPendingAction,
   TaskSessionState,
@@ -410,6 +411,7 @@ export type UserSettingsUpdatedPayload = {
   release_notes_last_seen_version?: string;
   lsp_auto_start_languages?: string[];
   lsp_auto_install_languages?: string[];
+  lsp_status_location?: LspStatusLocation;
   saved_layouts?: SavedLayout[];
   sidebar_views?: SidebarViewApi[];
   sidebar_active_view_id?: string;

@@ -24,6 +24,7 @@ export type {
   SidebarTaskPrefsApi,
   TaskCreateLastUsedApi,
   AppStatusBarOrderApi,
+  LspStatusLocation,
   MCPTaskAgentProfileDefault,
   UserSettings,
   UserSettingsResponse,

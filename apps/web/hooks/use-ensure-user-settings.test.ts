@@ -98,6 +98,7 @@ function makeUnloadedSettings(): UserSettingsState {
     lspAutoStartLanguages: [],
     lspAutoInstallLanguages: [],
     lspServerConfigs: {},
+    lspStatusLocation: "toolbar",
     loaded: false,
   };
 }

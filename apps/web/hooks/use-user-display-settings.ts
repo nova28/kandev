@@ -47,6 +47,7 @@ function carryForwardLspSettings(current: DisplaySettings) {
     lspAutoStartLanguages: current.lspAutoStartLanguages ?? [],
     lspAutoInstallLanguages: current.lspAutoInstallLanguages ?? [],
     lspServerConfigs: current.lspServerConfigs ?? {},
+    lspStatusLocation: current.lspStatusLocation ?? "toolbar",
   };
 }
 

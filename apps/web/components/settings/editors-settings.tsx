@@ -29,6 +29,7 @@ import { LSP_DEFAULT_CONFIGS } from "@/lib/lsp/lsp-client-config";
 import { LSP_LANGUAGE_OPTIONS } from "@/lib/lsp/lsp-language-options";
 import type { EditorOption } from "@/lib/types/http";
 import type { RequestStatus } from "@/lib/http/use-request";
+import { LspStatusLocationSetting } from "@/components/settings/lsp-status-location-setting";
 import {
   useEditorsSettingsState,
   useLspConfigActions,
@@ -485,6 +486,7 @@ function getEditorsSaveRevision(state: EditorsSettingsState): string {
     defaultEditorId: state.defaultEditorId,
     lspAutoStartLanguages: state.lspAutoStartLanguages,
     lspAutoInstallLanguages: state.lspAutoInstallLanguages,
+    lspStatusLocation: state.lspStatusLocation,
     lspConfigStrings: state.lspConfigStrings,
   });
 }
@@ -493,16 +495,29 @@ function useSyncEditors(editors: EditorOption[], setEditors: (editors: EditorOpt
   useEffect(() => setEditors(editors), [editors, setEditors]);
 }
 
+function useLspLanguageToggles(state: EditorsSettingsState) {
+  const toggleAutoStart = useCallback(
+    (langId: string, checked: boolean) => {
+      state.setLspAutoStartLanguages((prev) =>
+        checked ? [...prev, langId] : prev.filter((id) => id !== langId),
+      );
+    },
+    [state.setLspAutoStartLanguages],
+  );
+  const toggleAutoInstall = useCallback(
+    (langId: string, checked: boolean) => {
+      state.setLspAutoInstallLanguages((prev) =>
+        checked ? [...prev, langId] : prev.filter((id) => id !== langId),
+      );
+    },
+    [state.setLspAutoInstallLanguages],
+  );
+  return { toggleAutoStart, toggleAutoInstall };
+}
+
 export function EditorsSettings() {
   const state = useEditorsSettingsState();
-  const {
-    setLspAutoStartLanguages,
-    setLspAutoInstallLanguages,
-    setLspConfigStrings,
-    setLspConfigErrors,
-    setEditors,
-    editors,
-  } = state;
+  const { setLspConfigStrings, setLspConfigErrors, setEditors, editors } = state;
   const applyEditors = useApplyEditors(state);
   const saveDefaultRequest = useSaveRequest(state);
   const { createRequest, updateRequest, deleteRequest } = useEditorRequests(state, applyEditors);
@@ -510,23 +525,7 @@ export function EditorsSettings() {
   const isDirty = isEditorsSettingsDirty(state);
   const saveRevision = getEditorsSaveRevision(state);
   const hasInvalidConfig = Object.keys(state.lspConfigErrors).length > 0;
-
-  const toggleAutoStart = useCallback(
-    (langId: string, checked: boolean) => {
-      setLspAutoStartLanguages((prev) =>
-        checked ? [...prev, langId] : prev.filter((id) => id !== langId),
-      );
-    },
-    [setLspAutoStartLanguages],
-  );
-  const toggleAutoInstall = useCallback(
-    (langId: string, checked: boolean) => {
-      setLspAutoInstallLanguages((prev) =>
-        checked ? [...prev, langId] : prev.filter((id) => id !== langId),
-      );
-    },
-    [setLspAutoInstallLanguages],
-  );
+  const { toggleAutoStart, toggleAutoInstall } = useLspLanguageToggles(state);
 
   const customEditors = useMemo(() => sortCustomEditors(editors.filter(isCustomEditor)), [editors]);
   const builtInEditors = useMemo(
@@ -566,6 +565,11 @@ export function EditorsSettings() {
             baselineLspAutoInstall={state.baselineLspAutoInstall}
             toggleAutoStart={toggleAutoStart}
             toggleAutoInstall={toggleAutoInstall}
+          />
+          <LspStatusLocationSetting
+            value={state.lspStatusLocation}
+            baseline={state.baselineLspStatusLocation}
+            onChange={state.setLspStatusLocation}
           />
           <LspServerConfigSection
             lspConfigStrings={state.lspConfigStrings}

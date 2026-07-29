@@ -11,6 +11,7 @@ import { type ComboboxOption } from "@/components/combobox";
 import {
   parseChangesPanelLayout,
   parseAppStatusBarOrder,
+  parseLspStatusLocation,
   parseSystemMetricsDisplay,
   parseTerminalLinkBehavior,
   taskCreateLastUsedHasValue,
@@ -27,6 +28,7 @@ import {
   isCustomEditor,
 } from "@/components/settings/editor-form";
 import { Badge } from "@kandev/ui/badge";
+import type { LspStatusLocation } from "@/lib/types/http";
 
 export function useEditorsSettingsState() {
   const setEditors = useAppStore((state) => state.setEditors);
@@ -53,6 +55,12 @@ export function useEditorsSettingsState() {
   );
   const [baselineLspAutoInstall, setBaselineLspAutoInstall] = useState<string[]>(
     () => currentUserSettings.lspAutoInstallLanguages ?? [],
+  );
+  const [lspStatusLocation, setLspStatusLocation] = useState<LspStatusLocation>(
+    () => currentUserSettings.lspStatusLocation ?? "toolbar",
+  );
+  const [baselineLspStatusLocation, setBaselineLspStatusLocation] = useState<LspStatusLocation>(
+    () => currentUserSettings.lspStatusLocation ?? "toolbar",
   );
 
   const initConfigStrings = useCallback((): Record<string, string> => {
@@ -92,6 +100,10 @@ export function useEditorsSettingsState() {
     setBaselineLspAutoStart,
     baselineLspAutoInstall,
     setBaselineLspAutoInstall,
+    lspStatusLocation,
+    setLspStatusLocation,
+    baselineLspStatusLocation,
+    setBaselineLspStatusLocation,
     lspConfigStrings,
     setLspConfigStrings,
     baselineLspConfigStrings,
@@ -203,17 +215,21 @@ type SetUserSettingsFn = ReturnType<typeof useEditorsSettingsState>["setUserSett
 function buildSettingsPayload(
   s: UserSettingsState,
   defaultEditorId: string,
-  lspAutoStartLanguages: string[],
-  lspAutoInstallLanguages: string[],
-  parsedConfigs: Record<string, Record<string, unknown>>,
+  lsp: {
+    autoStartLanguages: string[];
+    autoInstallLanguages: string[];
+    statusLocation: LspStatusLocation;
+    serverConfigs: Record<string, Record<string, unknown>>;
+  },
 ): Parameters<typeof updateUserSettings>[0] {
   return {
     workspace_id: s.workspaceId ?? "",
     repository_ids: s.repositoryIds ?? [],
     default_editor_id: defaultEditorId || undefined,
-    lsp_auto_start_languages: lspAutoStartLanguages,
-    lsp_auto_install_languages: lspAutoInstallLanguages,
-    lsp_server_configs: parsedConfigs,
+    lsp_auto_start_languages: lsp.autoStartLanguages,
+    lsp_auto_install_languages: lsp.autoInstallLanguages,
+    lsp_status_location: lsp.statusLocation,
+    lsp_server_configs: lsp.serverConfigs,
   };
 }
 
@@ -259,6 +275,7 @@ function mapEditorLspFields(s: NonNullable<NonNullable<UpdateUserSettingsRespons
     lspAutoStartLanguages: s.lsp_auto_start_languages ?? [],
     lspAutoInstallLanguages: s.lsp_auto_install_languages ?? [],
     lspServerConfigs: s.lsp_server_configs ?? {},
+    lspStatusLocation: parseLspStatusLocation(s.lsp_status_location),
   };
 }
 
@@ -419,23 +436,25 @@ export function useSaveRequest(state: EditorsSettingsState) {
     setBaselineLspAutoStart,
     lspAutoInstallLanguages,
     setBaselineLspAutoInstall,
+    lspStatusLocation,
+    setBaselineLspStatusLocation,
     lspConfigStrings,
     setBaselineLspConfigStrings,
   } = state;
   return useRequest(async () => {
     const parsedConfigs = parseLspConfigStrings(lspConfigStrings);
     if (parsedConfigs === null) return;
-    const payload = buildSettingsPayload(
-      currentUserSettings,
-      defaultEditorId,
-      lspAutoStartLanguages,
-      lspAutoInstallLanguages,
-      parsedConfigs,
-    );
+    const payload = buildSettingsPayload(currentUserSettings, defaultEditorId, {
+      autoStartLanguages: lspAutoStartLanguages,
+      autoInstallLanguages: lspAutoInstallLanguages,
+      statusLocation: lspStatusLocation,
+      serverConfigs: parsedConfigs,
+    });
     const response = await updateUserSettings(payload, { cache: "no-store" });
     setBaselineDefaultId(defaultEditorId);
     setBaselineLspAutoStart([...lspAutoStartLanguages]);
     setBaselineLspAutoInstall([...lspAutoInstallLanguages]);
+    setBaselineLspStatusLocation(lspStatusLocation);
     setBaselineLspConfigStrings({ ...lspConfigStrings });
     applySettingsResponseToStore(response, currentUserSettings.shellOptions, setUserSettings);
   });

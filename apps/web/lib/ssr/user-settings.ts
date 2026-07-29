@@ -8,7 +8,7 @@ import { fromApiSidebarDraft, fromApiSidebarView } from "@/lib/state/slices/ui/s
 import type { SidebarView, SidebarViewDraft } from "@/lib/state/slices/ui/sidebar-view-types";
 import { DEFAULT_VOICE_MODE_STATE, type VoiceModeState } from "@/lib/state/slices/settings/types";
 import type { SavedLayout, SidebarTaskPrefsApi, UserSettingsResponse } from "@/lib/types/http";
-import type { MCPTaskAgentProfileDefault } from "@/lib/types/http-user-settings";
+import type { LspStatusLocation, MCPTaskAgentProfileDefault } from "@/lib/types/http-user-settings";
 import type { VoiceModeSettings } from "@/lib/types/http-voice";
 
 export type UserSettingsData = NonNullable<UserSettingsResponse["settings"]>;
@@ -25,6 +25,10 @@ export function parseMCPTaskAgentProfileDefault(
   value: string | undefined,
 ): MCPTaskAgentProfileDefault {
   return value === "workspace_default" ? "workspace_default" : "current_task";
+}
+
+export function parseLspStatusLocation(value: string | undefined): LspStatusLocation {
+  return value === "status_bar" ? "status_bar" : "toolbar";
 }
 
 export function parseSystemMetricsDisplay(value: UserSettingsData["system_metrics_display"]) {
@@ -162,6 +166,7 @@ export function buildLspFields(s: UserSettingsData | undefined) {
     lspAutoStartLanguages: s?.lsp_auto_start_languages ?? [],
     lspAutoInstallLanguages: s?.lsp_auto_install_languages ?? [],
     lspServerConfigs: s?.lsp_server_configs ?? {},
+    lspStatusLocation: parseLspStatusLocation(s?.lsp_status_location),
   };
 }
 

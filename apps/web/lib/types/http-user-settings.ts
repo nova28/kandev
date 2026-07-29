@@ -2,6 +2,7 @@ import type { WorkspaceId } from "./ids";
 import type { VoiceModeSettings } from "./http-voice";
 
 export type MCPTaskAgentProfileDefault = "current_task" | "workspace_default";
+export type LspStatusLocation = "toolbar" | "status_bar";
 
 export type SavedLayout = {
   id: string;
@@ -67,6 +68,7 @@ export type UserSettings = {
   lsp_auto_start_languages?: string[];
   lsp_auto_install_languages?: string[];
   lsp_server_configs?: Record<string, Record<string, unknown>>;
+  lsp_status_location?: LspStatusLocation;
   saved_layouts?: SavedLayout[];
   sidebar_views?: SidebarViewApi[];
   sidebar_active_view_id?: string;
@@ -116,6 +118,7 @@ export type UserSettingsUpdatePayload = {
   lsp_auto_start_languages?: string[];
   lsp_auto_install_languages?: string[];
   lsp_server_configs?: Record<string, Record<string, unknown>>;
+  lsp_status_location?: LspStatusLocation;
   saved_layouts?: SavedLayout[];
   sidebar_views?: SidebarViewApi[];
   sidebar_active_view_id?: string;
