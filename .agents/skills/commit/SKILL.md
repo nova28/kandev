@@ -121,9 +121,10 @@ qualifies as a successful hook receipt.
      rtk proxy git commit -m "type(scope): description"
    else
      git commit -m "type(scope): description"
-   fi 2>&1 | tee "$COMMIT_LOG"
+   fi 2>&1 | tee "$COMMIT_LOG" >/dev/null
    ```
-   Remove the temporary log after copying the receipt into the handoff.
+   Read the log to extract the hook receipt, rather than printing the full
+   stream again. Remove it after copying the receipt into the handoff.
 
 6. **Return a hook receipt:** After a successful commit, report:
    ```text
