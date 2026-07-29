@@ -76,10 +76,12 @@ check clean without fresh evidence.
 
 ## 3. Triage And Address Reviews
 
-Use `scripts/pr-resolve list <PR>` to obtain unresolved threads. For each
-comment, decide whether it is valid, already addressed, a preference, or wrong
-for this codebase. Validate against the current head, the spec, and existing
-architecture before editing or replying.
+Use `scripts/pr-resolve list <PR>` to obtain unresolved threads. Its previews
+can be truncated, so expand each listed thread with
+`scripts/pr-state --comment <comment_id>` before deciding whether it is valid,
+already addressed, a preference, or wrong for this codebase. Validate against
+the current head, the spec, and existing architecture before editing or
+replying.
 
 Make only valid changes. For an invalid comment, reply with concrete reasoning
 only when the user asks to respond. Resolve a thread only when the change or
