@@ -126,6 +126,12 @@ qualifies as a successful hook receipt.
    Read the log to extract the hook receipt, rather than printing the full
    stream again. Remove it after copying the receipt into the handoff.
 
+   If a hook fails only because another worktree is already running
+   golangci-lint (for example, `parallel golangci-lint is running`), wait for
+   that run to finish and retry the same commit. Do not bypass hooks or change
+   code for this transient lock; verify the retry has a normal hook receipt and
+   a clean worktree.
+
 6. **Return a hook receipt:** After a successful commit, report:
    ```text
    parent_sha: <pre-commit HEAD>
