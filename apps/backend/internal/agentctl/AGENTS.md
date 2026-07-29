@@ -145,6 +145,12 @@ Both accept any value `time.ParseDuration` accepts (`30m`, `2h`, `500ms`, …). 
 
 `instance.Manager.buildMcpServerConfigs` calls `exec.LookPath` on every stdio MCP `Command` before passing the list to the agent. Entries whose command can't be resolved are dropped with a warn log (URL-transport MCPs always pass through). This prevents the `/snap/bin/brave` repro in GH issue #1247 — an MCP whose binary was uninstalled after config save no longer causes a permanently broken child process to be spawned every session.
 
+## Testing
+
+PTY-backed shell tests must skip on Windows (`runtime.GOOS == "windows"`):
+agentctl shell PTY startup is unsupported there. Keep environment/config merge
+tests platform-neutral so they remain covered on every supported OS.
+
 ## Further scoped notes
 
 - `server/api/AGENTS.md` — reverse-proxy body rewriting (`Accept-Encoding`) and iframe-blocking header stripping.

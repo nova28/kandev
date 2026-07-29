@@ -70,7 +70,10 @@ they apply. Run affected Go packages with `-race`.
 1. Identify the single behavior to implement or bug to reproduce
 2. Write the **smallest test** that asserts the expected behavior — one assertion, clear name
 3. Run the test and confirm it **fails with the expected assertion error** (not a compile/import error)
-4. If it passes immediately, the test is not testing new behavior — revise it
+4. If it passes immediately, the test is not testing new behavior — revise it.
+   Exception: a reviewer-requested test that documents behavior already present
+   on the current head is valid test-only contract coverage. Label it as such,
+   make no production change, and run the focused suite.
 
 For bug fixes, use the Prove-It Pattern: reproduce the bug with a failing test before changing production code. A fix without a regression test is not complete unless the change is explicitly untestable and you say why.
 
@@ -131,7 +134,8 @@ a later patch.
 ## Red flags
 
 - Writing production code before a failing test exists — delete and start over
-- Test passes on first run — it tests nothing new, revise the test
+- Test passes on first run — revise it, except for clearly labelled
+  reviewer-requested test-only contract coverage
 - Fixing a test to make it pass instead of fixing the production code
 - Large jumps — multiple behaviors implemented between test runs
 - Skipping the refactor step

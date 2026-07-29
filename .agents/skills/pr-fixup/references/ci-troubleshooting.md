@@ -19,6 +19,20 @@ SHA (`git diff <last-passing-sha>..HEAD`) instead of against `main`.
 
 ## Infrastructure Failures
 
+**Failed job in an in-progress workflow:** GitHub can expose a failed job
+before the parent workflow is terminal, and `gh run view --log-failed` can
+temporarily report its logs as unavailable. Confirm the job's conclusion and
+steps before reproducing or changing code, then retrieve the job log directly
+when needed:
+
+```bash
+gh api repos/<owner>/<repo>/actions/jobs/<job_id> \
+  --jq '{status, conclusion, steps: [.steps[] | {name, status, conclusion}]}'
+gh api repos/<owner>/<repo>/actions/jobs/<job_id>/logs > /tmp/kandev-job-<job_id>.log
+```
+
+Treat an unavailable log stream as unknown evidence, not a product failure.
+
 **Merge-ref validation drift:** GitHub can run a PR check against the synthetic
 merge ref, where a current-base deletion makes a cited path or coverage entry
 appear missing even though it exists on the PR head. Compare the failing path

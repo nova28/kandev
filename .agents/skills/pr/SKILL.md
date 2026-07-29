@@ -84,7 +84,11 @@ required screenshot embedding in step 7 is complete.
 7. **Screenshots — publish already captured assets.** If the diff touches user-visible UI (typically under `apps/web/`, excluding e2e-only or backend-only edits), publish the affected-viewport assets captured and validated in step 4 through the host-specific flow before treating the PR as complete — do not wait to be asked. Preserve any structural-absence rationale recorded in step 4.
 
    **Capture prerequisite:**
-   - Reuse only fresh entries from `apps/web/.pr-assets/manifest.json`.
+   - Reuse only fresh entries from `apps/web/.pr-assets/manifest.json`. After
+     every capture, require a non-empty manifest with the intended fresh asset
+     entries: `test -s apps/web/.pr-assets/manifest.json`. If it is absent or
+     lacks the capture, do not treat the run as successful; rerun with `--host`
+     and report the managed-runner gap.
    - If required assets are missing, run the Playwright capture before
      publication; do not create the PR first.
    - For a mobile capture through `pnpm e2e:run`, select the runner project

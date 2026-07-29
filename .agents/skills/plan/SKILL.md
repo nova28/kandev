@@ -189,7 +189,7 @@ spec: "../../specs/<slug>/spec.md"
 
 Each task should be small enough for one focused implementation pass:
 - **Acceptance:** 1-3 concrete conditions.
-- **Verification:** exact command(s), e.g. `cd apps/backend && go test -run TestName ./internal/path/...` or `cd apps && pnpm --filter @kandev/web test -- path/to/file.test.ts`.
+- **Verification:** exact command(s), e.g. `cd apps/backend && go test -run TestName ./internal/path/...` or `cd apps && pnpm --filter @kandev/web test -- path/to/file.test.ts`. Frontend/E2E tasks must include the fresh-worktree bootstrap (`cd apps && pnpm install --frozen-lockfile`) when dependencies may be absent; backend commands should use the applicable repository `make` target when one exists.
 - **Files likely touched:** specific paths, not broad directories.
 - **Dependencies:** task numbers that must land first, or `None`.
 - **Parallelism:** `sequential` by default; set `parallel-safe` only with named
@@ -201,8 +201,10 @@ Each task should be small enough for one focused implementation pass:
 Break a task down further if it touches unrelated subsystems, needs more than one focused session, or the title contains "and".
 
 When an implementation agent starts the task, it must change `status` to
-`in_progress`. When it finishes, it must change `status` to `done` and update
-the corresponding checkbox/status in `plan.md`.
+`in_progress`. Before it finishes, reconcile **Files likely touched** with the
+actual diff, including modified existing tests used as E2E evidence. It may then
+change `status` to `done` and update the corresponding checkbox/status in
+`plan.md`.
 ```
 
 ### Style rules

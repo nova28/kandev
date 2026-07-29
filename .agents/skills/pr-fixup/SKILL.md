@@ -60,9 +60,13 @@ qualifying exact-head semantic evidence where PR delivery requires it.
 
 ## 2. Fix CI Failures
 
-Before changing code, confirm every reported failed check and its `run_id`. Use
+Before changing code, confirm every reported failed check, its `run_id`, and
+the parent workflow/job status. A failed job can be visible while its workflow
+is still in progress; confirm its conclusion and failing step before treating
+it as reproducible code evidence. Use
 `scripts/run-quiet gh-run -- gh run view <run-id> --log-failed` so large logs do
-not flood the conversation. Reproduce the exact failed command where possible;
+not flood the conversation. If logs are temporarily unavailable, use the
+fallback in `references/ci-troubleshooting.md`. Reproduce the exact failed command where possible;
 CI-specific Go lint often needs `golangci-lint run ./... --new-from-rev=<base>
 --timeout=5m`.
 
