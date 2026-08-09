@@ -638,6 +638,13 @@ type Service struct {
 	// parked-on-background-work projection. Keyed by Kandev session ID.
 	// Entries are created on first use and deleted on execution retirement.
 	parkedStates map[string]*sessionParkedState
+	// parkedSamplerWG tracks every running parking-sampler goroutine
+	// (runParkingSampler), so Stop() can cancel and drain them instead of
+	// leaving them running past shutdown with contexts rooted in
+	// context.Background(). Single owner: onSessionParkedHook Add(1)s before
+	// spawning, runParkingSampler Done()s on exit, stopAllParkingSamplers
+	// Waits — mirrors stopSendNowWorkers below.
+	parkedSamplerWG sync.WaitGroup
 
 	// parkedEpoch is the backend process start time in Unix nanoseconds.
 	// Used by clients as restart-survivable discard signal (AC-77).
@@ -1797,6 +1804,7 @@ func (s *Service) Stop() error {
 	s.cancelAllClarificationWatchdogs()
 	s.cancelAllTransientRetries()
 	s.stopSendNowWorkers()
+	s.stopAllParkingSamplers()
 
 	if len(errs) > 0 {
 		return errs[0]

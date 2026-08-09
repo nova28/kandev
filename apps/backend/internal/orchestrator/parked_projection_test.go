@@ -752,6 +752,9 @@ func TestRunParkingSampler_ContextCancellation(t *testing.T) {
 	ps.lastSample = probeResultLive
 
 	ctx, cancel := context.WithCancel(context.Background())
+	// Mirrors the real spawn site (onSessionParkedHook): Add(1) before
+	// spawning, since runParkingSampler's own deferred Done() assumes it.
+	svc.parkedSamplerWG.Add(1)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -764,5 +767,79 @@ func TestRunParkingSampler_ContextCancellation(t *testing.T) {
 		// sampler exited cleanly
 	case <-time.After(2 * time.Second):
 		t.Fatal("sampler goroutine did not exit after context cancellation")
+	}
+}
+
+// TestStopAllParkingSamplers_DrainsRunningSampler verifies a real production
+// gap found in PR review: Service.Stop() never visited s.parkedStates, so a
+// running parking-sampler goroutine (spawned with a context rooted in
+// context.Background(), never the service's own lifecycle context) outlived
+// shutdown. stopAllParkingSamplers is the single owner Stop() now calls:
+// cancel every session's sampler and block until each has actually exited,
+// mirroring the established stopSendNowWorkers pattern in this same package.
+func TestStopAllParkingSamplers_DrainsRunningSampler(t *testing.T) {
+	repo := setupTestRepo(t)
+	svc := createTestService(repo, newMockStepGetter(), newMockTaskRepo())
+	svc.config.BackgroundSampleInterval = 5 * time.Millisecond
+	probe := &fakeProbe{result: probeResultLive}
+	svc.SetBackgroundProbe(probe)
+
+	const taskID, sessionID = "task-drain", "session-drain"
+	svc.getOrCreateParkedState(sessionID).observedDetached = true
+	parkedTestSeedSession(t, repo, taskID, sessionID, models.TaskSessionStateWaitingForInput)
+
+	svc.onSessionParkedHook(context.Background(), taskID, sessionID)
+	ps := svc.parkedStateFor(sessionID)
+	if ps == nil || !ps.parked {
+		t.Fatal("expected the session to be parked with a sampler goroutine running")
+	}
+
+	// Wait for the sampler to actually tick at least once, so this test
+	// exercises draining a genuinely running goroutine rather than one that
+	// happened not to have started ticking yet.
+	deadline := time.After(2 * time.Second)
+	for probe.calls.Load() < 2 {
+		select {
+		case <-deadline:
+			t.Fatal("sampler did not tick before the test deadline")
+		case <-time.After(time.Millisecond):
+		}
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		svc.stopAllParkingSamplers()
+	}()
+	select {
+	case <-done:
+		// drained cleanly
+	case <-time.After(2 * time.Second):
+		t.Fatal("stopAllParkingSamplers did not return promptly")
+	}
+
+	// The sampler must have actually exited, not merely been asked to: no
+	// further probe calls after stopAllParkingSamplers returns.
+	callsAtStop := probe.calls.Load()
+	time.Sleep(50 * time.Millisecond)
+	if got := probe.calls.Load(); got != callsAtStop {
+		t.Fatalf("expected no further probe calls after drain, got %d more", got-callsAtStop)
+	}
+}
+
+// TestStopAllParkingSamplers_NoOpWhenNoneRunning verifies draining an empty
+// (or all-idle) parkedStates map returns immediately rather than blocking.
+func TestStopAllParkingSamplers_NoOpWhenNoneRunning(t *testing.T) {
+	svc := createTestService(setupTestRepo(t), newMockStepGetter(), newMockTaskRepo())
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		svc.stopAllParkingSamplers()
+	}()
+	select {
+	case <-done:
+	case <-time.After(1 * time.Second):
+		t.Fatal("stopAllParkingSamplers blocked with no samplers running")
 	}
 }

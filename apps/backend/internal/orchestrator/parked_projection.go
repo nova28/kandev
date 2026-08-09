@@ -115,6 +115,7 @@ func (s *Service) onSessionParkedHook(ctx context.Context, taskID, sessionID str
 	}
 
 	if startSampler {
+		s.parkedSamplerWG.Add(1)
 		go s.runParkingSampler(samplerCtx, taskID, sessionID)
 	}
 }
@@ -272,6 +273,7 @@ func (s *Service) evictParkedState(ctx context.Context, taskID, sessionID string
 // runParkingSampler ticks at BackgroundSampleInterval until context is done
 // or the session is no longer parked.
 func (s *Service) runParkingSampler(ctx context.Context, taskID, sessionID string) {
+	defer s.parkedSamplerWG.Done()
 	interval := s.config.BackgroundSampleInterval
 	// AC-74: zero disables periodic sampling entirely — not "use the
 	// default". The session stays parked at whatever the synchronous first
@@ -292,6 +294,38 @@ func (s *Service) runParkingSampler(ctx context.Context, taskID, sessionID strin
 			}
 		case <-ctx.Done():
 			return
+		}
+	}
+}
+
+// parkedSamplerShutdownTimeout bounds how long Stop() waits for parking
+// samplers to drain before giving up and logging — mirrors
+// sendNowClaimRecoveryTimeout's role for stopSendNowWorkers.
+const parkedSamplerShutdownTimeout = 5 * time.Second
+
+// stopAllParkingSamplers cancels every session's running parking-sampler
+// goroutine and blocks until each has actually exited (parkedSamplerWG),
+// rather than merely asking them to stop. Called from Service.Stop() so a
+// backend shutdown does not leave sampler goroutines running against
+// contexts rooted in context.Background(), with no owner left to cancel
+// them. Mirrors stopSendNowWorkers's cancel-then-bounded-wait shape.
+func (s *Service) stopAllParkingSamplers() {
+	s.parkedStatesMu.Lock()
+	for _, ps := range s.parkedStates {
+		ps.stopSampler()
+	}
+	s.parkedStatesMu.Unlock()
+
+	done := make(chan struct{})
+	go func() {
+		s.parkedSamplerWG.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(parkedSamplerShutdownTimeout):
+		if s.logger != nil {
+			s.logger.Warn("timed out waiting for parking samplers to drain during shutdown")
 		}
 	}
 }
