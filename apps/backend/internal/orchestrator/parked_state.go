@@ -108,17 +108,38 @@ func (s *Service) markObservedDetached(sessionID string) {
 // any outstanding probe was asked. A turn_started for a session with no
 // parkedState row is a no-op: it creates no entry and increments no marker
 // (AC-41a's final clause).
-func (s *Service) clearObservedDetachedOnTurnStarted(sessionID string) {
+//
+// observedDetached is a required AND-term of computeParked, so clearing it
+// deterministically makes the formula false regardless of lastSample or
+// session state — a session that was parked cannot remain parked once its
+// new turn has started. A turn_started can arrive with no accompanying
+// session-state-leave transition (a self-resume, spec §N/D3), so
+// unparkOnStateLeave is not guaranteed to run first; without recomputing and
+// publishing here, ps.parked would stay stale (true) for the duration of an
+// actively-running turn, with no sampler left running to correct it (this
+// same call already stops it above).
+func (s *Service) clearObservedDetachedOnTurnStarted(ctx context.Context, taskID, sessionID string) {
 	s.parkedStatesMu.Lock()
-	defer s.parkedStatesMu.Unlock()
 	ps := s.parkedStates[sessionID]
 	if ps == nil {
+		s.parkedStatesMu.Unlock()
 		return
 	}
 	ps.observedDetached = false
 	ps.turnMarker++
 	ps.stopSampler()
 	ps.lastSample = ""
+	wasParked := ps.parked
+	if wasParked {
+		ps.parked = false
+		ps.revision++
+	}
+	s.parkedStatesMu.Unlock()
+
+	if wasParked {
+		s.publishParkedChanged(ctx, taskID, sessionID)
+		s.updateTaskParkedState(ctx, taskID, sessionID, false)
+	}
 }
 
 // getOrCreateTaskParkedState returns the task's parked state, creating it if absent.

@@ -161,7 +161,7 @@ func (s *Service) handleAgentStreamEvent(ctx context.Context, payload *lifecycle
 		s.handleAgentLogEvent(ctx, payload)
 
 	case streams.EventTypeTurnStarted:
-		s.clearObservedDetachedOnTurnStarted(sessionID)
+		s.clearObservedDetachedOnTurnStarted(ctx, taskID, sessionID)
 	}
 }
 

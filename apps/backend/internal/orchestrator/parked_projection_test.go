@@ -137,12 +137,12 @@ func TestOnSessionParkedHook_SettledProbeNoChange(t *testing.T) {
 func TestClearObservedDetachedOnTurnStarted_ClearsLastSample(t *testing.T) {
 	svc := createTestService(setupTestRepo(t), newMockStepGetter(), newMockTaskRepo())
 
-	const sessionID = "session-reset"
+	const taskID, sessionID = "task-reset", "session-reset"
 	ps := svc.getOrCreateParkedState(sessionID)
 	ps.lastSample = probeResultLive
 	ps.observedDetached = true
 
-	svc.clearObservedDetachedOnTurnStarted(sessionID)
+	svc.clearObservedDetachedOnTurnStarted(context.Background(), taskID, sessionID)
 
 	if ps.lastSample != "" {
 		t.Fatalf("expected empty lastSample after turn_started, got %q", ps.lastSample)
@@ -161,10 +161,96 @@ func TestClearObservedDetachedOnTurnStarted_ClearsLastSample(t *testing.T) {
 func TestClearObservedDetachedOnTurnStarted_NoOpForUnknownSession(t *testing.T) {
 	svc := createTestService(setupTestRepo(t), newMockStepGetter(), newMockTaskRepo())
 
-	svc.clearObservedDetachedOnTurnStarted("session-never-attested")
+	svc.clearObservedDetachedOnTurnStarted(context.Background(), "task-never-attested", "session-never-attested")
 
 	if svc.parkedStateFor("session-never-attested") != nil {
 		t.Fatal("expected no parkedState row created by turn_started for an unattested session")
+	}
+}
+
+// TestClearObservedDetachedOnTurnStarted_UnparksAndPublishesWhenParked
+// verifies a real production gap found in PR review: a turn starting on an
+// already-parked session (the self-resume path, D3/§N — a turn_started with
+// no accompanying session-state-leave transition) must recompute and publish
+// the parked=false transition immediately, not leave the cached ps.parked
+// stale until the next sample. observedDetached is a required AND-term of
+// computeParked, so clearing it deterministically makes the formula false
+// regardless of lastSample or session state — there is nothing to
+// re-sample.
+func TestClearObservedDetachedOnTurnStarted_UnparksAndPublishesWhenParked(t *testing.T) {
+	svc := createTestService(setupTestRepo(t), newMockStepGetter(), newMockTaskRepo())
+	recorded := &recordingEventBus{}
+	svc.eventBus = recorded
+	svc.parkedEpoch = 7
+
+	const taskID, sessionID = "task-turnstart", "session-turnstart"
+	ps := svc.getOrCreateParkedState(sessionID)
+	ps.observedDetached = true
+	ps.parked = true
+	ps.lastSample = probeResultLive
+	ps.revision = 1
+	svc.updateTaskParkedState(context.Background(), taskID, sessionID, true)
+
+	svc.clearObservedDetachedOnTurnStarted(context.Background(), taskID, sessionID)
+
+	ps2 := svc.parkedStateFor(sessionID)
+	if ps2.parked {
+		t.Fatal("expected parked=false: a new turn starting clears observedDetached, so the formula is false")
+	}
+	if ps2.revision != 2 {
+		t.Fatalf("expected revision=2, got %d", ps2.revision)
+	}
+
+	var found bool
+	for _, e := range recorded.events {
+		if e.subject != events.TaskSessionActivityChanged {
+			continue
+		}
+		data, ok := e.event.Data.(map[string]interface{})
+		if !ok || data["session_id"] != sessionID {
+			continue
+		}
+		found = true
+		if parked, _ := data["parked_on_background_work"].(bool); parked {
+			t.Fatal("expected parked_on_background_work=false on the published frame")
+		}
+		if rev, _ := data["parked_revision"].(uint64); rev != 2 {
+			t.Fatalf("expected parked_revision=2 on the published frame, got %v", data["parked_revision"])
+		}
+	}
+	if !found {
+		t.Fatal("expected a session.activity_changed publish carrying the un-park at turn start")
+	}
+
+	taskParked, _, _ := svc.TaskParkedProjectionSnapshot(taskID)
+	if taskParked {
+		t.Fatal("expected task-level parked_on_background_work=false: this was the task's only parked session")
+	}
+}
+
+// TestClearObservedDetachedOnTurnStarted_NoOpWhenNotParked verifies that a
+// turn_started on a session that was never parked publishes nothing and
+// moves no revision — the common case, since a plain settle-then-resume
+// cycle never touches this at all.
+func TestClearObservedDetachedOnTurnStarted_NoOpWhenNotParked(t *testing.T) {
+	svc := createTestService(setupTestRepo(t), newMockStepGetter(), newMockTaskRepo())
+	recorded := &recordingEventBus{}
+	svc.eventBus = recorded
+
+	const taskID, sessionID = "task-turnstart2", "session-turnstart2"
+	ps := svc.getOrCreateParkedState(sessionID)
+	ps.revision = 3
+
+	svc.clearObservedDetachedOnTurnStarted(context.Background(), taskID, sessionID)
+
+	ps2 := svc.parkedStateFor(sessionID)
+	if ps2.revision != 3 {
+		t.Fatalf("expected revision unchanged at 3, got %d", ps2.revision)
+	}
+	for _, e := range recorded.events {
+		if e.subject == events.TaskSessionActivityChanged {
+			t.Fatal("expected no publish when the session was not parked")
+		}
 	}
 }
 
@@ -196,6 +282,7 @@ func TestOnSessionParkedHook_NoProbeWhenNotAttested(t *testing.T) {
 // itself before returning a result.
 type turnBoundaryDuringProbe struct {
 	svc       *Service
+	taskID    string
 	sessionID string
 	result    string
 	calls     int
@@ -203,7 +290,7 @@ type turnBoundaryDuringProbe struct {
 
 func (t *turnBoundaryDuringProbe) ProbeBackgroundWorkloads(_ context.Context, _ string) (string, error) {
 	t.calls++
-	t.svc.clearObservedDetachedOnTurnStarted(t.sessionID)
+	t.svc.clearObservedDetachedOnTurnStarted(context.Background(), t.taskID, t.sessionID)
 	return t.result, nil
 }
 
@@ -216,7 +303,7 @@ func TestOnSessionParkedHook_DiscardsSampleWhenTurnBoundaryMovesDuringProbe(t *t
 	const taskID, sessionID = "task-stale", "session-stale"
 	svc.getOrCreateParkedState(sessionID).observedDetached = true
 
-	probe := &turnBoundaryDuringProbe{svc: svc, sessionID: sessionID, result: probeResultLive}
+	probe := &turnBoundaryDuringProbe{svc: svc, taskID: taskID, sessionID: sessionID, result: probeResultLive}
 	svc.SetBackgroundProbe(probe)
 
 	svc.onSessionParkedHook(context.Background(), taskID, sessionID)
@@ -245,7 +332,7 @@ func TestSampleAndPublishParked_DiscardsStaleSample(t *testing.T) {
 	ps.observedDetached = true
 	ps.parked = true
 
-	probe := &turnBoundaryDuringProbe{svc: svc, sessionID: sessionID, result: probeResultLive}
+	probe := &turnBoundaryDuringProbe{svc: svc, taskID: taskID, sessionID: sessionID, result: probeResultLive}
 	svc.SetBackgroundProbe(probe)
 
 	keepRunning := svc.sampleAndPublishParked(context.Background(), taskID, sessionID)
@@ -253,11 +340,15 @@ func TestSampleAndPublishParked_DiscardsStaleSample(t *testing.T) {
 		t.Fatal("expected keepRunning=true: a discarded sample must not stop the sampler on its own")
 	}
 	ps2 := svc.parkedStateFor(sessionID)
-	// parked stays whatever clearObservedDetachedOnTurnStarted's stopSampler
-	// left it as (true — that function does not touch `parked`); the point is
-	// lastSample was never overwritten by the stale "live" result.
+	// clearObservedDetachedOnTurnStarted already un-parked and published as
+	// part of its own turn-start transition (ps.parked started true); the
+	// point of this test is that the DISCARDED stale "live" sample from the
+	// old turn never overwrites lastSample on top of that.
 	if ps2.lastSample != "" {
 		t.Fatalf("expected lastSample untouched by the discarded sample, got %q", ps2.lastSample)
+	}
+	if ps2.parked {
+		t.Fatal("expected parked=false: clearObservedDetachedOnTurnStarted already un-parked it")
 	}
 }
 
