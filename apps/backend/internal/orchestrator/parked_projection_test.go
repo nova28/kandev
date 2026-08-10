@@ -843,3 +843,48 @@ func TestStopAllParkingSamplers_NoOpWhenNoneRunning(t *testing.T) {
 		t.Fatal("stopAllParkingSamplers blocked with no samplers running")
 	}
 }
+
+// TestOnSessionParkedHook_RejectsNewSamplerAfterStop is the regression guard
+// for a Testing-round finding: onSessionParkedHook must not start a new
+// parking-sampler goroutine once stopAllParkingSamplers has already run —
+// otherwise a session that settles into "newly parked" concurrently with
+// Service.Stop() can spawn a sampler whose context is never cancelled,
+// reintroducing the exact class of leak stopAllParkingSamplers exists to
+// close, just in a narrower window. Mirrors sendNowStopped's
+// reject-new-work-after-stop guard (queue_send_now.go:332-347).
+func TestOnSessionParkedHook_RejectsNewSamplerAfterStop(t *testing.T) {
+	repo := setupTestRepo(t)
+	svc := createTestService(repo, newMockStepGetter(), newMockTaskRepo())
+	svc.config.BackgroundSampleInterval = 5 * time.Millisecond
+	probe := &fakeProbe{result: probeResultLive}
+	svc.SetBackgroundProbe(probe)
+
+	const taskID, sessionID = "task-afterstop", "session-afterstop"
+	svc.getOrCreateParkedState(sessionID).observedDetached = true
+	parkedTestSeedSession(t, repo, taskID, sessionID, models.TaskSessionStateWaitingForInput)
+
+	// Simulate Service.Stop() having already run its drain sweep — the
+	// common "stop happened first" ordering that reproduces the finding.
+	svc.stopAllParkingSamplers()
+
+	svc.onSessionParkedHook(context.Background(), taskID, sessionID)
+
+	ps := svc.parkedStateFor(sessionID)
+	if ps == nil {
+		t.Fatal("expected a parked state row to exist")
+	}
+	if ps.samplerCancel != nil {
+		t.Fatal("expected no sampler to be started after stopAllParkingSamplers ran")
+	}
+	if !ps.parked {
+		t.Fatal("expected the synchronous first sample to still park the session — only the recurring sampler is guarded, not the parked state itself")
+	}
+
+	// Give a wrongly-started sampler a chance to tick, then confirm it
+	// never did: the real production consequence of the gap is a leaked
+	// goroutine that keeps calling the probe past shutdown.
+	time.Sleep(20 * time.Millisecond)
+	if got := probe.calls.Load(); got != 1 {
+		t.Fatalf("expected exactly 1 probe call (the synchronous first sample only), got %d — a wrongly-started sampler ticked", got)
+	}
+}

@@ -645,6 +645,14 @@ type Service struct {
 	// spawning, runParkingSampler Done()s on exit, stopAllParkingSamplers
 	// Waits — mirrors stopSendNowWorkers below.
 	parkedSamplerWG sync.WaitGroup
+	// parkedSamplersStopped rejects starting any NEW parking sampler once
+	// stopAllParkingSamplers has run, closing the gap a cancel-then-wait
+	// sweep alone leaves open: a session settling into "newly parked"
+	// concurrently with Stop() could otherwise spawn a sampler after the
+	// sweep already passed it, with a context nothing ever cancels. Guarded
+	// by parkedStatesMu (checked in the same critical section that sets
+	// ps.samplerCancel) — mirrors sendNowStopped/stopSendNowWorkers above.
+	parkedSamplersStopped bool
 
 	// parkedEpoch is the backend process start time in Unix nanoseconds.
 	// Used by clients as restart-survivable discard signal (AC-77).

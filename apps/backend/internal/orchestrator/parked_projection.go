@@ -102,8 +102,15 @@ func (s *Service) onSessionParkedHook(ctx context.Context, taskID, sessionID str
 	}
 	if newParked {
 		ps.stopSampler()
-		samplerCtx, ps.samplerCancel = context.WithCancel(context.Background())
-		startSampler = true
+		// Reject starting a new sampler once stopAllParkingSamplers has run
+		// (Service.Stop() in progress or complete) — otherwise a session
+		// settling into "newly parked" concurrently with shutdown could spawn
+		// a sampler whose context nothing ever cancels. Checked in this same
+		// critical section as the assignment below, mirroring sendNowStopped.
+		if !s.parkedSamplersStopped {
+			samplerCtx, ps.samplerCancel = context.WithCancel(context.Background())
+			startSampler = true
+		}
 	} else {
 		ps.stopSampler()
 	}
@@ -308,9 +315,13 @@ const parkedSamplerShutdownTimeout = 5 * time.Second
 // rather than merely asking them to stop. Called from Service.Stop() so a
 // backend shutdown does not leave sampler goroutines running against
 // contexts rooted in context.Background(), with no owner left to cancel
-// them. Mirrors stopSendNowWorkers's cancel-then-bounded-wait shape.
+// them. Also sets parkedSamplersStopped, under the same lock as the cancel
+// sweep, so onSessionParkedHook cannot start a NEW sampler that this sweep
+// would never see — mirrors stopSendNowWorkers's cancel-then-bounded-wait
+// shape, including its reject-new-work-after-stop half.
 func (s *Service) stopAllParkingSamplers() {
 	s.parkedStatesMu.Lock()
+	s.parkedSamplersStopped = true
 	for _, ps := range s.parkedStates {
 		ps.stopSampler()
 	}
