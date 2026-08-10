@@ -54,4 +54,30 @@ describe("shouldShowReopenStateIcon", () => {
     expect(shouldShowReopenStateIcon("CANCELLED", null)).toBe(true);
     expect(shouldShowReopenStateIcon("CREATED", null)).toBe(true);
   });
+
+  // Review round 7, F3: this gate was never given a parkedOnBackgroundWork
+  // parameter, so a parked session (WAITING_FOR_INPUT + a detached background
+  // workload still live) rendered NO icon at all in this AC-51-named call
+  // site, even though the icon-rendering call right below it already read
+  // session.parked_on_background_work correctly.
+  it("surfaces the icon for a parked WAITING_FOR_INPUT session (AC-51)", () => {
+    expect(shouldShowReopenStateIcon("WAITING_FOR_INPUT", null, false, false, true)).toBe(true);
+  });
+
+  it("surfaces the icon for a RUNNING-then-parked session (AC-51)", () => {
+    expect(shouldShowReopenStateIcon("RUNNING", null, false, false, true)).toBe(true);
+  });
+
+  it("keeps a plain waiting session icon-less when not parked", () => {
+    expect(shouldShowReopenStateIcon("WAITING_FOR_INPUT", null, false, false, false)).toBe(false);
+  });
+
+  it("lets a pending prompt win over parked (needs-me always tops)", () => {
+    expect(shouldShowReopenStateIcon("WAITING_FOR_INPUT", null, true, false, true)).toBe(true);
+    expect(shouldShowReopenStateIcon("WAITING_FOR_INPUT", null, false, true, true)).toBe(true);
+  });
+
+  it("keeps STARTING icon-less even when parked", () => {
+    expect(shouldShowReopenStateIcon("STARTING", null, false, false, true)).toBe(false);
+  });
 });

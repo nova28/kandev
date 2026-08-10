@@ -27,20 +27,24 @@ type AgentInfo = { label: string; agentName: string };
  *
  * An actionable pending prompt surfaces for RUNNING and WAITING_FOR_INPUT
  * sessions. Background-running also reads distinctly (the shared background
- * spinner), never as done. STARTING stays icon-less, and stale pending data
- * cannot override terminal lifecycle icons. A generating RUNNING session or a
- * plain WAITING_FOR_INPUT session with no pending prompt stays silent.
+ * spinner), never as done. A parked session (AC-51: settled but a detached
+ * background workload is still live) surfaces the same way. STARTING stays
+ * icon-less, and stale pending data cannot override terminal lifecycle
+ * icons. A generating RUNNING session or a plain WAITING_FOR_INPUT session
+ * with no pending prompt and nothing parked stays silent.
  */
 export function shouldShowReopenStateIcon(
   state: TaskSessionState,
   foregroundActivity?: ForegroundActivity | null,
   hasPendingClarification = false,
   hasPendingPermission = false,
+  parkedOnBackgroundWork = false,
 ): boolean {
   if (state === "STARTING") return false;
   const canRequestInput = state === "RUNNING" || state === "WAITING_FOR_INPUT";
   if (canRequestInput && (hasPendingClarification || hasPendingPermission)) return true;
   if (canRequestInput && foregroundActivity === "background") return true;
+  if (canRequestInput && parkedOnBackgroundWork) return true;
   if (canRequestInput) return false;
   return true;
 }
@@ -199,6 +203,7 @@ function SessionReopenMenuItem({
         session.foreground_activity,
         pending.clarification,
         pending.permission,
+        session.parked_on_background_work ?? false,
       ) && (
         <span className="shrink-0">
           {getSessionStateIcon(session.state, "h-3 w-3", session.foreground_activity, {
