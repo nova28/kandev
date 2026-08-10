@@ -96,6 +96,49 @@ async function injectParkedBoardTask(
 }
 
 /**
+ * Immutably marks the task as actively background-running (NOT parked) —
+ * `foregroundActivity: "background"`, `parkedOnBackgroundWork` left unset.
+ * Regression coverage for AC-59 (Review round 7, F1): this is the
+ * pre-existing signal that must render byte-identically to before the
+ * parked feature shipped — a bare IconLoader with no `data-testid` — and
+ * must NOT show `task-state-background-running`, which is reserved for the
+ * distinct parked condition. Same store-mutation shape as
+ * injectParkedBoardTask, minus the parked fields.
+ */
+async function injectBackgroundActivityBoardTask(
+  page: import("@playwright/test").Page,
+  workflowId: string,
+  taskId: string,
+) {
+  await page.evaluate(
+    ({ workflowId, taskId }) => {
+      const store = (window as E2EStoreWindow).__KANDEV_E2E_STORE__;
+      if (!store) throw new Error("E2E store bridge missing");
+      const markBackground = (t: Record<string, unknown>) =>
+        t.id === taskId ? { ...t, foregroundActivity: "background" } : t;
+      store.setState((state) => {
+        const snapshot = state.kanbanMulti.snapshots[workflowId];
+        if (!snapshot) throw new Error(`No kanbanMulti snapshot for workflow ${workflowId}`);
+        if (!snapshot.tasks.some((t) => t.id === taskId)) {
+          throw new Error(`Task ${taskId} not found in kanbanMulti snapshot`);
+        }
+        return {
+          kanban: { ...state.kanban, tasks: state.kanban.tasks.map(markBackground) },
+          kanbanMulti: {
+            ...state.kanbanMulti,
+            snapshots: {
+              ...state.kanbanMulti.snapshots,
+              [workflowId]: { ...snapshot, tasks: snapshot.tasks.map(markBackground) },
+            },
+          },
+        };
+      });
+    },
+    { workflowId, taskId },
+  );
+}
+
+/**
  * Intercept the tasks-list fetch and mark `taskId` as parked in the response
  * body. Must be registered before navigation: `app/tasks/tasks-page-client.tsx`
  * fetches this endpoint on mount with no Vite-side SSR to bypass, so Playwright
@@ -150,6 +193,43 @@ test.describe("Parked-session affordance", () => {
     // not the question-mark icon.
     await expect(card.getByTestId("task-state-background-running")).toBeVisible({ timeout: 5_000 });
     await expect(card.getByTestId("task-state-waiting-for-input")).not.toBeVisible();
+  });
+
+  // AC-59 regression guard (Review round 7, F1): before the fix,
+  // getTaskStateIconConfig merged the pre-existing foregroundActivity ===
+  // "background" branch and the new parked branch into the same sentinel, so
+  // BOTH rendered task-state-background-running in the live DOM — silently
+  // breaking the spec's "byte-identical to before this feature" requirement
+  // for a task that is actively running background work but is NOT parked.
+  // No unit test caught this because both branches produced the same output;
+  // this asserts the real, distinct rendering on a live board.
+  test("board card keeps the pre-existing plain spinner for background activity that is NOT parked (AC-59)", async ({
+    testPage,
+    apiClient,
+    seedData,
+  }) => {
+    const task = await apiClient.createTask(seedData.workspaceId, "Background Not Parked Test", {
+      workflow_id: seedData.workflowId,
+      workflow_step_id: seedData.startStepId,
+    });
+
+    const kanban = new KanbanPage(testPage);
+    await kanban.goto();
+
+    const card = kanban.taskCard(task.id);
+    await expect(card).toBeVisible({ timeout: 10_000 });
+
+    await injectBackgroundActivityBoardTask(testPage, seedData.workflowId, task.id);
+
+    // Must render SOME icon (the pre-existing bare IconLoader — no
+    // data-testid, identified by its tabler icon class, same selector the
+    // frontend unit tests use)...
+    await expect(card.locator(".tabler-icon-loader")).toBeVisible({ timeout: 5_000 });
+    // ...and must NOT render the parked-specific affordance, which is
+    // reserved for the distinct parked condition (AC-59's "byte-identical"
+    // requirement — this is the exact regression that survived 6 review
+    // rounds and 5 rewritten unit tests before being caught here).
+    await expect(card.getByTestId("task-state-background-running")).not.toBeVisible();
   });
 
   // AC-23: TaskRowItem's <TaskItem> call is the app's only production call
