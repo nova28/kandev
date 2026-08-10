@@ -711,9 +711,15 @@ type Service struct {
 	// taskDeletedTombstoneRetention are lazily evicted on the next
 	// handleTaskDeleted call, so this stays bounded rather than growing with
 	// every task ever deleted — mirrors the completedExecutions /
-	// executionTeardownClaims grace-window idiom above, sized past
-	// runTaskCleanup's 60s cleanup-context timeout. Guarded by
-	// taskParkedStatesMu like the maps above.
+	// executionTeardownClaims grace-window idiom above. taskDeletedTombstoneRetention
+	// is derived from taskservice.TaskResourceCleanupMaxHorizon() — see its
+	// declaration in event_handlers.go for the sizing rationale (Review
+	// round 12, COR-001; corrected again in round 13 for the same reason
+	// this comment is being fixed now: a stale duplicate of the sizing
+	// rationale drifted from the real one and reopened the exact class of
+	// bug it was meant to guard). Don't re-duplicate that rationale here —
+	// it has already drifted once. Guarded by taskParkedStatesMu like the
+	// maps above.
 	taskDeletedTombstones map[string]time.Time
 
 	// foregroundActivity tracks, per session, whether the open turn is actively

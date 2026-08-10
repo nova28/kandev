@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/kandev/kandev/internal/agent/runtime/activity"
@@ -1067,6 +1068,79 @@ func TestRetryTaskResourceCleanupJobUsesBoundedBackoffAndTerminalState(t *testin
 	}
 }
 
+// TestRetryTaskResourceCleanupJobWakesWorkerAtScheduledRetryDueTime is Review
+// round 13's regression guard for COR-001: retryTaskResourceCleanupJob
+// persisted next_attempt_at but never woke the worker for that specific
+// retry, so the worker only noticed a due retry via its 1-minute ticker
+// (runTaskResourceCleanupWorker). That ticker's phase is unrelated to any
+// individual job's due time, so each of the 7 scheduled retries could
+// independently lag its due time by up to just-under-1-minute — and because
+// each retry's own due time is computed from the previous attempt's actual
+// (already-late) completion time, that slack compounds across the job's
+// lifetime instead of resetting. TaskResourceCleanupMaxHorizon only ever
+// budgeted one such margin, so the real worst case could exceed the bound
+// it claims to be.
+//
+// This asserts retryTaskResourceCleanupJob schedules a precise wake for the
+// specific retry it just persisted: nothing arrives on the worker wake
+// channel before the retry is actually due, and a signal arrives once it is
+// — closing the slack at its source instead of relying solely on the
+// ticker backstop.
+func TestRetryTaskResourceCleanupJobWakesWorkerAtScheduledRetryDueTime(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		taskSvc, repo := setupOfficeTest(t)
+		taskSvc.StopTaskResourceCleanupWorker()
+		wake := make(chan struct{}, 1)
+		taskSvc.cleanupWorkerMu.Lock()
+		taskSvc.cleanupWorkerWake = wake
+		taskSvc.cleanupWorkerMu.Unlock()
+
+		job := &models.TaskResourceCleanupJob{
+			ID: "wake-retry-job", OperationID: "delete:wake-retry", TaskID: "task-wake-retry",
+			Trigger: models.TaskResourceCleanupTriggerDelete,
+			// Attempts=4 pre-claim -> 5 post-claim -> delay is the 5th
+			// schedule entry (3h), distinct from both the ticker period and
+			// the first retry's delay so the test can't pass by coincidence.
+			State: models.TaskResourceCleanupStatePending, Attempts: 4,
+			ResourceSnapshot: `{}`,
+		}
+		if err := repo.CreateTaskResourceCleanupJob(context.Background(), job); err != nil {
+			t.Fatalf("CreateTaskResourceCleanupJob: %v", err)
+		}
+		claimed, err := repo.MarkTaskResourceCleanupJobRunning(context.Background(), job.ID)
+		if err != nil || !claimed {
+			t.Fatalf("MarkTaskResourceCleanupJobRunning = %v, %v", claimed, err)
+		}
+		job, err = repo.GetTaskResourceCleanupJob(context.Background(), job.ID)
+		if err != nil {
+			t.Fatalf("GetTaskResourceCleanupJob: %v", err)
+		}
+		wantDelay := taskResourceCleanupRetryDelayForAttempt(job.Attempts)
+		if wantDelay != 3*time.Hour {
+			t.Fatalf("test setup drifted: retry delay for attempts=%d = %v, want 3h", job.Attempts, wantDelay)
+		}
+
+		cleanupErr := errors.New("transient failure")
+		if err := taskSvc.retryTaskResourceCleanupJob(context.Background(), job, cleanupErr); !errors.Is(err, cleanupErr) {
+			t.Fatalf("retryTaskResourceCleanupJob error = %v, want cleanup error", err)
+		}
+
+		time.Sleep(wantDelay - time.Second)
+		select {
+		case <-wake:
+			t.Fatal("worker woken before the retry became due — this only works by coincidence and would miss a shorter/longer retry delay")
+		default:
+		}
+
+		time.Sleep(2 * time.Second)
+		select {
+		case <-wake:
+		default:
+			t.Fatal("worker was not woken once the retry became due — falls back to waiting for the next 1-minute ticker tick, which compounds across all 7 scheduled retries (Review round 13, COR-001)")
+		}
+	})
+}
+
 func TestTaskResourceCleanupMissingResourcesSucceed(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -1293,13 +1367,33 @@ func TestStartTaskResourceCleanupLeavesPendingJobForOwnedWorker(t *testing.T) {
 func TestTaskResourceCleanupMaxHorizon_MatchesRetrySchedule(t *testing.T) {
 	// 1m poll-cadence margin + 1m+5m+15m+1h+3h+6h+12h retry delays.
 	want := time.Minute + (time.Minute + 5*time.Minute + 15*time.Minute + time.Hour + 3*time.Hour + 6*time.Hour + 12*time.Hour)
-	if got := TaskResourceCleanupMaxHorizon(); got != want {
+	got := TaskResourceCleanupMaxHorizon()
+	if got != want {
 		t.Fatalf("TaskResourceCleanupMaxHorizon() = %s, want %s", got, want)
 	}
 	// The 3rd retry (1m+5m+15m=21m) — the case that broke the old, wrongly
 	// derived 10-minute tombstone window — must fall well inside this bound.
-	if want <= 21*time.Minute {
-		t.Fatalf("TaskResourceCleanupMaxHorizon() = %s must exceed the 3rd-retry case (21m) it is meant to cover", want)
+	// Asserted against the function's actual return value (got), not the
+	// test's own literal (want): a bound check against a hardcoded local is
+	// unkillable by any production mutation (Review round 13, TEST-001).
+	if got <= 21*time.Minute {
+		t.Fatalf("TaskResourceCleanupMaxHorizon() = %s must exceed the 3rd-retry case (21m) it is meant to cover", got)
+	}
+	// TaskResourceCleanupMaxHorizon's sum-of-delays term is only a true
+	// upper bound because taskResourceCleanupMaxAttempts equals
+	// len(taskResourceCleanupRetryDelays)+1 — job.Attempts reaches
+	// taskResourceCleanupMaxAttempts (Failed, no further scheduling) right
+	// after exactly len(taskResourceCleanupRetryDelays) retries have been
+	// scheduled. If maxAttempts ever grew past that without extending the
+	// delays slice, taskResourceCleanupRetryDelayForAttempt would clamp
+	// every extra attempt to the last (12h) entry, adding real retry time
+	// this function's sum never accounts for — silently under-estimating
+	// the horizon and reopening SEC-001, exactly the drift this test's own
+	// docstring already claims to guard (Review round 13, TEST-001).
+	if taskResourceCleanupMaxAttempts != len(taskResourceCleanupRetryDelays)+1 {
+		t.Fatalf("taskResourceCleanupMaxAttempts = %d, want len(taskResourceCleanupRetryDelays)+1 = %d — "+
+			"TaskResourceCleanupMaxHorizon's sum-of-delays term is only a valid upper bound when these stay in lockstep",
+			taskResourceCleanupMaxAttempts, len(taskResourceCleanupRetryDelays)+1)
 	}
 }
 

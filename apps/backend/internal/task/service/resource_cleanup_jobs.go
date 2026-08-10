@@ -510,10 +510,12 @@ func (s *Service) resolveTaskResourceCleanupAfterMutationError(ctx context.Conte
 func (s *Service) retryTaskResourceCleanupJob(ctx context.Context, job *models.TaskResourceCleanupJob, cleanupErr error) error {
 	state := models.TaskResourceCleanupStateRetryWait
 	var nextAttempt *time.Time
+	var delay time.Duration
 	if job.Attempts >= taskResourceCleanupMaxAttempts {
 		state = models.TaskResourceCleanupStateFailed
 	} else {
-		next := time.Now().UTC().Add(taskResourceCleanupRetryDelayForAttempt(job.Attempts))
+		delay = taskResourceCleanupRetryDelayForAttempt(job.Attempts)
+		next := time.Now().UTC().Add(delay)
 		nextAttempt = &next
 	}
 	transitionCtx, cancel := detachedCleanupTransitionContext(ctx)
@@ -523,6 +525,19 @@ func (s *Service) retryTaskResourceCleanupJob(ctx context.Context, job *models.T
 	)
 	if err != nil {
 		return errors.Join(cleanupErr, err)
+	}
+	if nextAttempt != nil {
+		// Wake the worker precisely when THIS retry becomes due (Review
+		// round 13, COR-001), instead of leaving it to the worker's
+		// 1-minute ticker alone. The ticker's phase is unrelated to any
+		// individual job's due time, so relying on it exclusively lets up
+		// to just-under-1-minute of slack land independently on each of the
+		// 7 scheduled retries, compounding across the job's lifetime
+		// because each retry's due time is computed from the previous
+		// attempt's actual (already-late) completion time. startTaskResourceCleanup
+		// is a harmless no-op if the job was cancelled/completed or the
+		// worker already stopped by the time this fires.
+		time.AfterFunc(delay, func() { s.startTaskResourceCleanup(job) })
 	}
 	return cleanupErr
 }
@@ -540,12 +555,26 @@ func taskResourceCleanupRetryDelayForAttempt(attempt int) time.Duration {
 // TaskResourceCleanupMaxHorizon returns the worst-case wall-clock span
 // between a task resource cleanup job's first attempt and the moment no
 // further retryTaskResourceCleanupJob attempt can still be pending for it:
-// the sum of every entry in taskResourceCleanupRetryDelays (an attempt index
-// past the array's length reuses its last entry via
-// taskResourceCleanupRetryDelayForAttempt, so cumulative delay never exceeds
-// this sum), plus one taskResourceCleanupRetryDelay's worth of margin for
-// runTaskResourceCleanupWorker's own poll cadence between a retry becoming
-// due and the worker ticker picking it up.
+// the sum of every entry in taskResourceCleanupRetryDelays, plus one
+// taskResourceCleanupRetryDelay's worth of margin.
+//
+// The sum-of-delays term assumes taskResourceCleanupMaxAttempts equals
+// len(taskResourceCleanupRetryDelays)+1 — an attempt index past the array's
+// length clamps to its last entry via taskResourceCleanupRetryDelayForAttempt,
+// so if maxAttempts ever grew past that without extending the delays slice,
+// extra attempts would each add another (clamped) delay and this sum would
+// silently under-count. TestTaskResourceCleanupMaxHorizon_MatchesRetrySchedule
+// pins that relationship so a drift here fails loudly instead of reopening
+// SEC-001 (Review round 13, TEST-001).
+//
+// The margin term used to be framed as "the worker's poll cadence between a
+// retry becoming due and the ticker picking it up" — but retryTaskResourceCleanupJob
+// now schedules a precise per-retry wake (Review round 13, COR-001), so in
+// the steady state that gap is negligible. The margin's real job now is the
+// narrower case where a process restart drops the in-memory scheduled wake
+// for whichever single retry was pending at the time: after restart nothing
+// recreates that wake, so the job falls back to the 1-minute ticker for one
+// catch-up cycle before its precise wake resumes governing the next retry.
 //
 // Exported (Review round 12, COR-001) so a caller sizing a grace window
 // against "how long could this job legitimately still be retrying before it
