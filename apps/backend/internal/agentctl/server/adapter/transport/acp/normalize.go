@@ -301,8 +301,15 @@ func isEmptyGenericInputValue(v any) bool {
 	}
 }
 
+// stampBackgroundShellWork stamps a detached-shell attestation when the
+// registered recogniser for agentID (see background_launch_recognizer.go)
+// reports a detached background launch. An agent with no registered
+// recogniser is never stamped here.
 func stampBackgroundShellWork(agentID string, payload *streams.NormalizedPayload) {
-	if agentID == claudeAgentID && payload != nil && payload.ShellExec() != nil && payload.ShellExec().Background {
+	if payload == nil {
+		return
+	}
+	if recognizesDetachedBackgroundLaunch(agentID, payload) {
 		payload.SetBackgroundWorkIdentity(streams.BackgroundWorkKindShell, "", true, false)
 	}
 }
