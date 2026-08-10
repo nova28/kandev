@@ -573,3 +573,76 @@ func TestUpdateTaskParkedState_SameSessionRaceAgainstEvictionWhileRowAbsent(t *t
 		t.Fatal("expected task parked=false: a stale write for a since-deleted session must not resurrect it, even when its eviction landed while the task row was absent")
 	}
 }
+
+// TestRemoveTaskParkedMember_DoesNotResurrectFloorAfterTaskDeleted is Review
+// round 11's regression guard for SEC-001: after handleTaskDeleted has
+// synchronously torn down a task's parked-projection state — the ordinary,
+// unprivileged task-deletion path, where deleteTaskWithReasonAndDBDelete
+// publishes task.deleted synchronously and only afterward starts async
+// session-stop cleanup in a goroutine — a delayed removeTaskParkedMember
+// call for one of that task's sessions must not recreate
+// s.taskMemberRevisionFloor[taskID]. That call is reached when the async
+// cleanup goroutine stops an execution whose session ever attested a
+// detached launch: retireExecutionActivityAndPublish unconditionally calls
+// evictParkedState -> removeTaskParkedMember on the last execution's
+// retirement, regardless of whether the session was ever actually
+// parked=true. Before this fix, Build round 13's row-absent (!ok) branch
+// always recreated the floor entry here — and nothing ever cleared it
+// again, since handleTaskDeleted fires exactly once per task and task IDs
+// are never reused, leaking one map entry per deleted task with a
+// background-attesting session for the life of the process.
+func TestRemoveTaskParkedMember_DoesNotResurrectFloorAfterTaskDeleted(t *testing.T) {
+	svc := createTestServiceWithScheduler(setupTestRepo(t), newMockStepGetter(), newMockTaskRepo(), &mockAgentManager{})
+	const taskID, sessionID = "task-deleted-tombstone", "session-deleted-tombstone"
+
+	// Session parks — creates the task-level row.
+	svc.updateTaskParkedState(context.Background(), taskID, sessionID, true, 2)
+
+	// The task is deleted. handleTaskDeleted runs synchronously (mirroring
+	// deleteTaskWithReasonAndDBDelete's "publish event (sync, fast)" step,
+	// which always precedes its "stop agents... in the background" step),
+	// tearing down taskParkedStates/taskParkedRevisionFloor/
+	// taskMemberRevisionFloor for this task.
+	svc.handleTaskDeleted(context.Background(), watcher.TaskEventData{TaskID: taskID})
+
+	// The async task-cleanup goroutine now stops the session's execution,
+	// which — because the session ever attested a detached launch — calls
+	// removeTaskParkedMember. The row is absent (handleTaskDeleted just
+	// dropped it), so this lands in the !ok branch.
+	svc.removeTaskParkedMember(context.Background(), taskID, sessionID, 3)
+
+	svc.taskParkedStatesMu.Lock()
+	_, floorRecreated := svc.taskMemberRevisionFloor[taskID]
+	svc.taskParkedStatesMu.Unlock()
+
+	if floorRecreated {
+		t.Fatal("expected taskMemberRevisionFloor[taskID] to stay absent after the task was deleted — recreating it here leaks it for the life of the process, since handleTaskDeleted only fires once per task and task IDs are never reused")
+	}
+}
+
+// TestRemoveTaskParkedMember_RowAbsentFloorNeverRegresses proves the
+// row-absent branch's "!recorded || sessionRevision >= lastRevision" guard
+// actually rejects an older, out-of-order revision rather than merely
+// accepting a newer one. Review round 11's test-supervisor leg found the
+// guard survived mutation to an unconditional write with every existing test
+// still green — a pre-existing gap the row-present sibling guard (:554) also
+// has, closed here for the row-absent side while the file is already open.
+func TestRemoveTaskParkedMember_RowAbsentFloorNeverRegresses(t *testing.T) {
+	svc := createTestService(setupTestRepo(t), newMockStepGetter(), newMockTaskRepo())
+	const taskID, sessionID = "task-row-absent-no-regress", "session-row-absent-no-regress"
+
+	// First row-absent eviction records revision 5 into the floor.
+	svc.removeTaskParkedMember(context.Background(), taskID, sessionID, 5)
+
+	// A second, OLDER row-absent eviction for the same session arrives late
+	// (out-of-order delivery). It must not regress the floor.
+	svc.removeTaskParkedMember(context.Background(), taskID, sessionID, 2)
+
+	svc.taskParkedStatesMu.Lock()
+	got := svc.taskMemberRevisionFloor[taskID][sessionID]
+	svc.taskParkedStatesMu.Unlock()
+
+	if got != 5 {
+		t.Fatalf("expected the floor to stay at the higher revision 5, got %d — an older, out-of-order eviction must never regress it", got)
+	}
+}

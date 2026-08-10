@@ -695,6 +695,26 @@ type Service struct {
 	// separate snapshot-on-drop step is needed. Deleted alongside
 	// taskParkedStates and taskParkedRevisionFloor in handleTaskDeleted.
 	taskMemberRevisionFloor map[string]map[string]uint64
+	// taskDeletedTombstones records, per task ID, when handleTaskDeleted last
+	// tore down that task's parked-projection state (Review round 11,
+	// SEC-001). removeTaskParkedMember's row-absent branch checks this
+	// before writing a fresh tombstone into taskMemberRevisionFloor: without
+	// it, a task's async cleanup goroutine — which deleteTaskWithReasonAndDBDelete
+	// always starts AFTER its synchronous task.deleted publish, i.e. after
+	// handleTaskDeleted has already run — can stop a session that once
+	// attested a detached launch and call removeTaskParkedMember for a
+	// taskID handleTaskDeleted just cleared, recreating the exact entry that
+	// was just deleted. Since handleTaskDeleted fires exactly once per task
+	// and task IDs are never reused, an unconditional write there would leak
+	// one map entry per deleted task with a background-attesting session for
+	// the life of the process. Entries older than
+	// taskDeletedTombstoneRetention are lazily evicted on the next
+	// handleTaskDeleted call, so this stays bounded rather than growing with
+	// every task ever deleted — mirrors the completedExecutions /
+	// executionTeardownClaims grace-window idiom above, sized past
+	// runTaskCleanup's 60s cleanup-context timeout. Guarded by
+	// taskParkedStatesMu like the maps above.
+	taskDeletedTombstones map[string]time.Time
 
 	// foregroundActivity tracks, per session, whether the open turn is actively
 	// generating in the foreground or only waiting on a spawned background task

@@ -4,6 +4,7 @@ package orchestrator
 import (
 	"context"
 	"errors"
+	"time"
 
 	"go.uber.org/zap"
 
@@ -31,6 +32,15 @@ func toolKindToMessageType(normalized *streams.NormalizedPayload) string {
 
 // Event handlers
 
+// taskDeletedTombstoneRetention bounds how long removeTaskParkedMember's
+// row-absent branch treats a taskID as "already deleted by handleTaskDeleted"
+// and skips writing a revision tombstone into taskMemberRevisionFloor (Review
+// round 11, SEC-001). Sized generously past runTaskCleanup's 60s
+// cleanup-context timeout — the worst-case delay before the async
+// task-cleanup goroutine's session-stop path can reach removeTaskParkedMember
+// for this task — mirroring completedExecutionRetention's grace window.
+const taskDeletedTombstoneRetention = 10 * time.Minute
+
 func (s *Service) handleTaskDeleted(ctx context.Context, data watcher.TaskEventData) {
 	s.scheduler.RemoveTask(data.TaskID)
 	// Backstop GC for taskParkedStates: per-session deletion already drops
@@ -48,6 +58,26 @@ func (s *Service) handleTaskDeleted(ctx context.Context, data watcher.TaskEventD
 	delete(s.taskParkedStates, data.TaskID)
 	delete(s.taskParkedRevisionFloor, data.TaskID)
 	delete(s.taskMemberRevisionFloor, data.TaskID)
+	// Record the tombstone (Review round 11, SEC-001) so a later, async
+	// removeTaskParkedMember call for this same taskID — reached when task
+	// cleanup stops a session that once attested a detached launch, which
+	// always runs after this synchronous handler per
+	// deleteTaskWithReasonAndDBDelete's publish-then-cleanup ordering — does
+	// not recreate taskMemberRevisionFloor[data.TaskID] with no code path
+	// left to ever clear it again. Swept for expiry here, on the write side,
+	// so the map stays bounded to roughly the deletions in the last
+	// taskDeletedTombstoneRetention window rather than every task ever
+	// deleted in the process's lifetime.
+	if s.taskDeletedTombstones == nil {
+		s.taskDeletedTombstones = make(map[string]time.Time)
+	}
+	now := time.Now()
+	for id, deletedAt := range s.taskDeletedTombstones {
+		if now.Sub(deletedAt) > taskDeletedTombstoneRetention {
+			delete(s.taskDeletedTombstones, id)
+		}
+	}
+	s.taskDeletedTombstones[data.TaskID] = now
 	s.taskParkedStatesMu.Unlock()
 }
 

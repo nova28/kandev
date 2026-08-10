@@ -525,6 +525,19 @@ func (s *Service) removeTaskParkedMember(ctx context.Context, taskID, sessionID 
 	s.taskParkedStatesMu.Lock()
 	ts, ok := s.taskParkedStates[taskID]
 	if !ok {
+		// The task itself may already be gone: handleTaskDeleted's
+		// synchronous cleanup always runs before the async task-cleanup
+		// goroutine that stops sessions and can reach this call, so a
+		// tombstone recorded there means nothing will ever read a floor
+		// entry for this taskID again — writing one here would leak it for
+		// the life of the process (Review round 11, SEC-001). Checked before
+		// the row-absent tombstone write below, not instead of it: this task
+		// may equally never have had a row at all, which is the legitimate
+		// case that write still exists to serve.
+		if _, taskDeleted := s.taskDeletedTombstones[taskID]; taskDeleted {
+			s.taskParkedStatesMu.Unlock()
+			return
+		}
 		// No live row exists to update — but this session's own eviction
 		// still needs to be recorded, or a later, delayed write for the
 		// SAME session (descheduled before this eviction, resuming after)
