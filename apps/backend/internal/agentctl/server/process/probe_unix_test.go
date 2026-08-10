@@ -40,11 +40,13 @@ func spawnSleepChild(t *testing.T) (parentPID int) {
 func TestWalkProcessTree_Live(t *testing.T) {
 	turnRef := time.Now().Add(-500 * time.Millisecond) // turn started slightly before shell spawned
 	parentPID := spawnSleepChild(t)
+	root, ok := captureRootIdentity(parentPID)
+	require.True(t, ok, "expected to capture the spawned parent's root identity")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result := walkProcessTree(ctx, parentPID, turnRef)
+	result := walkProcessTree(ctx, root, turnRef)
 	assert.Equal(t, probeResultLive, result, "descendant born after turn ref should be live")
 }
 
@@ -52,6 +54,8 @@ func TestWalkProcessTree_Live(t *testing.T) {
 // the turn reference time is not counted and the probe returns "settled".
 func TestWalkProcessTree_PreExisting(t *testing.T) {
 	parentPID := spawnSleepChild(t)
+	root, ok := captureRootIdentity(parentPID)
+	require.True(t, ok, "expected to capture the spawned parent's root identity")
 
 	// Turn reference time is 10 seconds in the future, so the sleep child
 	// (born now) is older than turnRef - 2s and does not qualify as "live".
@@ -60,7 +64,7 @@ func TestWalkProcessTree_PreExisting(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result := walkProcessTree(ctx, parentPID, futureRef)
+	result := walkProcessTree(ctx, root, futureRef)
 	assert.Equal(t, probeResultSettled, result, "pre-existing descendant should not count")
 }
 
@@ -70,6 +74,11 @@ func TestWalkProcessTree_Settled(t *testing.T) {
 	// Spawn a shell that exits immediately (no long-lived children).
 	cmd := exec.Command("/bin/sh", "-c", "true")
 	require.NoError(t, cmd.Start())
+	// Capture identity while the process is still at least a zombie entry
+	// (before Wait() reaps it) — mirrors production, where identity is
+	// captured once at launch and the walk can happen well after exit.
+	root, ok := captureRootIdentity(cmd.Process.Pid)
+	require.True(t, ok, "expected to capture root identity before the process is reaped")
 	require.NoError(t, cmd.Wait())
 
 	// The shell has exited, but its pid may linger briefly in the process table
@@ -81,7 +90,7 @@ func TestWalkProcessTree_Settled(t *testing.T) {
 	defer cancel()
 
 	// Either the pid is already gone (unknown) or settled. Never "live".
-	result := walkProcessTree(ctx, cmd.Process.Pid, turnRef)
+	result := walkProcessTree(ctx, root, turnRef)
 	assert.NotEqual(t, probeResultLive, result, "exited process should not be live")
 }
 
@@ -92,20 +101,46 @@ func TestWalkProcessTree_Unknown(t *testing.T) {
 	turnRef := time.Now()
 
 	t.Run("zero_pid", func(t *testing.T) {
-		result := walkProcessTree(ctx, 0, turnRef)
+		result := walkProcessTree(ctx, rootIdentity{pid: 0}, turnRef)
 		assert.Equal(t, probeResultUnknown, result)
 	})
 
 	t.Run("negative_pid", func(t *testing.T) {
-		result := walkProcessTree(ctx, -1, turnRef)
+		result := walkProcessTree(ctx, rootIdentity{pid: -1}, turnRef)
 		assert.Equal(t, probeResultUnknown, result)
 	})
 
 	t.Run("nonexistent_pid", func(t *testing.T) {
 		// PID 999999999 is virtually guaranteed not to exist.
-		result := walkProcessTree(ctx, 999999999, turnRef)
+		result := walkProcessTree(ctx, rootIdentity{pid: 999999999}, turnRef)
 		assert.Equal(t, probeResultUnknown, result)
 	})
+}
+
+// TestWalkProcessTree_RejectsReusedPID verifies D5: a root process is
+// identified by (pid, start time), never bare pid. A real, currently alive
+// process whose recorded identity does not match its actual current start
+// time — simulating what a PID-reuse race would look like from
+// walkProcessTree's point of view — must report "unknown", never walk that
+// process's descendants as if it were the originally recorded one.
+func TestWalkProcessTree_RejectsReusedPID(t *testing.T) {
+	parentPID := spawnSleepChild(t)
+	root, ok := captureRootIdentity(parentPID)
+	require.True(t, ok, "expected to capture the spawned parent's root identity")
+
+	// Corrupt the captured identity so it no longer matches the real,
+	// still-alive process at that PID — exactly what a stale identity
+	// captured for a since-exited-and-reused PID would look like.
+	stale := root
+	stale.startTicks = root.startTicks + 1_000_000
+	stale.startTime = root.startTime.Add(-24 * time.Hour)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	result := walkProcessTree(ctx, stale, time.Now().Add(-500*time.Millisecond))
+	assert.Equal(t, probeResultUnknown, result,
+		"a start-time mismatch on an otherwise-alive pid must report unknown, not walk its descendants")
 }
 
 // TestParseProbeEnvBudget verifies that non-positive values are rejected

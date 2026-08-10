@@ -19,6 +19,25 @@ const (
 	parkedProbeBudgetDefault = 250 * time.Millisecond
 )
 
+// rootIdentity pins a process to (pid, start time) per D5 ("a process is
+// identified by (pid, start time), never bare pid"), so walkProcessTree can
+// detect a reused PID instead of trusting a bare existence check. The
+// concrete comparison value is platform-specific — raw kernel
+// ticks-since-boot on Linux (startTicks), an absolute kernel
+// timeval-derived time.Time on Darwin (startTime) — captured once by
+// captureRootIdentity right after the process starts and compared later
+// against a fresh read of whatever process currently holds that PID.
+// Comparing each platform's native unit directly, rather than converting
+// both reads through a wall-clock boot-time anchor, avoids re-derivation
+// jitter between two independent reads of the same underlying value.
+// Platforms without a real implementation (captureRootIdentity always
+// returns ok=false) ignore this type entirely.
+type rootIdentity struct {
+	pid        int
+	startTicks int64
+	startTime  time.Time
+}
+
 // parseProbeEnvBudget reads KANDEV_PARKED_PROBE_BUDGET and rejects
 // non-positive values, logging a warning and returning the 250ms default in
 // that case (AC-81). log may be nil in tests.

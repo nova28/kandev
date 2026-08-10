@@ -15,6 +15,12 @@ import (
 // explicitly. Do not add a real Toolhelp32Snapshot walk here without also
 // updating the spec; the AC-80 truncate-down/inclusive->= rules and the
 // zombie-exclusion rule were written and tested only for Linux and Darwin.
-func walkProcessTree(_ context.Context, _ int, _ time.Time) string {
+func walkProcessTree(_ context.Context, _ rootIdentity, _ time.Time) string {
 	return probeResultUnknown
+}
+
+// captureRootIdentity always fails on Windows — see the walkProcessTree
+// comment above for why no real implementation exists here.
+func captureRootIdentity(_ int) (rootIdentity, bool) {
+	return rootIdentity{}, false
 }

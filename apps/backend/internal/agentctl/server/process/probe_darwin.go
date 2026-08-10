@@ -17,11 +17,25 @@ const darwinZombieState = 5
 // p_starttime timeval (spec: "Start-time source and resolution").
 const darwinStartTimeResolution = time.Microsecond
 
-// walkProcessTree walks all non-zombie descendants of rootPID and reports
+// captureRootIdentity reads pid's current kinfo_proc p_starttime, to be
+// compared later by walkProcessTree against a fresh read of whatever process
+// currently holds that PID (D5). p_starttime is a raw kernel timeval fixed
+// for the lifetime of the process, so re-reading it later for a still-alive
+// process returns the identical value with no jitter.
+func captureRootIdentity(pid int) (rootIdentity, bool) {
+	kp, err := unix.SysctlKinfoProc("kern.proc.pid", pid)
+	if err != nil {
+		return rootIdentity{}, false
+	}
+	tv := kp.Proc.P_starttime
+	return rootIdentity{pid: pid, startTime: time.Unix(tv.Sec, int64(tv.Usec)*1000)}, true
+}
+
+// walkProcessTree walks all non-zombie descendants of root and reports
 // whether any was born at or after turnRefTime, truncated down to
 // microsecond resolution before an inclusive comparison (D5, AC-80).
-func walkProcessTree(ctx context.Context, rootPID int, turnRefTime time.Time) string {
-	if rootPID <= 0 {
+func walkProcessTree(ctx context.Context, root rootIdentity, turnRefTime time.Time) string {
+	if root.pid <= 0 {
 		return probeResultUnknown
 	}
 	if ctx.Err() != nil {
@@ -53,8 +67,11 @@ func walkProcessTree(ctx context.Context, rootPID int, turnRefTime time.Time) st
 		}
 	}
 
-	// Verify rootPID is alive.
-	if _, ok := procs[rootPID]; !ok {
+	// D5: identify the root by (pid, start time), never bare pid — reject a
+	// reused PID whose current occupant's start time does not match what the
+	// caller recorded, rather than trusting bare existence.
+	rootInfo, ok := procs[root.pid]
+	if !ok || !rootInfo.startTime.Equal(root.startTime) {
 		return probeResultUnknown
 	}
 
@@ -71,8 +88,8 @@ func walkProcessTree(ctx context.Context, rootPID int, turnRefTime time.Time) st
 	// visited guards against a ppid cycle in the snapshot (e.g. a pid recycled
 	// mid-enumeration into its own descendant's slot) sending the walk into an
 	// unbounded loop instead of terminating on its own.
-	visited := map[int]bool{rootPID: true}
-	queue := append([]int(nil), children[rootPID]...)
+	visited := map[int]bool{root.pid: true}
+	queue := append([]int(nil), children[root.pid]...)
 	for len(queue) > 0 {
 		if ctx.Err() != nil {
 			return probeResultUnknown

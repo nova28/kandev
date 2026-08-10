@@ -31,6 +31,8 @@ import (
 // could occasionally cross into the next tick and flake.
 func TestWalkProcessTree_LinuxStartTimeSource(t *testing.T) {
 	parentPID := spawnSleepChild(t)
+	root, ok := captureRootIdentity(parentPID)
+	require.True(t, ok, "expected to capture the spawned parent's root identity")
 
 	childStart, ok := linuxChildStartTime(parentPID)
 	require.True(t, ok, "expected to find the spawned descendant under /proc")
@@ -41,7 +43,7 @@ func TestWalkProcessTree_LinuxStartTimeSource(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result := walkProcessTree(ctx, parentPID, turnRef)
+	result := walkProcessTree(ctx, root, turnRef)
 	assert.Equal(t, probeResultLive, result,
 		"a descendant in the same tick as turnRef, but numerically earlier before truncation, must report live")
 }

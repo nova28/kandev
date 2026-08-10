@@ -34,6 +34,10 @@ import (
 // there on ubuntu-latest/windows-latest — never silently absent.
 func TestWalkProcessTree_DarwinStartTimeSource(t *testing.T) {
 	parentPID := spawnSleepChild(t)
+	root, ok := captureRootIdentity(parentPID)
+	if !ok {
+		t.Skip("kern.proc.pid unavailable for the spawned parent")
+	}
 
 	childStart, err := darwinChildStartTime(parentPID)
 	if err != nil {
@@ -50,7 +54,7 @@ func TestWalkProcessTree_DarwinStartTimeSource(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result := walkProcessTree(ctx, parentPID, turnRef)
+	result := walkProcessTree(ctx, root, turnRef)
 	assert.Equal(t, probeResultLive, result,
 		"a descendant in the same microsecond tick as turnRef, but numerically earlier before truncation, must report live")
 }

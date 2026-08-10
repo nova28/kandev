@@ -68,14 +68,27 @@ func linuxCollectProcs(ctx context.Context, bootTime time.Time) (map[int]procEnt
 	return procs, true
 }
 
-// walkProcessTree walks all non-zombie descendants of rootPID and reports
+// captureRootIdentity reads pid's current /proc/<pid>/stat startTicks, to be
+// compared later by walkProcessTree against a fresh read of whatever process
+// currently holds that PID (D5). Ticks-since-boot is a raw kernel value
+// fixed for the lifetime of the process, so re-reading it later for a
+// still-alive process returns the identical value with no jitter.
+func captureRootIdentity(pid int) (rootIdentity, bool) {
+	stat, err := linuxReadStat(pid)
+	if err != nil {
+		return rootIdentity{}, false
+	}
+	return rootIdentity{pid: pid, startTicks: stat.startTicks}, true
+}
+
+// walkProcessTree walks all non-zombie descendants of root and reports
 // whether any was born at or after turnRefTime, truncated down to tick
 // resolution before an inclusive comparison (D5, AC-80). Start times are
 // read from /proc/<pid>/stat field 22 (ticks since boot) and converted to
 // wall-clock using a boot-time anchor read once per probe call, so every
 // descendant in one walk is compared against the same anchor instant.
-func walkProcessTree(ctx context.Context, rootPID int, turnRefTime time.Time) string {
-	if rootPID <= 0 {
+func walkProcessTree(ctx context.Context, root rootIdentity, turnRefTime time.Time) string {
+	if root.pid <= 0 {
 		return probeResultUnknown
 	}
 	if ctx.Err() != nil {
@@ -87,8 +100,11 @@ func walkProcessTree(ctx context.Context, rootPID int, turnRefTime time.Time) st
 		return probeResultUnknown
 	}
 
-	// Verify rootPID exists.
-	if _, err := os.Stat(fmt.Sprintf("/proc/%d", rootPID)); err != nil {
+	// D5: identify the root by (pid, start time), never bare pid — reject a
+	// reused PID whose current occupant's startTicks does not match what the
+	// caller recorded, rather than trusting bare existence.
+	rootStat, err := linuxReadStat(root.pid)
+	if err != nil || rootStat.startTicks != root.startTicks {
 		return probeResultUnknown
 	}
 
@@ -110,8 +126,8 @@ func walkProcessTree(ctx context.Context, rootPID int, turnRefTime time.Time) st
 	// visited guards against a ppid cycle in the snapshot (e.g. a pid recycled
 	// mid-enumeration into its own descendant's slot) sending the walk into an
 	// unbounded loop instead of terminating on its own.
-	visited := map[int]bool{rootPID: true}
-	queue := append([]int(nil), children[rootPID]...)
+	visited := map[int]bool{root.pid: true}
+	queue := append([]int(nil), children[root.pid]...)
 	for len(queue) > 0 {
 		if ctx.Err() != nil {
 			return probeResultUnknown

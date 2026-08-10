@@ -97,6 +97,15 @@ type Manager struct {
 	exitCode           atomic.Int32
 	exitErr            atomic.Value // error
 
+	// agentRootIdentity is the (pid, start time) identity captured once,
+	// right after the agent subprocess starts (D5: "a process is identified
+	// by (pid, start time), never bare pid"). ProbeProcessTree compares
+	// against a fresh read of whatever process currently holds that PID, so
+	// a PID reused by an unrelated process after the agent exits cannot be
+	// misattributed as the agent's still-live process tree. Holds a
+	// rootIdentity; zero value (unset) is a valid "capture failed" state.
+	agentRootIdentity atomic.Value
+
 	// Stderr buffering for error context
 	stderrBuffer    []string
 	stderrMu        sync.RWMutex
@@ -1110,6 +1119,15 @@ func (m *Manager) Start(ctx context.Context) error {
 		m.status.Store(StatusError)
 		return formatAgentStartError(err, m.cfg.AgentEnv)
 	}
+	// Capture the (pid, start time) identity immediately after Start()
+	// returns, before anything else can observe or act on this PID. A
+	// failed capture (unsupported platform, or a raced read of an
+	// already-exited process) leaves agentRootIdentity unset, and
+	// ProbeProcessTree treats that as "unknown" rather than falling back to
+	// a bare-PID check.
+	if identity, ok := captureRootIdentity(m.cmd.Process.Pid); ok {
+		m.agentRootIdentity.Store(identity)
+	}
 	processLifecycle, err := installProcessLifecycle(m.cmd)
 	if err != nil {
 		reapErr := killAndWaitStartedCommand(m.cmd)
@@ -1813,6 +1831,14 @@ func (m *Manager) ProbeProcessTree(ctx context.Context, acpSessionID string) str
 	if !ok {
 		return probeResultUnknown
 	}
+	root, ok := m.agentRootIdentity.Load().(rootIdentity)
+	if !ok || root.pid != pid {
+		// No captured identity, or it belongs to a different PID than the
+		// one currently recorded (e.g. capture failed on this platform, or
+		// a restart raced this read) — D5 forbids falling back to a bare
+		// PID walk.
+		return probeResultUnknown
+	}
 	turnRef := m.LastTurnStart()
 	if turnRef.IsZero() {
 		return probeResultUnknown
@@ -1820,7 +1846,7 @@ func (m *Manager) ProbeProcessTree(ctx context.Context, acpSessionID string) str
 	budget := parseProbeEnvBudget(m.logger)
 	probeCtx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
-	return walkProcessTree(probeCtx, pid, turnRef)
+	return walkProcessTree(probeCtx, root, turnRef)
 }
 
 func (m *Manager) agentProtocol() string {
