@@ -537,6 +537,30 @@ func taskResourceCleanupRetryDelayForAttempt(attempt int) time.Duration {
 	return taskResourceCleanupRetryDelays[attempt-1]
 }
 
+// TaskResourceCleanupMaxHorizon returns the worst-case wall-clock span
+// between a task resource cleanup job's first attempt and the moment no
+// further retryTaskResourceCleanupJob attempt can still be pending for it:
+// the sum of every entry in taskResourceCleanupRetryDelays (an attempt index
+// past the array's length reuses its last entry via
+// taskResourceCleanupRetryDelayForAttempt, so cumulative delay never exceeds
+// this sum), plus one taskResourceCleanupRetryDelay's worth of margin for
+// runTaskResourceCleanupWorker's own poll cadence between a retry becoming
+// due and the worker ticker picking it up.
+//
+// Exported (Review round 12, COR-001) so a caller sizing a grace window
+// against "how long could this job legitimately still be retrying before it
+// reaches a session's cleanup" — orchestrator's taskDeletedTombstoneRetention
+// is the first one — has one source of truth for the retry schedule instead
+// of duplicating or, as that fix originally did, guessing it against the
+// wrong code path.
+func TaskResourceCleanupMaxHorizon() time.Duration {
+	total := taskResourceCleanupRetryDelay
+	for _, d := range taskResourceCleanupRetryDelays {
+		total += d
+	}
+	return total
+}
+
 func detachedCleanupTransitionContext(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 }

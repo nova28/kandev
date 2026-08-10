@@ -11,6 +11,7 @@ import (
 	"github.com/kandev/kandev/internal/agentctl/types/streams"
 	"github.com/kandev/kandev/internal/orchestrator/watcher"
 	"github.com/kandev/kandev/internal/task/models"
+	taskservice "github.com/kandev/kandev/internal/task/service"
 )
 
 // Agent event type string constants.
@@ -35,11 +36,24 @@ func toolKindToMessageType(normalized *streams.NormalizedPayload) string {
 // taskDeletedTombstoneRetention bounds how long removeTaskParkedMember's
 // row-absent branch treats a taskID as "already deleted by handleTaskDeleted"
 // and skips writing a revision tombstone into taskMemberRevisionFloor (Review
-// round 11, SEC-001). Sized generously past runTaskCleanup's 60s
-// cleanup-context timeout — the worst-case delay before the async
-// task-cleanup goroutine's session-stop path can reach removeTaskParkedMember
-// for this task — mirroring completedExecutionRetention's grace window.
-const taskDeletedTombstoneRetention = 10 * time.Minute
+// round 11, SEC-001).
+//
+// CORRECTED — Review round 12, COR-001. This was originally a fixed
+// `10 * time.Minute`, justified as "past runTaskCleanup's 60s
+// cleanup-context timeout." That 60s figure only bounds the FAST path
+// (s.runAsyncTaskCleanup, taken when no durable cleanup job is persisted).
+// The standard production task-deletion path is the DURABLE, retried
+// cleanup job in internal/task/service/resource_cleanup_jobs.go —
+// resourceCleanups is unconditionally wired, so that path is not opt-in —
+// whose retries can legitimately span hours (1m, 5m, 15m, 1h, 3h, 6h, 12h).
+// A session-stop attempt that transiently fails and retries could call
+// removeTaskParkedMember well past the old 10-minute window; by then an
+// unrelated task's deletion had already swept this task's tombstone (the
+// sweep is lazy and wall-clock-only), silently reopening the exact leak
+// SEC-001 was raised to close. Derived from the durable job's own retry
+// schedule via TaskResourceCleanupMaxHorizon instead of a fixed guess, so
+// the two can never drift apart again.
+var taskDeletedTombstoneRetention = taskservice.TaskResourceCleanupMaxHorizon()
 
 func (s *Service) handleTaskDeleted(ctx context.Context, data watcher.TaskEventData) {
 	s.scheduler.RemoveTask(data.TaskID)

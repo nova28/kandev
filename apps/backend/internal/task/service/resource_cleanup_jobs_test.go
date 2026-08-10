@@ -1283,6 +1283,26 @@ func TestStartTaskResourceCleanupLeavesPendingJobForOwnedWorker(t *testing.T) {
 	taskSvc.StopTaskResourceCleanupWorker()
 }
 
+// TestTaskResourceCleanupMaxHorizon_MatchesRetrySchedule pins
+// TaskResourceCleanupMaxHorizon's value against the actual retry schedule
+// (Review round 12, COR-001) — orchestrator's taskDeletedTombstoneRetention
+// derives its grace window from this function, so a silent change to
+// taskResourceCleanupRetryDelays or taskResourceCleanupMaxAttempts that
+// shrinks the real cleanup horizon without this function keeping pace would
+// reopen SEC-001 without any test noticing.
+func TestTaskResourceCleanupMaxHorizon_MatchesRetrySchedule(t *testing.T) {
+	// 1m poll-cadence margin + 1m+5m+15m+1h+3h+6h+12h retry delays.
+	want := time.Minute + (time.Minute + 5*time.Minute + 15*time.Minute + time.Hour + 3*time.Hour + 6*time.Hour + 12*time.Hour)
+	if got := TaskResourceCleanupMaxHorizon(); got != want {
+		t.Fatalf("TaskResourceCleanupMaxHorizon() = %s, want %s", got, want)
+	}
+	// The 3rd retry (1m+5m+15m=21m) — the case that broke the old, wrongly
+	// derived 10-minute tombstone window — must fall well inside this bound.
+	if want <= 21*time.Minute {
+		t.Fatalf("TaskResourceCleanupMaxHorizon() = %s must exceed the 3rd-retry case (21m) it is meant to cover", want)
+	}
+}
+
 func seedCleanupTaskAndSession(t *testing.T, repo interface {
 	CreateWorkspace(context.Context, *models.Workspace) error
 	CreateWorkflow(context.Context, *models.Workflow) error

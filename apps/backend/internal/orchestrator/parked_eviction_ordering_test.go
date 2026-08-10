@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/kandev/kandev/internal/orchestrator/watcher"
@@ -645,4 +646,59 @@ func TestRemoveTaskParkedMember_RowAbsentFloorNeverRegresses(t *testing.T) {
 	if got != 5 {
 		t.Fatalf("expected the floor to stay at the higher revision 5, got %d — an older, out-of-order eviction must never regress it", got)
 	}
+}
+
+// TestRemoveTaskParkedMember_TombstoneSurvivesDurableRetryHorizon is Review
+// round 12's regression guard for COR-001: round 11's fix sized
+// taskDeletedTombstoneRetention (10 minutes) against runTaskCleanup's 60s
+// FAST-path timeout, but the standard production task-deletion path runs the
+// DURABLE, retried cleanup job instead (internal/task/service's
+// resourceCleanups is unconditionally wired), whose retry delays are
+// 1m, 5m, 15m, 1h, 3h, 6h, 12h — so a session-stop attempt that transiently
+// fails and retries can call removeTaskParkedMember tens of minutes to hours
+// after handleTaskDeleted ran, long past the old 10-minute window. By then an
+// unrelated task's deletion has already swept this task's tombstone (the
+// sweep is lazy and wall-clock-only), and the delayed call silently
+// recreates taskMemberRevisionFloor[taskID] — reopening the exact leak
+// SEC-001 was raised to close.
+//
+// This reproduces the 3rd-retry case (21 minutes: 1m + 5m + 15m), which is
+// already past the old 10-minute window but nowhere near the durable job's
+// real worst case. Uses testing/synctest (per apps/backend/AGENTS.md's
+// stated preference over time.Sleep) so the 21-minute advance is instant.
+func TestRemoveTaskParkedMember_TombstoneSurvivesDurableRetryHorizon(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		svc := createTestServiceWithScheduler(setupTestRepo(t), newMockStepGetter(), newMockTaskRepo(), &mockAgentManager{})
+		const taskID, otherTaskID, sessionID = "task-durable-retry", "task-unrelated-sweep-trigger", "session-durable-retry"
+
+		// Session parks — creates the task-level row and the shared
+		// memberRevision map that becomes taskMemberRevisionFloor[taskID].
+		svc.updateTaskParkedState(context.Background(), taskID, sessionID, true, 2)
+
+		// The task is deleted. handleTaskDeleted tears down its
+		// parked-projection state and records a tombstone for it.
+		svc.handleTaskDeleted(context.Background(), watcher.TaskEventData{TaskID: taskID})
+
+		// The durable cleanup job's 3rd retry attempt lands 21 minutes later
+		// — past the OLD, incorrectly-derived 10-minute tombstone window, but
+		// well inside the real worst-case retry horizon.
+		time.Sleep(21 * time.Minute)
+
+		// An unrelated task's deletion runs the lazy sweep — the only place
+		// taskDeletedTombstones entries are ever evicted.
+		svc.handleTaskDeleted(context.Background(), watcher.TaskEventData{TaskID: otherTaskID})
+
+		// The delayed removeTaskParkedMember call for the original,
+		// already-deleted task must still find its tombstone and skip the
+		// floor write.
+		svc.removeTaskParkedMember(context.Background(), taskID, sessionID, 3)
+
+		svc.taskParkedStatesMu.Lock()
+		_, floorRecreated := svc.taskMemberRevisionFloor[taskID]
+		svc.taskParkedStatesMu.Unlock()
+
+		if floorRecreated {
+			t.Fatal("expected taskMemberRevisionFloor[taskID] to stay absent 21 minutes after task deletion — the durable cleanup job's retry schedule can legitimately take far longer than the old 10-minute tombstone window, and a call landing after that window silently reopened SEC-001 (Review round 12, COR-001)")
+		}
+	})
 }
