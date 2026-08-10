@@ -21,7 +21,7 @@ describe("sessionStatusTooltip", () => {
         { permission: false, clarification: false },
         "background",
       ),
-    ).toBe("Background running");
+    ).toBe("Background work is running");
   });
 
   it.each([
@@ -39,7 +39,7 @@ describe("sessionStatusTooltip", () => {
     ).toBe("Complete");
   });
 
-  it("labels a parked session as background-running (AC-51a)", () => {
+  it("labels a parked session as background-running, through the SAME key BackgroundWorkTaskIcon uses (AC-51a)", () => {
     expect(
       sessionStatusTooltip(
         "WAITING_FOR_INPUT",
@@ -47,7 +47,7 @@ describe("sessionStatusTooltip", () => {
         null,
         true,
       ),
-    ).toBe("Background running");
+    ).toBe("Background work is running");
   });
 
   it("does not show background-running for a non-parked session with no foreground activity", () => {

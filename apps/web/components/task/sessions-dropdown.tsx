@@ -74,8 +74,13 @@ export function sessionStatusTooltip(
   const canRequestInput = state === "RUNNING" || state === "WAITING_FOR_INPUT";
   if (canRequestInput && pending.permission) return t("task:sessionStatusPermissionRequested");
   if (canRequestInput && pending.clarification) return t("task:sessionStatusWaitingForInput");
+  // AC-51a: resolves through the same task:backgroundWorkIsRunning key
+  // BackgroundWorkTaskIcon carries, for BOTH the parked and the pre-existing
+  // foreground_activity === "background" case — mirroring the icon ladder
+  // (getSessionStateIconConfig), which already maps both to the same
+  // SESSION_BACKGROUND_ICON. Icon and tooltip text must never disagree.
   if (canRequestInput && (parkedOnBackgroundWork || foregroundActivity === "background"))
-    return t("task:sessionStatusBackgroundRunning");
+    return t("task:backgroundWorkIsRunning");
   return t(STATUS_LABEL_KEYS[mapSessionStatus(state)]);
 }
 
