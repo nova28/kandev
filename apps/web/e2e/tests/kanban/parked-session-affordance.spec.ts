@@ -1,13 +1,14 @@
 import { test, expect } from "../../fixtures/test-base";
 import { KanbanPage } from "../../pages/kanban-page";
+import { SessionPage } from "../../pages/session-page";
 
 /**
- * Parked-session affordance (AC-58, AC-73a, AC-52).
+ * Parked-session affordance (AC-23, AC-58, AC-73a, AC-52).
  *
  * A session that settled to WAITING_FOR_INPUT while a background shell
- * workload is still live is "parked". The board card and task-list row must
- * render `data-testid="task-state-background-running"` rather than the plain
- * WAITING_FOR_INPUT question-mark icon.
+ * workload is still live is "parked". The board card, the sidebar task list,
+ * and the task-list row must render `data-testid="task-state-background-running"`
+ * rather than the plain WAITING_FOR_INPUT question-mark icon.
  *
  * Backend plumbing is not exercised here — deterministically driving a real
  * detached background process through the launch recogniser and liveness
@@ -20,19 +21,40 @@ import { KanbanPage } from "../../pages/kanban-page";
  * `useState` seeded from the `GET /api/v1/workspaces/:id/tasks` response — so
  * the list-row test intercepts that response instead.
  */
+type E2EStoreState = {
+  kanban: { tasks: Array<Record<string, unknown>> };
+  kanbanMulti: { snapshots: Record<string, { tasks: Array<Record<string, unknown>> }> };
+};
+
 type E2EStoreWindow = Window & {
   __KANDEV_E2E_STORE__?: {
-    getState: () => {
-      kanbanMulti: { snapshots: Record<string, { tasks: Array<Record<string, unknown>> }> };
-    };
-    setState: (
-      updater: (state: {
-        kanbanMulti: { snapshots: Record<string, { tasks: Array<Record<string, unknown>> }> };
-      }) => void,
-    ) => void;
+    getState: () => E2EStoreState;
+    setState: (updater: (state: E2EStoreState) => Partial<E2EStoreState> | void) => void;
   };
 };
 
+/**
+ * Immutably updates the task in state.kanbanMulti.snapshots[workflowId].tasks
+ * (what the board card reads) AND its counterpart in state.kanban.tasks (the
+ * "active workflow" slice). Both are necessary for the sidebar:
+ * aggregateSidebarTasks (task-session-sidebar-aggregate.ts) overlays
+ * state.kanban.tasks on top of the snapshot as an "active kanban fallback",
+ * preferring whichever entry is newer by statusSummary.revision/updatedAt —
+ * so a snapshot-only injection is silently overwritten by the unparked
+ * active-slice entry the moment the sidebar aggregates. Builds fresh array
+ * and object references at every level touched (rather than mutating items
+ * in place) so every Zustand selector — however granular — observes the
+ * change; a granular selector like `state.kanban.tasks` bails out on an
+ * unchanged reference even when the object it points at was mutated in place.
+ *
+ * Also sets parkedRevision to a sentinel far above anything a real backend
+ * would produce (the session was never actually parked server-side, so any
+ * background snapshot refetch — useAllWorkflowSnapshots polls / refocuses —
+ * carries the real parkedRevision, still 0). Without this, resolveParkedTriple
+ * (lib/kanban/parked-projection.ts)'s D1 discard rule sees the refetch's
+ * revision (0) as >= this injection's own unset revision (0) and the "fresh"
+ * unparked value silently wins the race, discarding the injection entirely.
+ */
 async function injectParkedBoardTask(
   page: import("@playwright/test").Page,
   workflowId: string,
@@ -42,13 +64,31 @@ async function injectParkedBoardTask(
     ({ workflowId, taskId }) => {
       const store = (window as E2EStoreWindow).__KANDEV_E2E_STORE__;
       if (!store) throw new Error("E2E store bridge missing");
+      const parkTask = (t: Record<string, unknown>) =>
+        t.id === taskId
+          ? {
+              ...t,
+              state: "WAITING_FOR_INPUT",
+              parkedOnBackgroundWork: true,
+              parkedRevision: Number.MAX_SAFE_INTEGER,
+            }
+          : t;
       store.setState((state) => {
         const snapshot = state.kanbanMulti.snapshots[workflowId];
         if (!snapshot) throw new Error(`No kanbanMulti snapshot for workflow ${workflowId}`);
-        const task = snapshot.tasks.find((t) => t.id === taskId);
-        if (!task) throw new Error(`Task ${taskId} not found in kanbanMulti snapshot`);
-        task.state = "WAITING_FOR_INPUT";
-        task.parkedOnBackgroundWork = true;
+        if (!snapshot.tasks.some((t) => t.id === taskId)) {
+          throw new Error(`Task ${taskId} not found in kanbanMulti snapshot`);
+        }
+        return {
+          kanban: { ...state.kanban, tasks: state.kanban.tasks.map(parkTask) },
+          kanbanMulti: {
+            ...state.kanbanMulti,
+            snapshots: {
+              ...state.kanbanMulti.snapshots,
+              [workflowId]: { ...snapshot, tasks: snapshot.tasks.map(parkTask) },
+            },
+          },
+        };
       });
     },
     { workflowId, taskId },
@@ -110,6 +150,40 @@ test.describe("Parked-session affordance", () => {
     // not the question-mark icon.
     await expect(card.getByTestId("task-state-background-running")).toBeVisible({ timeout: 5_000 });
     await expect(card.getByTestId("task-state-waiting-for-input")).not.toBeVisible();
+  });
+
+  // AC-23: TaskRowItem's <TaskItem> call is the app's only production call
+  // site for the sidebar/mobile task switcher's icon resolver — Review round
+  // 6, Build round 9 fixed it never passing `parkedOnBackgroundWork` through,
+  // which a component test rendering TaskItem directly (task-item.test.tsx)
+  // could not catch because it bypasses TaskRowItem entirely. This is the
+  // live-DOM regression guard for that exact wiring path.
+  test("sidebar task list shows background-running icon when task is parked (AC-23)", async ({
+    testPage,
+    apiClient,
+    seedData,
+  }) => {
+    const task = await apiClient.createTask(seedData.workspaceId, "Parked Sidebar Test", {
+      workflow_id: seedData.workflowId,
+      workflow_step_id: seedData.startStepId,
+    });
+
+    const kanban = new KanbanPage(testPage);
+    await kanban.goto();
+
+    const session = new SessionPage(testPage);
+    const sidebarRow = session.sidebarTaskItem("Parked Sidebar Test");
+    await expect(sidebarRow).toBeVisible({ timeout: 10_000 });
+
+    // Same store slice the sidebar's useWorkspaceSidebarTasks aggregates from
+    // (state.kanbanMulti.snapshots), so this injection reaches both the board
+    // card and the sidebar row.
+    await injectParkedBoardTask(testPage, seedData.workflowId, task.id);
+
+    await expect(sidebarRow.getByTestId("task-state-background-running")).toBeVisible({
+      timeout: 5_000,
+    });
+    await expect(sidebarRow.getByTestId("task-state-waiting-for-input")).not.toBeVisible();
   });
 
   test("task list row shows background-running icon when task is parked (AC-73a)", async ({
