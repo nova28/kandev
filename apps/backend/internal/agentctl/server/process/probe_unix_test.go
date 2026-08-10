@@ -46,7 +46,7 @@ func TestWalkProcessTree_Live(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result := walkProcessTree(ctx, root, turnRef)
+	result := walkProcessTree(ctx, root, newTurnStartMarker(turnRef))
 	assert.Equal(t, probeResultLive, result, "descendant born after turn ref should be live")
 }
 
@@ -64,7 +64,7 @@ func TestWalkProcessTree_PreExisting(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result := walkProcessTree(ctx, root, futureRef)
+	result := walkProcessTree(ctx, root, newTurnStartMarker(futureRef))
 	assert.Equal(t, probeResultSettled, result, "pre-existing descendant should not count")
 }
 
@@ -90,7 +90,7 @@ func TestWalkProcessTree_Settled(t *testing.T) {
 	defer cancel()
 
 	// Either the pid is already gone (unknown) or settled. Never "live".
-	result := walkProcessTree(ctx, root, turnRef)
+	result := walkProcessTree(ctx, root, newTurnStartMarker(turnRef))
 	assert.NotEqual(t, probeResultLive, result, "exited process should not be live")
 }
 
@@ -100,19 +100,21 @@ func TestWalkProcessTree_Unknown(t *testing.T) {
 	ctx := context.Background()
 	turnRef := time.Now()
 
+	marker := newTurnStartMarker(turnRef)
+
 	t.Run("zero_pid", func(t *testing.T) {
-		result := walkProcessTree(ctx, rootIdentity{pid: 0}, turnRef)
+		result := walkProcessTree(ctx, rootIdentity{pid: 0}, marker)
 		assert.Equal(t, probeResultUnknown, result)
 	})
 
 	t.Run("negative_pid", func(t *testing.T) {
-		result := walkProcessTree(ctx, rootIdentity{pid: -1}, turnRef)
+		result := walkProcessTree(ctx, rootIdentity{pid: -1}, marker)
 		assert.Equal(t, probeResultUnknown, result)
 	})
 
 	t.Run("nonexistent_pid", func(t *testing.T) {
 		// PID 999999999 is virtually guaranteed not to exist.
-		result := walkProcessTree(ctx, rootIdentity{pid: 999999999}, turnRef)
+		result := walkProcessTree(ctx, rootIdentity{pid: 999999999}, marker)
 		assert.Equal(t, probeResultUnknown, result)
 	})
 }
@@ -138,7 +140,7 @@ func TestWalkProcessTree_RejectsReusedPID(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result := walkProcessTree(ctx, stale, time.Now().Add(-500*time.Millisecond))
+	result := walkProcessTree(ctx, stale, newTurnStartMarker(time.Now().Add(-500*time.Millisecond)))
 	assert.Equal(t, probeResultUnknown, result,
 		"a start-time mismatch on an otherwise-alive pid must report unknown, not walk its descendants")
 }

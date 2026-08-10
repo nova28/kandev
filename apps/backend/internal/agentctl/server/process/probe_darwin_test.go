@@ -54,7 +54,7 @@ func TestWalkProcessTree_DarwinStartTimeSource(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result := walkProcessTree(ctx, root, turnRef)
+	result := walkProcessTree(ctx, root, newTurnStartMarker(turnRef))
 	assert.Equal(t, probeResultLive, result,
 		"a descendant in the same microsecond tick as turnRef, but numerically earlier before truncation, must report live")
 }

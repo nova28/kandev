@@ -43,9 +43,40 @@ func TestWalkProcessTree_LinuxStartTimeSource(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result := walkProcessTree(ctx, root, turnRef)
+	result := walkProcessTree(ctx, root, newTurnStartMarker(turnRef))
 	assert.Equal(t, probeResultLive, result,
 		"a descendant in the same tick as turnRef, but numerically earlier before truncation, must report live")
+}
+
+// TestNewTurnStartMarker_ComputesBootTicksOnce is the regression guard for
+// Review round 6's clock-domain finding: a prior implementation stored the
+// turn start as a raw wall-clock time.Time and reconverted every
+// descendant's ticks into wall time using a FRESH boot anchor read at probe
+// time — the direction the spec's clock-domain rule (docs/specs/
+// disambiguate-waiting/spec.md, "The clock DOMAIN, stated per platform")
+// forbids, because a wall-clock adjustment between stamp and probe shifts
+// the anchor and can push an in-turn descendant before the (re-derived)
+// turn start. This test pins the fix's conversion arithmetic directly:
+// newTurnStartMarker must convert the wall-clock stamp into boot-relative
+// ticks immediately, using the boot anchor read at that same call — so
+// round-tripping a wall time built from a known tick offset off the live
+// boot anchor reproduces that exact tick count, truncated DOWN (AC-80's
+// "error always falls toward live" rule), with no later re-derivation step
+// in the picture at all.
+func TestNewTurnStartMarker_ComputesBootTicksOnce(t *testing.T) {
+	bootTime, ok := linuxBootTime()
+	require.True(t, ok, "expected /proc/uptime to be readable in CI")
+
+	const wantTicks = int64(12345)
+	// Land 4ms into the tick so truncation must discard the remainder,
+	// proving the conversion truncates DOWN rather than to the nearest tick.
+	wallTime := bootTime.Add(time.Duration(wantTicks)*linuxProcStatResolution + 4*time.Millisecond)
+
+	marker := newTurnStartMarker(wallTime)
+	require.True(t, marker.hasBootTicks, "expected a live boot anchor to produce hasBootTicks=true")
+	assert.Equal(t, wantTicks, marker.bootTicks,
+		"boot ticks must be the tick count as of newTurnStartMarker's own call, truncated down, not re-derived later")
+	assert.Equal(t, wallTime, marker.wallTime)
 }
 
 // linuxChildStartTime finds the direct child of parentPID under /proc and

@@ -223,12 +223,15 @@ type Manager struct {
 	lifetimeCtx      context.Context
 	lifetimeCancel   context.CancelFunc
 	mainReapPending  atomic.Bool
-	// lastPromptAt stores the unix-nanosecond timestamp of the most recent
-	// agent.prompt arrival. Zero means no prompt has been received yet.
-	// Written by RecordTurnStart (called from the ACP adapter's turn_started
-	// barrier callback); read by ProbeProcessTree. Uses atomic to avoid
-	// holding mu.
-	lastPromptAt atomic.Int64
+	// lastTurnStartMarker stores the turnStartMarker computed at the most
+	// recent agent.prompt arrival — including any platform-specific
+	// boot-tick conversion done once, at stamp time (D5, AC-80's
+	// clock-domain rule; see turnStartMarker's doc comment). Zero value
+	// (unset atomic.Value) means no prompt has been received yet. Written by
+	// RecordTurnStart (called from the ACP adapter's turn_started barrier
+	// callback); read by ProbeProcessTree and LastTurnStart. Uses atomic to
+	// avoid holding mu.
+	lastTurnStartMarker atomic.Value
 	// stopChClosed guards close(stopCh), which is the only part of teardown
 	// that is not naturally idempotent. It is reset wherever stopCh itself is
 	// created so the flag always describes the current channel — a Start that
@@ -1793,17 +1796,24 @@ func (m *Manager) agentPID() int {
 // anywhere else: a stamp without its matching event is exactly the drift
 // that guarantee exists to prevent.
 func (m *Manager) RecordTurnStart(t time.Time) {
-	m.lastPromptAt.Store(t.UnixNano())
+	m.lastTurnStartMarker.Store(newTurnStartMarker(t))
 }
 
 // LastTurnStart returns the timestamp of the most recent agent.prompt arrival.
 // Returns the zero time when no prompt has been received yet.
 func (m *Manager) LastTurnStart() time.Time {
-	ns := m.lastPromptAt.Load()
-	if ns == 0 {
-		return time.Time{}
+	return m.lastTurnStartMarkerValue().wallTime
+}
+
+// lastTurnStartMarkerValue returns the turnStartMarker recorded by the most
+// recent RecordTurnStart call, or the zero marker when none has been
+// recorded yet.
+func (m *Manager) lastTurnStartMarkerValue() turnStartMarker {
+	v, ok := m.lastTurnStartMarker.Load().(turnStartMarker)
+	if !ok {
+		return turnStartMarker{}
 	}
-	return time.Unix(0, ns)
+	return v
 }
 
 // AgentPID returns the PID of the agent subprocess for the given ACP session ID.
@@ -1839,14 +1849,14 @@ func (m *Manager) ProbeProcessTree(ctx context.Context, acpSessionID string) str
 		// PID walk.
 		return probeResultUnknown
 	}
-	turnRef := m.LastTurnStart()
-	if turnRef.IsZero() {
+	marker := m.lastTurnStartMarkerValue()
+	if marker.isZero() {
 		return probeResultUnknown
 	}
 	budget := parseProbeEnvBudget(m.logger)
 	probeCtx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
-	return walkProcessTree(probeCtx, root, turnRef)
+	return walkProcessTree(probeCtx, root, marker)
 }
 
 func (m *Manager) agentProtocol() string {

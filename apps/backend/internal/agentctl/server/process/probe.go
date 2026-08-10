@@ -38,6 +38,32 @@ type rootIdentity struct {
 	startTime  time.Time
 }
 
+// turnStartMarker pins the turn-start instant for the descendant-liveness
+// comparison, captured once at RecordTurnStart time. Concrete fields are
+// platform-specific, mirroring rootIdentity above: wallTime is the raw
+// stamp, used directly by platforms that compare in the wall-clock domain
+// (Darwin, whose p_starttime is already wall-clock). bootTicks/hasBootTicks
+// are Linux-only — computed once, at newTurnStartMarker (stamp) time, from
+// the boot anchor read at that same moment, so the comparison at probe time
+// never re-reads a boot anchor and re-derives every descendant's apparent
+// start. Re-deriving at probe time is the direction the spec's clock-domain
+// rule forbids (docs/specs/disambiguate-waiting/spec.md, "The clock DOMAIN,
+// stated per platform"): a wall-clock adjustment between stamp and probe
+// would shift the anchor and could push an in-turn descendant before the
+// (re-derived) turn start, flipping a live workload to falsely "settled".
+// Platforms that never populate bootTicks compare in the wall domain and
+// ignore it entirely.
+type turnStartMarker struct {
+	wallTime     time.Time
+	bootTicks    int64
+	hasBootTicks bool
+}
+
+// isZero reports whether no turn has been recorded yet.
+func (m turnStartMarker) isZero() bool {
+	return m.wallTime.IsZero()
+}
+
 // parseProbeEnvBudget reads KANDEV_PARKED_PROBE_BUDGET and rejects
 // non-positive values, logging a warning and returning the 250ms default in
 // that case (AC-81). log may be nil in tests.

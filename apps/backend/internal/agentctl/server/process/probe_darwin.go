@@ -31,10 +31,18 @@ func captureRootIdentity(pid int) (rootIdentity, bool) {
 	return rootIdentity{pid: pid, startTime: time.Unix(tv.Sec, int64(tv.Usec)*1000)}, true
 }
 
+// newTurnStartMarker records the turn-start wall-clock stamp directly:
+// Darwin's p_starttime is already wall-clock (no boot-tick domain to
+// bridge), so no anchor conversion is needed — see turnStartMarker's doc
+// comment.
+func newTurnStartMarker(t time.Time) turnStartMarker {
+	return turnStartMarker{wallTime: t}
+}
+
 // walkProcessTree walks all non-zombie descendants of root and reports
-// whether any was born at or after turnRefTime, truncated down to
+// whether any was born at or after the turn start, truncated down to
 // microsecond resolution before an inclusive comparison (D5, AC-80).
-func walkProcessTree(ctx context.Context, root rootIdentity, turnRefTime time.Time) string {
+func walkProcessTree(ctx context.Context, root rootIdentity, marker turnStartMarker) string {
 	if root.pid <= 0 {
 		return probeResultUnknown
 	}
@@ -84,7 +92,7 @@ func walkProcessTree(ctx context.Context, root rootIdentity, turnRefTime time.Ti
 	// D5/AC-80: truncate the turn start down to source resolution before an
 	// inclusive comparison, so a process born in the same microsecond tick
 	// counts as in-turn — the error always falls toward "live".
-	threshold := turnRefTime.Truncate(darwinStartTimeResolution)
+	threshold := marker.wallTime.Truncate(darwinStartTimeResolution)
 	// visited guards against a ppid cycle in the snapshot (e.g. a pid recycled
 	// mid-enumeration into its own descendant's slot) sending the walk into an
 	// unbounded loop instead of terminating on its own.

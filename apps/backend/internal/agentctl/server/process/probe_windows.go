@@ -15,7 +15,7 @@ import (
 // explicitly. Do not add a real Toolhelp32Snapshot walk here without also
 // updating the spec; the AC-80 truncate-down/inclusive->= rules and the
 // zombie-exclusion rule were written and tested only for Linux and Darwin.
-func walkProcessTree(_ context.Context, _ rootIdentity, _ time.Time) string {
+func walkProcessTree(_ context.Context, _ rootIdentity, _ turnStartMarker) string {
 	return probeResultUnknown
 }
 
@@ -23,4 +23,11 @@ func walkProcessTree(_ context.Context, _ rootIdentity, _ time.Time) string {
 // comment above for why no real implementation exists here.
 func captureRootIdentity(_ int) (rootIdentity, bool) {
 	return rootIdentity{}, false
+}
+
+// newTurnStartMarker records the wall-clock stamp only; Windows never
+// populates bootTicks since walkProcessTree always answers unknown here
+// regardless.
+func newTurnStartMarker(t time.Time) turnStartMarker {
+	return turnStartMarker{wallTime: t}
 }

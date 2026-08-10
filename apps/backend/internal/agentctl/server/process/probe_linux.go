@@ -23,21 +23,22 @@ const linuxClockTicksPerSecond = 100
 // (D5/AC-80's "source resolution").
 var linuxProcStatResolution = time.Second / linuxClockTicksPerSecond
 
-// procEntry is one /proc/<pid>/stat snapshot, resolved to a wall-clock start
-// time against a single boot-time anchor so every entry in one walk is
-// internally comparable.
+// procEntry is one /proc/<pid>/stat snapshot, holding the raw kernel
+// ticks-since-boot start time. Comparisons stay entirely in this tick
+// domain (see turnStartMarker) rather than converting through a wall-clock
+// boot-time anchor, so no per-walk anchor read is needed at all.
 type procEntry struct {
-	ppid      int
-	startTime time.Time
-	zombie    bool
+	ppid       int
+	startTicks int64
+	zombie     bool
 }
 
 // linuxCollectProcs snapshots every currently-visible /proc/<pid> entry into
-// a (ppid, wall-clock start time, zombie) map, resolved against bootTime.
-// Returns ok=false on a hard read failure or context cancellation; entries
-// this process can no longer read (raced exit, permission) are skipped
-// rather than failing the whole snapshot.
-func linuxCollectProcs(ctx context.Context, bootTime time.Time) (map[int]procEntry, bool) {
+// a (ppid, ticks-since-boot, zombie) map. Returns ok=false on a hard read
+// failure or context cancellation; entries this process can no longer read
+// (raced exit, permission) are skipped rather than failing the whole
+// snapshot.
+func linuxCollectProcs(ctx context.Context) (map[int]procEntry, bool) {
 	entries, err := os.ReadDir("/proc")
 	if err != nil {
 		return nil, false
@@ -60,12 +61,30 @@ func linuxCollectProcs(ctx context.Context, bootTime time.Time) (map[int]procEnt
 			continue
 		}
 		procs[pid] = procEntry{
-			ppid:      stat.ppid,
-			startTime: bootTime.Add(time.Duration(stat.startTicks) * time.Second / linuxClockTicksPerSecond),
-			zombie:    stat.state == "Z",
+			ppid:       stat.ppid,
+			startTicks: stat.startTicks,
+			zombie:     stat.state == "Z",
 		}
 	}
 	return procs, true
+}
+
+// newTurnStartMarker converts a wall-clock turn-start stamp into
+// boot-relative ticks ONCE, using the boot anchor read at this same moment
+// (D5, AC-80's clock-domain rule) — RecordTurnStart calls this immediately
+// at stamp time, so no later probe ever re-reads a boot anchor or re-derives
+// the comparison. Integer division truncates toward zero, which for the
+// always-positive stamp-since-boot duration here is truncation DOWN to tick
+// resolution — the same "error always falls toward live" direction AC-80
+// requires. If the anchor can't be read, hasBootTicks stays false and the
+// probe answers unknown (never settled) per the spec's failure rule.
+func newTurnStartMarker(t time.Time) turnStartMarker {
+	bootTime, ok := linuxBootTime()
+	if !ok {
+		return turnStartMarker{wallTime: t}
+	}
+	ticks := int64(t.Sub(bootTime) / linuxProcStatResolution)
+	return turnStartMarker{wallTime: t, bootTicks: ticks, hasBootTicks: true}
 }
 
 // captureRootIdentity reads pid's current /proc/<pid>/stat startTicks, to be
@@ -82,21 +101,24 @@ func captureRootIdentity(pid int) (rootIdentity, bool) {
 }
 
 // walkProcessTree walks all non-zombie descendants of root and reports
-// whether any was born at or after turnRefTime, truncated down to tick
-// resolution before an inclusive comparison (D5, AC-80). Start times are
-// read from /proc/<pid>/stat field 22 (ticks since boot) and converted to
-// wall-clock using a boot-time anchor read once per probe call, so every
-// descendant in one walk is compared against the same anchor instant.
-func walkProcessTree(ctx context.Context, root rootIdentity, turnRefTime time.Time) string {
+// whether any was born at or after the turn start, truncated down to tick
+// resolution before an inclusive comparison (D5, AC-80). The comparison is
+// performed entirely in the boot-tick domain: marker.bootTicks was computed
+// once at stamp time (newTurnStartMarker) and every descendant's raw
+// /proc/<pid>/stat ticks-since-boot is compared directly against it — no
+// boot-time anchor is read here, so a wall-clock adjustment between stamp
+// and probe cannot shift the comparison (see turnStartMarker's doc comment).
+func walkProcessTree(ctx context.Context, root rootIdentity, marker turnStartMarker) string {
 	if root.pid <= 0 {
 		return probeResultUnknown
 	}
 	if ctx.Err() != nil {
 		return probeResultUnknown
 	}
-
-	bootTime, ok := linuxBootTime()
-	if !ok {
+	if !marker.hasBootTicks {
+		// The boot anchor could not be read at stamp time (newTurnStartMarker).
+		// Per the spec's failure rule, an unreadable anchor answers unknown,
+		// never settled.
 		return probeResultUnknown
 	}
 
@@ -108,7 +130,7 @@ func walkProcessTree(ctx context.Context, root rootIdentity, turnRefTime time.Ti
 		return probeResultUnknown
 	}
 
-	procs, ok := linuxCollectProcs(ctx, bootTime)
+	procs, ok := linuxCollectProcs(ctx)
 	if !ok {
 		return probeResultUnknown
 	}
@@ -119,10 +141,11 @@ func walkProcessTree(ctx context.Context, root rootIdentity, turnRefTime time.Ti
 		children[info.ppid] = append(children[info.ppid], pid)
 	}
 
-	// D5/AC-80: truncate the turn start down to source resolution before an
-	// inclusive comparison, so a process born in the same tick counts as
-	// in-turn — the error always falls toward "live".
-	threshold := turnRefTime.Truncate(linuxProcStatResolution)
+	// D5/AC-80: the turn start was already truncated down to tick resolution
+	// when it was converted into ticks (newTurnStartMarker's integer
+	// division), so a process born in the same tick counts as in-turn — the
+	// error always falls toward "live".
+	threshold := marker.bootTicks
 	// visited guards against a ppid cycle in the snapshot (e.g. a pid recycled
 	// mid-enumeration into its own descendant's slot) sending the walk into an
 	// unbounded loop instead of terminating on its own.
@@ -143,7 +166,7 @@ func walkProcessTree(ctx context.Context, root rootIdentity, turnRefTime time.Ti
 		if !ok {
 			continue
 		}
-		if !info.zombie && !info.startTime.Before(threshold) {
+		if !info.zombie && info.startTicks >= threshold {
 			return probeResultLive
 		}
 		queue = append(queue, children[cur]...)
