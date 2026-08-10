@@ -519,3 +519,57 @@ func TestRemoveTaskParkedMember_RetainsRevisionTombstoneForStaleWrites(t *testin
 		t.Fatal("expected the stale, pre-eviction write to be rejected — session A must not be resurrected as a member after eviction")
 	}
 }
+
+// TestUpdateTaskParkedState_SameSessionRaceAgainstEvictionWhileRowAbsent is
+// Review round 10's regression guard for a residual of round 9's CRITICAL
+// finding: removeTaskParkedMember's row-absent early return (the "!ok"
+// branch) never records sessionRevision into s.taskMemberRevisionFloor, so
+// an eviction that lands while the task-level row happens to already be
+// absent loses its tombstone entirely — unlike the row-PRESENT case round
+// 12 fixed, where the shared memberRevision map retains it across the drop.
+//
+// Reproduces the exact sequence: session S parks and is reduced (row
+// drops, floor retains revision 2); a re-park for S is decided
+// (session-level revision 3) but its updateTaskParkedState call is
+// descheduled before running (the same F7 interleaving
+// TestUpdateTaskParkedState_SameSessionRaceAgainstOwnEviction reproduces);
+// S is then deleted outright, which evicts at session-level revision 4 —
+// but the task row is STILL absent (nothing recreated it), so this
+// eviction's revision 4 is silently discarded instead of updating the
+// floor; the delayed write at revision 3 then resumes, recreates the row
+// from the STALE floor value (2), passes the guard (3 > 2), and wrongly
+// resurrects parked=true for a session that no longer exists.
+func TestUpdateTaskParkedState_SameSessionRaceAgainstEvictionWhileRowAbsent(t *testing.T) {
+	svc := createTestService(setupTestRepo(t), newMockStepGetter(), newMockTaskRepo())
+	const taskID, sessionID = "task-race-row-absent", "session-race-row-absent"
+
+	// Session parks — the task's only member, memberRevision[session]=2.
+	svc.updateTaskParkedState(context.Background(), taskID, sessionID, true, 2)
+
+	// The session is reduced (not deleted) at the same revision — it is
+	// the task's only member, so this empties ts.members and drops the row,
+	// leaving the floor at {session: 2}.
+	svc.removeTaskParkedMember(context.Background(), taskID, sessionID, 2)
+	if parked, _, _ := svc.TaskParkedProjectionSnapshot(taskID); parked {
+		t.Fatal("setup: expected task parked=false after the row was reduced")
+	}
+
+	// The session is deleted outright while the task row is STILL absent
+	// (nothing has recreated it yet). Its eviction observes revision 4 —
+	// strictly newer than the 2 already recorded — but removeTaskParkedMember
+	// hits the row-absent early return and silently drops it instead of
+	// recording it into the floor. This is the defect under test.
+	svc.removeTaskParkedMember(context.Background(), taskID, sessionID, 4)
+
+	// A delayed, pre-deletion write for the SAME session arrives late,
+	// carrying a sessionRevision (3) that is strictly less than the one the
+	// deletion already recorded (4), but strictly greater than the stale
+	// floor value (2) the row-absent eviction failed to update. It must
+	// still be rejected — the session no longer exists.
+	svc.updateTaskParkedState(context.Background(), taskID, sessionID, true, 3)
+
+	parked, _, _ := svc.TaskParkedProjectionSnapshot(taskID)
+	if parked {
+		t.Fatal("expected task parked=false: a stale write for a since-deleted session must not resurrect it, even when its eviction landed while the task row was absent")
+	}
+}

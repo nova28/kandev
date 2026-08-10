@@ -439,13 +439,16 @@ func (s *Service) updateTaskParkedState(ctx context.Context, taskID, sessionID s
 	if updateTaskParkedStateTestHook != nil {
 		updateTaskParkedStateTestHook()
 	}
+	// ts.members and ts.memberRevision are always non-nil here —
+	// getOrCreateTaskParkedStateLocked seeds both on every row it creates,
+	// and a live row is never mutated to hold a nil map. A defensive
+	// `if ts.memberRevision == nil { ts.memberRevision = make(...) }` guard
+	// used to sit here; removed (Review round 10, advisory finding) because
+	// it was unreachable AND hazardous — firing it would have replaced the
+	// map with a private one, silently severing the reference-sharing with
+	// s.taskMemberRevisionFloor[taskID] that the row-drop/recreate fix
+	// (Review round 9/12) depends on, with no test that would catch it.
 	ts.mu.Lock()
-	if ts.members == nil {
-		ts.members = make(map[string]bool)
-	}
-	if ts.memberRevision == nil {
-		ts.memberRevision = make(map[string]uint64)
-	}
 	if lastRevision, ok := ts.memberRevision[sessionID]; ok && sessionRevision <= lastRevision {
 		ts.mu.Unlock()
 		s.taskParkedStatesMu.Unlock()
@@ -522,6 +525,28 @@ func (s *Service) removeTaskParkedMember(ctx context.Context, taskID, sessionID 
 	s.taskParkedStatesMu.Lock()
 	ts, ok := s.taskParkedStates[taskID]
 	if !ok {
+		// No live row exists to update — but this session's own eviction
+		// still needs to be recorded, or a later, delayed write for the
+		// SAME session (descheduled before this eviction, resuming after)
+		// would slip past the staleness guard once a row is eventually
+		// recreated and wrongly resurrect it (Review round 10,
+		// CRITICAL-adjacent: the row-PRESENT case already retains this via
+		// the shared memberRevision map round 12 introduced — see
+		// taskMemberRevisionFloor's doc comment — this closes the
+		// row-ABSENT sibling of the same gap). Guarded the same way as the
+		// ok branch below: a strictly older sessionRevision than what is
+		// already recorded is dropped, never regressed.
+		if s.taskMemberRevisionFloor == nil {
+			s.taskMemberRevisionFloor = make(map[string]map[string]uint64)
+		}
+		floor := s.taskMemberRevisionFloor[taskID]
+		if floor == nil {
+			floor = make(map[string]uint64)
+			s.taskMemberRevisionFloor[taskID] = floor
+		}
+		if lastRevision, recorded := floor[sessionID]; !recorded || sessionRevision >= lastRevision {
+			floor[sessionID] = sessionRevision
+		}
 		s.taskParkedStatesMu.Unlock()
 		return
 	}
