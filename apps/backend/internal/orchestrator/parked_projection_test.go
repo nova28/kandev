@@ -3,11 +3,13 @@ package orchestrator
 import (
 	"context"
 	"errors"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/kandev/kandev/internal/events"
+	"github.com/kandev/kandev/internal/events/bus"
 	"github.com/kandev/kandev/internal/task/models"
 	sqliterepo "github.com/kandev/kandev/internal/task/repository/sqlite"
 )
@@ -27,6 +29,36 @@ type fakeProbe struct {
 func (f *fakeProbe) ProbeBackgroundWorkloads(_ context.Context, _ string) (string, error) {
 	f.calls.Add(1)
 	return f.result, f.err
+}
+
+// gatedProbe is a test double whose SECOND call blocks until the test
+// releases it, deliberately ignoring the context it is given. The first call
+// is left ungated because onSessionParkedHook always makes one synchronous
+// probe call itself (the spec's "synchronous first sample") before a sampler
+// goroutine even exists to make a second one — gating call 1 would deadlock
+// inside onSessionParkedHook before the test ever reaches the sampler it
+// means to observe. The second call is the sampler goroutine's own first
+// tick, which is what this test needs blocked: it lets a test put the
+// sampler into a deterministic "genuinely still executing, not yet exited"
+// state, which a cancel-only (non-draining) implementation cannot be
+// distinguished from a real drain without it — cancelling ctx alone does not
+// make an in-flight call return, so only a probe that outlives cancellation
+// on purpose can prove stopAllParkingSamplers is actually waiting for Done(),
+// rather than merely asking for Done().
+type gatedProbe struct {
+	result  string
+	entered chan struct{}
+	release chan struct{}
+	calls   atomic.Int64
+}
+
+func (g *gatedProbe) ProbeBackgroundWorkloads(_ context.Context, _ string) (string, error) {
+	n := g.calls.Add(1)
+	if n == 2 {
+		close(g.entered)
+		<-g.release
+	}
+	return g.result, nil
 }
 
 // TestComputeParked_AllCombinations verifies the three-term formula for all 8 combinations.
@@ -72,6 +104,46 @@ func parkedTestSeedSession(t *testing.T, repo *sqliterepo.Repository, taskID, se
 		t.Fatalf("failed to set seeded task session state: %v", err)
 	}
 }
+
+// gatingEventBus is a bus.EventBus test double whose Publish call blocks
+// until the test releases it, deliberately widening the gap between
+// onSessionParkedHook releasing parkedStatesMu and whatever runs after it —
+// exactly the window the pre-fix parkedSamplerWG.Add(1) placement bug lived
+// in (Add(1) ran after both publishParkedChanged and updateTaskParkedState).
+// Gating the publish call, rather than relying on goroutine-scheduling luck
+// across many iterations, makes the interleaving deterministic instead of
+// flaky: the test can prove exactly what stopAllParkingSamplers observes
+// while the racing hook is provably still short of its Add(1) call.
+type gatingEventBus struct {
+	entered chan struct{}
+	proceed chan struct{}
+	once    sync.Once
+
+	mu     sync.Mutex
+	events []recordedEvent
+}
+
+func (b *gatingEventBus) Publish(_ context.Context, subject string, event *bus.Event) error {
+	b.once.Do(func() {
+		close(b.entered)
+		<-b.proceed
+	})
+	b.mu.Lock()
+	b.events = append(b.events, recordedEvent{subject: subject, event: event})
+	b.mu.Unlock()
+	return nil
+}
+func (b *gatingEventBus) Subscribe(string, bus.EventHandler) (bus.Subscription, error) {
+	return nil, nil
+}
+func (b *gatingEventBus) QueueSubscribe(string, string, bus.EventHandler) (bus.Subscription, error) {
+	return nil, nil
+}
+func (b *gatingEventBus) Request(context.Context, string, *bus.Event, time.Duration) (*bus.Event, error) {
+	return nil, nil
+}
+func (b *gatingEventBus) Close()            {}
+func (b *gatingEventBus) IsConnected() bool { return true }
 
 // TestOnSessionParkedHook_LiveProbeSetsParked verifies that onSessionParkedHook
 // with a live probe result transitions to parked=true and increments revision.
@@ -777,11 +849,23 @@ func TestRunParkingSampler_ContextCancellation(t *testing.T) {
 // shutdown. stopAllParkingSamplers is the single owner Stop() now calls:
 // cancel every session's sampler and block until each has actually exited,
 // mirroring the established stopSendNowWorkers pattern in this same package.
+//
+// This uses gatedProbe rather than fakeProbe specifically to prove BLOCKING,
+// not just cancellation. A cancel-only implementation (cancel the context and
+// return immediately, with no WaitGroup drain at all) is indistinguishable
+// from a real drain if the sampler goroutine happens to exit fast — which is
+// exactly what a fakeProbe-based version of this test could not tell apart,
+// and did not: deleting stopAllParkingSamplers's entire wg.Wait() half left
+// this test (and the whole package) green (Review round 5 finding, proved by
+// mutation). gatedProbe keeps the sampler goroutine demonstrably still
+// executing (blocked inside the probe call, ignoring ctx cancellation) at the
+// moment stopAllParkingSamplers is invoked, so the assertion that it does NOT
+// return while the goroutine is still alive has real teeth.
 func TestStopAllParkingSamplers_DrainsRunningSampler(t *testing.T) {
 	repo := setupTestRepo(t)
 	svc := createTestService(repo, newMockStepGetter(), newMockTaskRepo())
 	svc.config.BackgroundSampleInterval = 5 * time.Millisecond
-	probe := &fakeProbe{result: probeResultLive}
+	probe := &gatedProbe{result: probeResultLive, entered: make(chan struct{}), release: make(chan struct{})}
 	svc.SetBackgroundProbe(probe)
 
 	const taskID, sessionID = "task-drain", "session-drain"
@@ -794,36 +878,137 @@ func TestStopAllParkingSamplers_DrainsRunningSampler(t *testing.T) {
 		t.Fatal("expected the session to be parked with a sampler goroutine running")
 	}
 
-	// Wait for the sampler to actually tick at least once, so this test
-	// exercises draining a genuinely running goroutine rather than one that
-	// happened not to have started ticking yet.
-	deadline := time.After(2 * time.Second)
-	for probe.calls.Load() < 2 {
-		select {
-		case <-deadline:
-			t.Fatal("sampler did not tick before the test deadline")
-		case <-time.After(time.Millisecond):
-		}
+	// Wait for the sampler to be genuinely mid-probe-call, not merely ticking.
+	select {
+	case <-probe.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("sampler never entered the probe call before the test deadline")
 	}
 
-	done := make(chan struct{})
+	stopDone := make(chan struct{})
 	go func() {
-		defer close(done)
+		defer close(stopDone)
 		svc.stopAllParkingSamplers()
 	}()
+
+	// stopAllParkingSamplers must NOT return while the sampler goroutine is
+	// still blocked inside the probe call: cancellation alone does not make
+	// an in-flight call return, so the only way stopAllParkingSamplers can
+	// legitimately return here is if it never actually waited for Done().
 	select {
-	case <-done:
-		// drained cleanly
+	case <-stopDone:
+		t.Fatal("stopAllParkingSamplers returned before the running sampler goroutine actually exited")
+	case <-time.After(100 * time.Millisecond):
+		// still blocked, as required
+	}
+
+	// Release the gate: the probe call returns, the sampler loops back to its
+	// select, observes ctx.Done() (already cancelled by the sweep above), and
+	// exits — which is what stopAllParkingSamplers's Wait() is blocked on.
+	close(probe.release)
+
+	select {
+	case <-stopDone:
+		// drained: stopAllParkingSamplers only returned once Done() fired
 	case <-time.After(2 * time.Second):
-		t.Fatal("stopAllParkingSamplers did not return promptly")
+		t.Fatal("stopAllParkingSamplers did not return after the sampler goroutine exited")
 	}
 
 	// The sampler must have actually exited, not merely been asked to: no
 	// further probe calls after stopAllParkingSamplers returns.
 	callsAtStop := probe.calls.Load()
-	time.Sleep(50 * time.Millisecond)
+	time.Sleep(20 * time.Millisecond)
 	if got := probe.calls.Load(); got != callsAtStop {
 		t.Fatalf("expected no further probe calls after drain, got %d more", got-callsAtStop)
+	}
+}
+
+// TestOnSessionParkedHook_ConcurrentWithStop deterministically reproduces the
+// interleaving 7b4259e70's own commit message named but never actually
+// exercised concurrently: a session settling into "newly parked" AT THE SAME
+// TIME Service.Stop() is draining. Rather than relying on goroutine-
+// scheduling luck across many iterations (flaky, and in practice did not
+// reproduce the bug reliably even across 50 iterations, since the vulnerable
+// window is a handful of instructions wide), gatingEventBus pins
+// onSessionParkedHook exactly inside that window — released parkedStatesMu,
+// not yet past its publish step — so the test can assert precisely what
+// stopAllParkingSamplers observes while it is provably still there.
+//
+// Before the Review-round-5 fix, parkedSamplerWG.Add(1) ran AFTER both
+// publishParkedChanged and updateTaskParkedState, i.e. strictly after the
+// point this test pins the hook at. So on pre-fix code,
+// stopAllParkingSamplers's Wait() sees a WaitGroup counter of zero (the
+// racing Add() has not happened yet) and returns immediately — proving Stop()
+// can complete having drained nothing for the in-flight session, exactly the
+// defect this test guards. On fixed code, Add(1) already ran inside the same
+// critical section that unlocked parkedStatesMu, so the counter is already 1
+// and stopAllParkingSamplers's Wait() genuinely blocks until the eventual
+// sampler goroutine (spawned with an already-cancelled context, since the
+// cancel sweep already found ps.samplerCancel set) exits and calls Done().
+func TestOnSessionParkedHook_ConcurrentWithStop(t *testing.T) {
+	repo := setupTestRepo(t)
+	svc := createTestService(repo, newMockStepGetter(), newMockTaskRepo())
+	svc.config.BackgroundSampleInterval = time.Millisecond
+	probe := &fakeProbe{result: probeResultLive}
+	svc.SetBackgroundProbe(probe)
+
+	geb := &gatingEventBus{entered: make(chan struct{}), proceed: make(chan struct{})}
+	svc.eventBus = geb
+
+	const taskID, sessionID = "task-race", "session-race"
+	svc.getOrCreateParkedState(sessionID).observedDetached = true
+	parkedTestSeedSession(t, repo, taskID, sessionID, models.TaskSessionStateWaitingForInput)
+
+	hookDone := make(chan struct{})
+	go func() {
+		defer close(hookDone)
+		svc.onSessionParkedHook(context.Background(), taskID, sessionID)
+	}()
+
+	// Wait until onSessionParkedHook has passed its locked decision (parked
+	// flipped true, the sampler's context stored on the row) and reached the
+	// publish step — the exact window between unlocking parkedStatesMu and
+	// (pre-fix) calling parkedSamplerWG.Add(1) that this test targets.
+	select {
+	case <-geb.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("onSessionParkedHook never reached the publish step")
+	}
+
+	// stopAllParkingSamplers races the still-in-flight hook here — the
+	// interleaving 7b4259e70's commit message named but never tested.
+	stopDone := make(chan struct{})
+	go func() {
+		defer close(stopDone)
+		svc.stopAllParkingSamplers()
+	}()
+
+	select {
+	case <-stopDone:
+		t.Fatal("stopAllParkingSamplers returned before the racing sampler was ever counted — Add(1) is not ordered before Wait(), so Stop() drained nothing for this session")
+	case <-time.After(100 * time.Millisecond):
+		// correctly still blocked: the WaitGroup already reflects the racing
+		// Add() and stopAllParkingSamplers is genuinely waiting on it
+	}
+
+	close(geb.proceed)
+
+	select {
+	case <-stopDone:
+		// drained: stopAllParkingSamplers only returned once the racing
+		// sampler was accounted for and had actually exited
+	case <-time.After(2 * time.Second):
+		t.Fatal("stopAllParkingSamplers did not return after the racing hook completed")
+	}
+	<-hookDone
+
+	// No sampler goroutine may have survived: only the synchronous first
+	// sample (already made before this window opened) should have called the
+	// probe. Give a wrongly-spawned sampler a moment to tick, then confirm it
+	// never did.
+	time.Sleep(15 * time.Millisecond)
+	if got := probe.calls.Load(); got != 1 {
+		t.Fatalf("expected exactly 1 probe call (the synchronous first sample only), got %d — a sampler survived shutdown", got)
 	}
 }
 

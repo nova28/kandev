@@ -641,9 +641,11 @@ type Service struct {
 	// parkedSamplerWG tracks every running parking-sampler goroutine
 	// (runParkingSampler), so Stop() can cancel and drain them instead of
 	// leaving them running past shutdown with contexts rooted in
-	// context.Background(). Single owner: onSessionParkedHook Add(1)s before
-	// spawning, runParkingSampler Done()s on exit, stopAllParkingSamplers
-	// Waits — mirrors stopSendNowWorkers below.
+	// context.Background(). Single owner: onSessionParkedHook Add(1)s under
+	// parkedStatesMu (before unlocking, so it can never race a concurrent
+	// stopAllParkingSamplers's Wait()) and only then spawns the goroutine,
+	// runParkingSampler Done()s on exit, stopAllParkingSamplers Waits —
+	// mirrors stopSendNowWorkers below.
 	parkedSamplerWG sync.WaitGroup
 	// parkedSamplersStopped rejects starting any NEW parking sampler once
 	// stopAllParkingSamplers has run, closing the gap a cancel-then-wait

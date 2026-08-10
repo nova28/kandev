@@ -110,6 +110,17 @@ func (s *Service) onSessionParkedHook(ctx context.Context, taskID, sessionID str
 		if !s.parkedSamplersStopped {
 			samplerCtx, ps.samplerCancel = context.WithCancel(context.Background())
 			startSampler = true
+			// Add(1) MUST happen in this same critical section, not after
+			// unlock: stopAllParkingSamplers reads parkedSamplersStopped and
+			// calls parkedSamplerWG.Wait() from outside this lock, so an
+			// Add() that raced the unlock could land while Wait() already
+			// observed a zero counter — a sync.WaitGroup misuse ("Add called
+			// concurrently with Wait") that can panic, and in the
+			// non-panicking case lets Stop() return before this sampler is
+			// even registered. Mirrors launchSendNowClaim's
+			// sendNowWorkers.Add(1), which is likewise called before that
+			// function's mutex unlock (queue_send_now.go).
+			s.parkedSamplerWG.Add(1)
 		}
 	} else {
 		ps.stopSampler()
@@ -122,7 +133,6 @@ func (s *Service) onSessionParkedHook(ctx context.Context, taskID, sessionID str
 	}
 
 	if startSampler {
-		s.parkedSamplerWG.Add(1)
 		go s.runParkingSampler(samplerCtx, taskID, sessionID)
 	}
 }
