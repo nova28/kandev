@@ -62,6 +62,23 @@ describe("renderTaskStatusIcon — task-level activity aggregate", () => {
     );
     expect(iconType(node)).toBe(IconLoader2);
   });
+
+  // AC-58: renderTaskStatusIcon has TWO early returns before the shared
+  // resolver — the null return above (":275"-equivalent) when nothing is
+  // active, and this one (":282"-equivalent), which must also exclude a
+  // parked task or the plain launch spinner masks the background affordance.
+  // showRunningSpinner=true here is what makes this the second early return's
+  // path, distinct from the first early return's null-when-idle case.
+  it("shows the background affordance instead of the plain launch spinner when parked and the spinner would otherwise show", () => {
+    const node = renderTaskStatusIcon(
+      task({ state: "REVIEW", parkedOnBackgroundWork: true }),
+      true,
+      false,
+      false,
+    );
+    expect(iconType(node)).toBe(BackgroundWorkTaskIcon);
+    expect(iconType(node)).not.toBe(IconLoader2);
+  });
 });
 
 describe("renderTaskStatusIcon — waiting-for-input variants", () => {
