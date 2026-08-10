@@ -545,6 +545,32 @@ describe("getTaskStateIcon — parked-on-background-work (AC-52, AC-23, AC-34)",
     expect(iconType(icon)).toBe(IconMessageQuestion);
   });
 
+  // Review round 6, finding 3: parkedOnBackgroundWork must be evaluated
+  // AFTER the foregroundActivity checks (spec's Rendering contract §3),
+  // matching resolver A (task-item.tsx). A multi-session task can have one
+  // session actively generating (task-level foregroundActivity is
+  // MOST-ACTIVE-WINS) while a different session is parked (task-level
+  // parkedOnBackgroundWork is an OR) — both flags reachable together.
+  it("lets an active generating session win over a parked one on the same task", () => {
+    expect(
+      iconType(
+        getTaskStateIcon("IN_PROGRESS", undefined, {
+          foregroundActivity: "generating",
+          parkedOnBackgroundWork: true,
+        }),
+      ),
+    ).toBe(IconLoader2);
+  });
+
+  it("still shows the parked spinner when nothing is actively generating", () => {
+    const icon = getTaskStateIcon("IN_PROGRESS", undefined, {
+      foregroundActivity: "background",
+      parkedOnBackgroundWork: true,
+    });
+    const container = render(<TooltipProvider>{icon}</TooltipProvider>).container;
+    expect(container.querySelector(BG_TESTID)).not.toBeNull();
+  });
+
   it("lets pending clarification/permission win over parked (needs-me always tops)", () => {
     expect(
       iconType(

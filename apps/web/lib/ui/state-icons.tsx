@@ -297,15 +297,20 @@ function getTaskStateIconConfig(state?: TaskState, options: TaskStateIconOptions
   if (hasPendingClarification) {
     return TASK_STATE_ICONS.WAITING_FOR_INPUT;
   }
-  // Parked: task is WAITING_FOR_INPUT but live background shell work is
-  // running. Show the background spinner rather than the question mark so the
-  // user knows the agent is still doing work.
-  if (parkedOnBackgroundWork) return TASK_BACKGROUND_ICON;
   // Explicit pending input wins first. Without it, the task-level
   // MOST-ACTIVE-WINS aggregate sits above the coarse task state, including a
   // stale WAITING_FOR_INPUT state.
   if (foregroundActivity === "generating") return TASK_GENERATING_ICON;
   if (foregroundActivity === "background") return TASK_BACKGROUND_ICON;
+  // Parked: task is WAITING_FOR_INPUT but live background shell work is
+  // running. Show the background spinner rather than the question mark so
+  // the user knows the agent is still doing work. Evaluated AFTER the
+  // foregroundActivity checks (matching resolver A in task-item.tsx) so an
+  // actively generating session on the same task always outranks a merely
+  // parked one — foregroundActivity is a MOST-ACTIVE-WINS aggregate and
+  // parkedOnBackgroundWork is an OR, so both can legitimately be true at
+  // once for a multi-session task.
+  if (parkedOnBackgroundWork) return TASK_BACKGROUND_ICON;
   if (isWaitingForInputState(state)) return TASK_STATE_ICONS.WAITING_FOR_INPUT;
   // Interrupted (startup reconciliation marker): replaces the idle/done
   // affordances but never overrides terminal states, which keep their own
