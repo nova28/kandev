@@ -660,7 +660,8 @@ type Service struct {
 	// Used by clients as restart-survivable discard signal (AC-77).
 	parkedEpoch int64
 
-	// taskParkedStatesMu guards taskParkedStates and taskParkedRevisionFloor.
+	// taskParkedStatesMu guards taskParkedStates, taskParkedRevisionFloor and
+	// taskMemberRevisionFloor.
 	taskParkedStatesMu sync.Mutex
 	// taskParkedStates holds the task-level OR of all session parked states.
 	taskParkedStates map[string]*taskParkedState
@@ -675,6 +676,25 @@ type Service struct {
 	// rule. Deleted alongside taskParkedStates in handleTaskDeleted, so it
 	// stays bounded by the same task lifetime as everything else here.
 	taskParkedRevisionFloor map[string]uint64
+	// taskMemberRevisionFloor carries each task's PER-SESSION member-revision
+	// memory across the same drop-and-recreate cycle taskParkedRevisionFloor
+	// protects, closing a gap that fix left open (Review round 9, CRITICAL):
+	// removeTaskParkedMember used to delete the whole *taskParkedState
+	// struct — memberRevision map included — once members emptied, so a
+	// fresh row recreated afterward had no memory of the just-evicted
+	// session's last-applied revision, and a delayed, stale write for that
+	// SAME session could slip past updateTaskParkedState's ordering guard
+	// and resurrect it.
+	//
+	// getOrCreateTaskParkedStateLocked seeds a task's memberRevision map from
+	// this floor by REFERENCE (not a copy) the first time a row is created
+	// for that task, and never replaces it thereafter — so every write to
+	// ts.memberRevision (in updateTaskParkedState and removeTaskParkedMember)
+	// is automatically also a write to this floor, and a row drop only
+	// removes the *taskParkedState wrapper, never the underlying map. No
+	// separate snapshot-on-drop step is needed. Deleted alongside
+	// taskParkedStates and taskParkedRevisionFloor in handleTaskDeleted.
+	taskMemberRevisionFloor map[string]map[string]uint64
 
 	// foregroundActivity tracks, per session, whether the open turn is actively
 	// generating in the foreground or only waiting on a spawned background task

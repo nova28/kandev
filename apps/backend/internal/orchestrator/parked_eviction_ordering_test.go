@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/kandev/kandev/internal/orchestrator/watcher"
 	"github.com/kandev/kandev/internal/task/models"
@@ -259,6 +260,25 @@ func TestUpdateTaskParkedState_DiscardsOutOfOrderWrite(t *testing.T) {
 // session B's update exactly inside that window, run session A's eviction to
 // completion, and only then let B resume — reproducing the exact interleaving
 // on every run rather than hoping for it.
+// TestUpdateTaskParkedState_ConcurrentWithSiblingEviction is Review round 8's
+// regression guard for the CRITICAL lock-scope race — REWRITTEN in Review
+// round 9 (test-supervisor finding): the original version paused session B's
+// write at the hook and then spawned session A's eviction expecting it to
+// interleave, but never proved the eviction actually reached the row-drop
+// while B was paused. Since both operations serialize on the SAME
+// taskParkedStatesMu, spawning the eviction and immediately releasing the
+// hook let B's write simply finish first every time — the test passed
+// 60/60 against a scratch reconstruction of the PRE-FIX code specifically
+// because it never forced the interleaving it claims to reproduce.
+//
+// This version actively PROVES serialization inside the hook itself: it
+// spawns the eviction, then asserts (via a bounded wait) that the eviction
+// does NOT complete while B's write is still paused holding
+// taskParkedStatesMu. If it does complete, the lock-scope fix has
+// regressed and the two operations are interleaving again — the exact
+// symptom that let A's eviction drop the row out from under B's write.
+// Only after that assertion does it release the hook and let both
+// operations run to their real completion, then checks the final state.
 func TestUpdateTaskParkedState_ConcurrentWithSiblingEviction(t *testing.T) {
 	svc := createTestService(setupTestRepo(t), newMockStepGetter(), newMockTaskRepo())
 	const taskID, sessionA, sessionB = "task-sibling-evict", "session-sibling-a", "session-sibling-b"
@@ -274,8 +294,23 @@ func TestUpdateTaskParkedState_ConcurrentWithSiblingEviction(t *testing.T) {
 
 	reachedHook := make(chan struct{})
 	releaseHook := make(chan struct{})
+	evictDone := make(chan struct{})
 	updateTaskParkedStateTestHook = func() {
 		close(reachedHook)
+		// Spawn session A's eviction only now, while this write is still
+		// paused holding taskParkedStatesMu (acquired before this hook
+		// runs — see updateTaskParkedState). Prove it cannot complete: it
+		// needs the same mutex to even look up the row.
+		go func() {
+			svc.evictParkedState(context.Background(), taskID, sessionA, false)
+			close(evictDone)
+		}()
+		select {
+		case <-evictDone:
+			t.Error("session A's eviction completed while session B's write was still paused mid-critical-section — taskParkedStatesMu is no longer serializing them")
+		case <-time.After(50 * time.Millisecond):
+			// Expected: the eviction is blocked on taskParkedStatesMu.
+		}
 		<-releaseHook
 	}
 	t.Cleanup(func() { updateTaskParkedStateTestHook = nil })
@@ -288,22 +323,13 @@ func TestUpdateTaskParkedState_ConcurrentWithSiblingEviction(t *testing.T) {
 	}()
 	<-reachedHook
 
-	// Session A's execution ends and its parked row is evicted while B is
-	// still paused mid-operation — the task's only OTHER parked member goes
-	// away. This runs in its own goroutine, not inline: with the fix in
-	// place, evictParkedState blocks on taskParkedStatesMu until B's paused
-	// critical section releases it (it can no longer interleave into the
-	// gap), so calling it synchronously here would deadlock against
-	// releaseHook below.
-	evictDone := make(chan struct{})
-	go func() {
-		defer close(evictDone)
-		svc.evictParkedState(context.Background(), taskID, sessionA, false)
-	}()
-
 	close(releaseHook)
 	<-updateDone
-	<-evictDone
+	select {
+	case <-evictDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("session A's eviction never completed after the hook released taskParkedStatesMu")
+	}
 
 	parked, _, revision := svc.TaskParkedProjectionSnapshot(taskID)
 	if !parked {
@@ -311,6 +337,95 @@ func TestUpdateTaskParkedState_ConcurrentWithSiblingEviction(t *testing.T) {
 	}
 	if revision == 0 {
 		t.Fatal("expected a nonzero revision for session B's applied write, got 0 (orphaned-write symptom)")
+	}
+}
+
+// TestUpdateTaskParkedState_SameSessionRaceAgainstOwnEviction is Review
+// round 9's CRITICAL regression guard: round 11's fix closed the
+// CROSS-session race above (a sibling's eviction dropping the row out from
+// under a concurrent write) but reopened an equivalent SAME-session race
+// through the identical row-drop mechanism. removeTaskParkedMember deletes
+// the ENTIRE *taskParkedState struct — memberRevision map included — once a
+// session's removal empties ts.members (the common single-session-task
+// case). getOrCreateTaskParkedStateLocked then recreated the row (before
+// this round's fix) with a FRESH, EMPTY memberRevision map, so
+// updateTaskParkedState's staleness guard always misses for the very
+// session that was just evicted, and a delayed, pre-eviction write for that
+// SAME session is wrongly accepted — resurrecting a stale parked=true with
+// nothing left to correct it, since eviction already cancelled that
+// session's sampler.
+//
+// Unlike the goroutine-interleaving test above, this defect is fully
+// deterministic and needs no concurrency to reproduce: it is purely a
+// question of whether the guard's memory survives a row drop-and-recreate
+// cycle, so this drives the calls sequentially in exactly the order a real
+// race would produce them.
+func TestUpdateTaskParkedState_SameSessionRaceAgainstOwnEviction(t *testing.T) {
+	svc := createTestService(setupTestRepo(t), newMockStepGetter(), newMockTaskRepo())
+	const taskID, sessionID = "task-own-race", "session-own-race"
+
+	// Session parks — the task's only member, memberRevision[session]=5.
+	svc.updateTaskParkedState(context.Background(), taskID, sessionID, true, 5)
+	if parked, _, _ := svc.TaskParkedProjectionSnapshot(taskID); !parked {
+		t.Fatal("setup: expected task parked=true after session parks")
+	}
+
+	// The session is evicted at a NEWER session-level revision (6) — it is
+	// the task's only member, so this empties ts.members and drops the row.
+	svc.removeTaskParkedMember(context.Background(), taskID, sessionID, 6)
+	if parked, _, _ := svc.TaskParkedProjectionSnapshot(taskID); parked {
+		t.Fatal("setup: expected task parked=false after its only session was evicted")
+	}
+
+	// A delayed, PRE-eviction write for the SAME session arrives late,
+	// carrying a sessionRevision (3) strictly less than the one the
+	// eviction already recorded (6). On the buggy row-drop path this is
+	// wrongly accepted because the recreated row's memberRevision map has
+	// no entry for this session; it must be rejected instead, exactly as
+	// TestRemoveTaskParkedMember_RetainsRevisionTombstoneForStaleWrites
+	// already pins for the multi-session case that keeps the row alive.
+	svc.updateTaskParkedState(context.Background(), taskID, sessionID, true, 3)
+
+	parked, _, _ := svc.TaskParkedProjectionSnapshot(taskID)
+	if parked {
+		t.Fatal("expected task parked=false: a stale write for the just-evicted session must not resurrect it after the row was dropped and recreated")
+	}
+}
+
+// TestTaskParkedProjectionSnapshot_RetainsRevisionAfterMembersEmptyDrop is
+// Review round 9's regression guard for a second defect the same row-drop
+// path causes: TaskParkedProjectionSnapshot returned a hardcoded revision=0
+// for an absent row, with no fallback to taskParkedRevisionFloor. Because
+// this method is what the task-activity publisher calls to build the
+// OUTGOING task.updated frame — synchronously, immediately after
+// removeTaskParkedMember drops the row — every ORDINARY last-session
+// eviction (no race required at all) published a parked=false frame
+// carrying revision=0 instead of the real, just-incremented revision. A
+// client already holding a higher revision for this task discards that
+// frame under the (parked_epoch, parked_revision) rule and is left stuck
+// showing parked=true forever — exactly the "card stuck" failure class the
+// whole revision/epoch mechanism exists to prevent.
+func TestTaskParkedProjectionSnapshot_RetainsRevisionAfterMembersEmptyDrop(t *testing.T) {
+	svc := createTestService(setupTestRepo(t), newMockStepGetter(), newMockTaskRepo())
+	const taskID, sessionID = "task-snapshot-after-drop", "session-snapshot-after-drop"
+
+	svc.updateTaskParkedState(context.Background(), taskID, sessionID, true, 1)
+	_, _, revisionBeforeEviction := svc.TaskParkedProjectionSnapshot(taskID)
+	if revisionBeforeEviction == 0 {
+		t.Fatal("setup: expected a nonzero revision after the task parks")
+	}
+
+	// Evicting the task's only member flips the OR to false and drops the
+	// row (TestEvictParkedState_RemovesTaskMember already pins the drop).
+	svc.removeTaskParkedMember(context.Background(), taskID, sessionID, 2)
+
+	parked, _, revisionAfterEviction := svc.TaskParkedProjectionSnapshot(taskID)
+	if parked {
+		t.Fatal("expected task parked=false after its only session was evicted")
+	}
+	if revisionAfterEviction <= revisionBeforeEviction {
+		t.Fatalf("expected the snapshot immediately after eviction to carry a revision strictly greater than the pre-eviction value (%d), got %d — a revision of 0 (or unchanged) is what a client already holding %d would discard under the (parked_epoch, parked_revision) rule, leaving it stuck showing parked=true",
+			revisionBeforeEviction, revisionAfterEviction, revisionBeforeEviction)
 	}
 }
 

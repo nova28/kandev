@@ -484,16 +484,29 @@ func (s *Service) updateTaskParkedState(ctx context.Context, taskID, sessionID s
 // for this SAME session — descheduled before this eviction and only
 // resuming after — must still be rejected by the ordering guard there. A
 // deleted entry would let such a stale write pass the "ok==false" branch
-// unconditionally and resurrect an evicted session's parked value. This is
-// bounded by the same task lifetime as everything else on this row —
-// handleTaskDeleted drops the whole row, memberRevision included, once the
-// task itself is deleted.
+// unconditionally and resurrect an evicted session's parked value.
 //
-// If this leaves members empty, the task-level row itself is dropped —
-// nothing will read it again until a future session on this task parks and
-// getOrCreateTaskParkedStateLocked recreates it (seeded from
-// taskParkedRevisionFloor, saved here, so a recreated row's revision can
-// never regress below what was last published for this task).
+// CORRECTED — Review round 9, CRITICAL. This comment previously claimed that
+// retention was "bounded by the same task lifetime as everything else on
+// this row — handleTaskDeleted drops the whole row, memberRevision
+// included, once the task itself is deleted." That was false: when this
+// removal leaves members empty (below), the whole *taskParkedState struct —
+// ts.memberRevision included — is dropped from s.taskParkedStates right
+// here, independent of task deletion, defeating the very retention this
+// comment describes one branch earlier. ts.memberRevision now survives that
+// drop because it is the SAME map object as s.taskMemberRevisionFloor[taskID]
+// (see that field's doc comment and getOrCreateTaskParkedStateLocked) — a
+// write to ts.memberRevision here is always also a write to the floor, which
+// only handleTaskDeleted clears. Deleting s.taskParkedStates[taskID] below
+// removes just the *taskParkedState wrapper, never that shared map.
+//
+// If this leaves members empty, the task-level row's *taskParkedState
+// wrapper is dropped — nothing will read it again until a future session on
+// this task parks and getOrCreateTaskParkedStateLocked recreates it (its
+// revision seeded from taskParkedRevisionFloor, its memberRevision reused
+// from taskMemberRevisionFloor, both saved here, so a recreated row can
+// never regress below what was last published for this task or forget a
+// session's last-applied revision).
 //
 // sessionRevision is the session's ps.revision captured by evictParkedState
 // in the same critical section as its own decision, mirroring
@@ -588,7 +601,21 @@ func (s *Service) TaskParkedProjectionSnapshot(taskID string) (bool, int64, uint
 	defer s.taskParkedStatesMu.Unlock()
 	ts, ok := s.taskParkedStates[taskID]
 	if !ok {
-		return false, s.parkedEpoch, 0
+		// Fall back to taskParkedRevisionFloor rather than hardcoding 0
+		// (Review round 9, CRITICAL-adjacent): this method is what the
+		// task-activity publisher calls, synchronously, to build the
+		// OUTGOING task.updated frame — including the one
+		// removeTaskParkedMember's own publish triggers immediately after
+		// dropping this exact row. Returning 0 here published a
+		// parked=false frame at revision 0 on every ORDINARY last-session
+		// eviction (no race required), which a client already holding a
+		// higher revision discards under the (parked_epoch,
+		// parked_revision) rule — leaving it stuck showing parked=true.
+		// taskParkedRevisionFloor defaults to 0 for a task with no
+		// recorded transition, which is D9's correct default for that
+		// case; this only changes the answer for a task whose row was
+		// dropped after a real transition.
+		return false, s.parkedEpoch, s.taskParkedRevisionFloor[taskID]
 	}
 	ts.mu.Lock()
 	defer ts.mu.Unlock()

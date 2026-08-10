@@ -190,6 +190,12 @@ func (s *Service) clearObservedDetachedOnTurnStarted(ctx context.Context, taskID
 // (members emptied) and is now being recreated does not let its revision
 // regress below whatever was last published for this task — see
 // taskParkedRevisionFloor's doc comment.
+//
+// A freshly created row's memberRevision map is the SAME map object as
+// s.taskMemberRevisionFloor[taskID] — reused by reference, not copied — so
+// every write to it (in updateTaskParkedState and removeTaskParkedMember)
+// automatically persists into the floor and survives a later row drop, per
+// taskMemberRevisionFloor's doc comment (Review round 9).
 func (s *Service) getOrCreateTaskParkedStateLocked(taskID string) *taskParkedState {
 	if s.taskParkedStates == nil {
 		s.taskParkedStates = make(map[string]*taskParkedState)
@@ -197,9 +203,17 @@ func (s *Service) getOrCreateTaskParkedStateLocked(taskID string) *taskParkedSta
 	if ts, ok := s.taskParkedStates[taskID]; ok {
 		return ts
 	}
+	memberRevision := s.taskMemberRevisionFloor[taskID]
+	if memberRevision == nil {
+		memberRevision = make(map[string]uint64)
+		if s.taskMemberRevisionFloor == nil {
+			s.taskMemberRevisionFloor = make(map[string]map[string]uint64)
+		}
+		s.taskMemberRevisionFloor[taskID] = memberRevision
+	}
 	ts := &taskParkedState{
 		members:        make(map[string]bool),
-		memberRevision: make(map[string]uint64),
+		memberRevision: memberRevision,
 		revision:       s.taskParkedRevisionFloor[taskID],
 	}
 	s.taskParkedStates[taskID] = ts
