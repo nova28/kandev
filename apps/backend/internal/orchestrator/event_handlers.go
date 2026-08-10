@@ -39,8 +39,13 @@ func (s *Service) handleTaskDeleted(ctx context.Context, data watcher.TaskEventD
 	// clearTurnActivity on each session's own deletion). This is a second,
 	// unconditional pass so a task-level row can never outlive the task
 	// itself, regardless of the order session and task deletion happen in.
+	// taskParkedRevisionFloor is deleted alongside it (Review round 8) — it
+	// exists only to carry a revision across a drop-and-recreate cycle for a
+	// task that still exists; once the task itself is gone, nothing will
+	// ever recreate its row again.
 	s.taskParkedStatesMu.Lock()
 	delete(s.taskParkedStates, data.TaskID)
+	delete(s.taskParkedRevisionFloor, data.TaskID)
 	s.taskParkedStatesMu.Unlock()
 }
 

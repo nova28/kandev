@@ -174,17 +174,45 @@ func (s *Service) clearObservedDetachedOnTurnStarted(ctx context.Context, taskID
 	}
 }
 
-// getOrCreateTaskParkedState returns the task's parked state, creating it if absent.
-func (s *Service) getOrCreateTaskParkedState(taskID string) *taskParkedState {
-	s.taskParkedStatesMu.Lock()
-	defer s.taskParkedStatesMu.Unlock()
+// getOrCreateTaskParkedStateLocked returns the task's parked state, creating
+// it if absent. Caller MUST already hold s.taskParkedStatesMu — this lets a
+// caller that needs to both resolve the row AND then mutate or read it
+// extend the SAME critical section across both steps, so the row can never
+// be concurrently dropped by removeTaskParkedMember (or handleTaskDeleted)
+// in the gap between resolving it and using it (Review round 8: this gap is
+// exactly what let a sibling session's eviction orphan a concurrent
+// updateTaskParkedState write). A caller that only needs the pointer and
+// does nothing further under this lock should call getOrCreateTaskParkedState
+// instead.
+//
+// A freshly created row's revision is seeded from taskParkedRevisionFloor
+// rather than starting at 0, so a task whose row was previously dropped
+// (members emptied) and is now being recreated does not let its revision
+// regress below whatever was last published for this task — see
+// taskParkedRevisionFloor's doc comment.
+func (s *Service) getOrCreateTaskParkedStateLocked(taskID string) *taskParkedState {
 	if s.taskParkedStates == nil {
 		s.taskParkedStates = make(map[string]*taskParkedState)
 	}
 	if ts, ok := s.taskParkedStates[taskID]; ok {
 		return ts
 	}
-	ts := &taskParkedState{members: make(map[string]bool), memberRevision: make(map[string]uint64)}
+	ts := &taskParkedState{
+		members:        make(map[string]bool),
+		memberRevision: make(map[string]uint64),
+		revision:       s.taskParkedRevisionFloor[taskID],
+	}
 	s.taskParkedStates[taskID] = ts
 	return ts
+}
+
+// getOrCreateTaskParkedState returns the task's parked state, creating it if
+// absent, taking and releasing s.taskParkedStatesMu itself. Only safe for a
+// caller that does nothing further with the returned pointer requiring
+// atomicity with the lookup — see getOrCreateTaskParkedStateLocked's doc
+// comment for why a lookup-then-mutate/read caller must use that instead.
+func (s *Service) getOrCreateTaskParkedState(taskID string) *taskParkedState {
+	s.taskParkedStatesMu.Lock()
+	defer s.taskParkedStatesMu.Unlock()
+	return s.getOrCreateTaskParkedStateLocked(taskID)
 }

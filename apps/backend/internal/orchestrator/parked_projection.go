@@ -403,6 +403,14 @@ func (s *Service) publishParkedChanged(ctx context.Context, taskID, sessionID st
 	)
 }
 
+// updateTaskParkedStateTestHook, when non-nil, is invoked immediately after
+// updateTaskParkedState has resolved (or created) the task's row and before
+// it mutates it. Nil (a no-op) outside tests — exists only so a test can
+// deterministically pause inside that resolve-then-mutate step and prove
+// whether a concurrent eviction can interleave into the gap (Review round 8;
+// see TestUpdateTaskParkedState_ConcurrentWithSiblingEviction).
+var updateTaskParkedStateTestHook func()
+
 // updateTaskParkedState updates the task-level OR and publishes a task update
 // if the OR changed.
 //
@@ -421,7 +429,16 @@ func (s *Service) updateTaskParkedState(ctx context.Context, taskID, sessionID s
 	if taskID == "" {
 		return
 	}
-	ts := s.getOrCreateTaskParkedState(taskID)
+	// taskParkedStatesMu is held across the full resolve-then-mutate
+	// sequence, not just the resolve — see getOrCreateTaskParkedStateLocked's
+	// doc comment. Releasing it in between (as this used to do, via the
+	// unlocked getOrCreateTaskParkedState wrapper) let removeTaskParkedMember
+	// drop the row out from under an in-flight write here (Review round 8).
+	s.taskParkedStatesMu.Lock()
+	ts := s.getOrCreateTaskParkedStateLocked(taskID)
+	if updateTaskParkedStateTestHook != nil {
+		updateTaskParkedStateTestHook()
+	}
 	ts.mu.Lock()
 	if ts.members == nil {
 		ts.members = make(map[string]bool)
@@ -431,6 +448,7 @@ func (s *Service) updateTaskParkedState(ctx context.Context, taskID, sessionID s
 	}
 	if lastRevision, ok := ts.memberRevision[sessionID]; ok && sessionRevision <= lastRevision {
 		ts.mu.Unlock()
+		s.taskParkedStatesMu.Unlock()
 		return
 	}
 	ts.memberRevision[sessionID] = sessionRevision
@@ -442,6 +460,7 @@ func (s *Service) updateTaskParkedState(ctx context.Context, taskID, sessionID s
 		ts.revision++
 	}
 	ts.mu.Unlock()
+	s.taskParkedStatesMu.Unlock()
 
 	if changed {
 		s.publishTaskParkedChanged(ctx, taskID)
@@ -454,14 +473,27 @@ func (s *Service) updateTaskParkedState(ctx context.Context, taskID, sessionID s
 // publishes on change. This is what evictParkedState calls, per the spec's
 // eviction rule: a session's entry is removed from members when its
 // parkedState row is evicted, for every eviction cause — not only when the
-// session itself is deleted. Leaving a false tombstone behind would let
-// ts.members grow by one entry per session ever parked, for the life of the
-// process, even after the owning task and every one of its sessions are
+// session itself is deleted. Leaving a false tombstone in ts.members behind
+// would let it grow by one entry per session ever parked, for the life of
+// the process, even after the owning task and every one of its sessions are
 // gone.
+//
+// ts.memberRevision[sessionID], unlike ts.members[sessionID], is retained
+// (updated to sessionRevision) rather than deleted (Review round 8, codex
+// cross-vendor finding): a delayed, pre-eviction updateTaskParkedState call
+// for this SAME session — descheduled before this eviction and only
+// resuming after — must still be rejected by the ordering guard there. A
+// deleted entry would let such a stale write pass the "ok==false" branch
+// unconditionally and resurrect an evicted session's parked value. This is
+// bounded by the same task lifetime as everything else on this row —
+// handleTaskDeleted drops the whole row, memberRevision included, once the
+// task itself is deleted.
 //
 // If this leaves members empty, the task-level row itself is dropped —
 // nothing will read it again until a future session on this task parks and
-// getOrCreateTaskParkedState recreates it.
+// getOrCreateTaskParkedStateLocked recreates it (seeded from
+// taskParkedRevisionFloor, saved here, so a recreated row's revision can
+// never regress below what was last published for this task).
 //
 // sessionRevision is the session's ps.revision captured by evictParkedState
 // in the same critical section as its own decision, mirroring
@@ -487,7 +519,7 @@ func (s *Service) removeTaskParkedMember(ctx context.Context, taskID, sessionID 
 		return
 	}
 	delete(ts.members, sessionID)
-	delete(ts.memberRevision, sessionID)
+	ts.memberRevision[sessionID] = sessionRevision
 	newTaskParked := anyParkedMember(ts.members)
 	changed := newTaskParked != ts.parked
 	if changed {
@@ -495,6 +527,12 @@ func (s *Service) removeTaskParkedMember(ctx context.Context, taskID, sessionID 
 		ts.revision++
 	}
 	membersEmpty := len(ts.members) == 0
+	if membersEmpty {
+		if s.taskParkedRevisionFloor == nil {
+			s.taskParkedRevisionFloor = make(map[string]uint64)
+		}
+		s.taskParkedRevisionFloor[taskID] = ts.revision
+	}
 	ts.mu.Unlock()
 
 	if membersEmpty {
@@ -541,10 +579,15 @@ func (s *Service) ParkedProjectionSnapshot(sessionID string) (bool, int64, uint6
 // process-global epoch every session carrier already serializes (D1: identical
 // on every carrier and every session and task, never a second task-scoped value).
 func (s *Service) TaskParkedProjectionSnapshot(taskID string) (bool, int64, uint64) {
+	// taskParkedStatesMu is held across the lookup AND the ts.mu read below,
+	// not released in between — releasing it early (as this used to do) let
+	// the read land on a row that removeTaskParkedMember had concurrently
+	// dropped from the map, or that appeared to exist only because it was
+	// about to be recreated (Review round 8, codex cross-vendor finding).
 	s.taskParkedStatesMu.Lock()
-	ts := s.taskParkedStates[taskID]
-	s.taskParkedStatesMu.Unlock()
-	if ts == nil {
+	defer s.taskParkedStatesMu.Unlock()
+	ts, ok := s.taskParkedStates[taskID]
+	if !ok {
 		return false, s.parkedEpoch, 0
 	}
 	ts.mu.Lock()

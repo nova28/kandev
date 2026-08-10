@@ -660,10 +660,21 @@ type Service struct {
 	// Used by clients as restart-survivable discard signal (AC-77).
 	parkedEpoch int64
 
-	// taskParkedStatesMu guards taskParkedStates.
+	// taskParkedStatesMu guards taskParkedStates and taskParkedRevisionFloor.
 	taskParkedStatesMu sync.Mutex
 	// taskParkedStates holds the task-level OR of all session parked states.
 	taskParkedStates map[string]*taskParkedState
+	// taskParkedRevisionFloor carries a task's last-published revision across
+	// a taskParkedState row's drop-and-recreate cycle (Review round 8): the
+	// row is dropped once its members map empties (bounded memory — see
+	// removeTaskParkedMember), but a fresh row created later by
+	// getOrCreateTaskParkedStateLocked must not restart ts.revision at 0 — a
+	// client that already applied a higher revision from before the drop
+	// would then discard the recreated row's first, genuinely newer
+	// parked=true publish under the (parked_epoch, parked_revision) discard
+	// rule. Deleted alongside taskParkedStates in handleTaskDeleted, so it
+	// stays bounded by the same task lifetime as everything else here.
+	taskParkedRevisionFloor map[string]uint64
 
 	// foregroundActivity tracks, per session, whether the open turn is actively
 	// generating in the foreground or only waiting on a spawned background task
