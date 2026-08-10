@@ -742,6 +742,51 @@ func TestTaskParkedProjectionSnapshot_MultiSessionOR(t *testing.T) {
 	}
 }
 
+// TestUpdateTaskParkedState_Concurrent is AC-49a's regression guard: two of a
+// task's sessions transitioning into parked GENUINELY concurrently, not the
+// sequential calls TestTaskParkedProjectionSnapshot_MultiSessionOR makes.
+// Both sessions flip their own member entry from unset to true, so both
+// individually make anyParkedMember(members) true — but the task-level OR
+// itself only flips once, from false to true, and only the goroutine whose
+// critical section happens to run first sees changed=true and increments
+// parked_revision. A regression that races the members write, the OR
+// recompute, and the parked/revision update outside one critical section
+// (spec: "boolean and the counter are read for serialization in ONE critical
+// section") could double-increment the revision, or -race could catch an
+// unsynchronized concurrent map write — this test runs many iterations under
+// -race specifically to make either failure mode reproducible rather than
+// relying on scheduler luck for one shot.
+func TestUpdateTaskParkedState_Concurrent(t *testing.T) {
+	for i := 0; i < 50; i++ {
+		svc := createTestService(setupTestRepo(t), newMockStepGetter(), newMockTaskRepo())
+		taskID := "task-race"
+
+		var wg sync.WaitGroup
+		start := make(chan struct{})
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			<-start
+			svc.updateTaskParkedState(context.Background(), taskID, "sess-a", true)
+		}()
+		go func() {
+			defer wg.Done()
+			<-start
+			svc.updateTaskParkedState(context.Background(), taskID, "sess-b", true)
+		}()
+		close(start)
+		wg.Wait()
+
+		parked, _, revision := svc.TaskParkedProjectionSnapshot(taskID)
+		if !parked {
+			t.Fatalf("iteration %d: expected task parked=true once either session parks", i)
+		}
+		if revision != 1 {
+			t.Fatalf("iteration %d: expected exactly one revision increment for the single false->true OR flip, got %d", i, revision)
+		}
+	}
+}
+
 // TestSampleAndPublishParked_StopsWhenNotParked verifies AC-62's live→settled
 // transition: sampleAndPublishParked returns false (stop sampling), flips
 // ps.parked, bumps the revision, publishes the un-park on

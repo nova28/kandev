@@ -3,8 +3,12 @@
 package process
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"os/exec"
+	"strconv"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -33,6 +37,116 @@ func spawnSleepChild(t *testing.T) (parentPID int) {
 	// Give the child a moment to appear in the process table.
 	time.Sleep(80 * time.Millisecond)
 	return cmd.Process.Pid
+}
+
+// spawnDifferentPgidSleepChild starts a parent bash process that enables job
+// control (`set -m`) and backgrounds a sleep as a genuine job — bash puts a
+// job-controlled background job into its OWN new process group, distinct
+// from the shell's own pgid, exactly as §L measured a Claude-backgrounded
+// shell behaves. This is the counterexample spawnSleepChild (used by every
+// other walkProcessTree test in this file) cannot produce: plain
+// `/bin/sh -c "cmd &"` in a non-interactive script does not enable job
+// control, so its "backgrounded" child stays in the SAME process group as
+// its parent — the opposite of production, and not a case a regression to
+// pgid-based matching would ever fail. Returns the parent's PID
+// (walkProcessTree's root) and the backgrounded sleep's PID (a distinct
+// process-group leader, reachable only via the ppid chain).
+func spawnDifferentPgidSleepChild(t *testing.T) (parentPID, childPID int) {
+	t.Helper()
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash not available; set -m job control requires it")
+	}
+
+	cmd := exec.Command("bash", "-c", "set -m; sleep 300 & wait")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	require.NoError(t, cmd.Start(), "start parent bash")
+	parentPID = cmd.Process.Pid
+	t.Cleanup(func() {
+		_ = syscall.Kill(-parentPID, syscall.SIGKILL)
+		_ = cmd.Wait()
+	})
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if pid, ok := findDirectChildPID(parentPID); ok {
+			childPID = pid
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	require.NotZero(t, childPID, "expected the backgrounded sleep to appear as bash's direct child")
+	t.Cleanup(func() {
+		// A separate process group from the parent's — not reached by the
+		// -parentPID kill above.
+		_ = syscall.Kill(-childPID, syscall.SIGKILL)
+	})
+
+	// Confirm the two are actually in DIFFERENT process groups — the
+	// load-bearing precondition this helper exists to set up. If bash's
+	// job-control behavior ever changes, fail loudly here rather than
+	// silently testing nothing.
+	parentPgid, err := syscall.Getpgid(parentPID)
+	require.NoError(t, err)
+	childPgid, err := syscall.Getpgid(childPID)
+	require.NoError(t, err)
+	require.NotEqual(t, parentPgid, childPgid,
+		"test setup invariant: the backgrounded sleep must be in a DIFFERENT process group than its parent shell")
+
+	return parentPID, childPID
+}
+
+// findDirectChildPID returns the PID of a direct child of parentPID, using
+// `ps` for a portable Linux+Darwin parent-child lookup. This is test
+// scaffolding to locate a PID for setup/cleanup, not a liveness read — it is
+// unrelated to (and does not reintroduce) the spec's prohibition on `ps -eo
+// lstart` as a PRODUCTION probe start-time source.
+func findDirectChildPID(parentPID int) (int, bool) {
+	out, err := exec.Command("ps", "-o", "pid=,ppid=", "-ax").Output()
+	if err != nil {
+		return 0, false
+	}
+	scanner := bufio.NewScanner(bytes.NewReader(out))
+	for scanner.Scan() {
+		fields := strings.Fields(scanner.Text())
+		if len(fields) != 2 {
+			continue
+		}
+		pid, err1 := strconv.Atoi(fields[0])
+		ppid, err2 := strconv.Atoi(fields[1])
+		if err1 != nil || err2 != nil {
+			continue
+		}
+		if ppid == parentPID {
+			return pid, true
+		}
+	}
+	return 0, false
+}
+
+// TestWalkProcessTree_DifferentPgidDescendant is AC-71's regression guard for
+// the failure mode §L measured and named as the reason process-group
+// membership was rejected as the liveness predicate: a backgrounded shell
+// job is never a member of its launching shell's process group (job control
+// gives it its own), yet IS reachable as a descendant via the ppid chain.
+// Every other walkProcessTree test in this file uses spawnSleepChild, whose
+// plain `/bin/sh -c "cmd &"` does NOT enable job control, so its
+// "backgrounded" child stays in the SAME process group as its parent — the
+// opposite of what a production session actually looks like, and not a case
+// a regression to pgid-based matching would fail. This test forces the real
+// §L shape via spawnDifferentPgidSleepChild.
+func TestWalkProcessTree_DifferentPgidDescendant(t *testing.T) {
+	parentPID, _ := spawnDifferentPgidSleepChild(t)
+	root, ok := captureRootIdentity(parentPID)
+	require.True(t, ok, "expected to capture the spawned parent's root identity")
+
+	turnRef := time.Now().Add(-500 * time.Millisecond)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	result := walkProcessTree(ctx, root, newTurnStartMarker(turnRef))
+	assert.Equal(t, probeResultLive, result,
+		"a descendant in a DIFFERENT process group than its parent, reached only via the ppid chain, must still report live — pgid membership is not the liveness predicate (§L)")
 }
 
 // TestWalkProcessTree_Live verifies AC-70: a descendant born after the turn
