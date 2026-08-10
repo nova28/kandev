@@ -37,14 +37,44 @@ type sessionParkedState struct {
 	// eviction of an existing row and is compared alongside turnMarker at
 	// probe-revalidation time to close that gap.
 	generation uint64
+	// stateGeneration is a second Go-internal anti-staleness counter (Review
+	// round 7, F6), also not part of the spec's Data model. onSessionParkedHook
+	// and sampleAndPublishParked each read the session's CURRENT
+	// TaskSessionState from the repository OUTSIDE parkedStatesMu (the lock
+	// order comment above forbids calling into the repository while holding
+	// it), then apply the write under the lock. If the session left
+	// WAITING_FOR_INPUT for a reason that does NOT touch turnMarker or
+	// observedDetached — e.g. straight to a terminal state, with no
+	// accompanying turn_started — a probe already in flight can complete with
+	// a stale "still WAITING_FOR_INPUT" premise, pass the (observedDetached,
+	// turnMarker, generation) revalidation unchanged, and re-park a session
+	// that has already settled elsewhere, with no sampler left running to
+	// correct it (unparkOnStateLeave already stopped it). stateGeneration
+	// increments on every unparkOnStateLeave call — the one place that
+	// transition is observed — so an in-flight sample captured before it is
+	// discarded by the same revalidation check the other two fields use,
+	// without ever reading the repository under the lock.
+	stateGeneration uint64
 }
 
 // taskParkedState holds the task-level OR of all session parked states.
 type taskParkedState struct {
-	mu       sync.Mutex
-	members  map[string]bool // sessionID → parked bool
-	parked   bool
-	revision uint64
+	mu sync.Mutex
+	// members and memberRevision are index-aligned by sessionID: members
+	// holds the last APPLIED parked bool, memberRevision the session-level
+	// ps.revision it was applied from. memberRevision is the ordering guard
+	// F7 (Review round 7) adds: two session-level transitions for the SAME
+	// session can call updateTaskParkedState out of causal order (the older
+	// goroutine descheduled between releasing parkedStatesMu and making this
+	// call), and without an explicit order check the older, stale write can
+	// land after and overwrite the newer one — the task-level OR then stays
+	// wrong until some unrelated later transition happens to correct it. A
+	// write whose sessionRevision is not strictly greater than the recorded
+	// one is discarded rather than applied.
+	members        map[string]bool
+	memberRevision map[string]uint64
+	parked         bool
+	revision       uint64
 }
 
 // stopSampler cancels the running sampler goroutine (if any).
@@ -130,15 +160,17 @@ func (s *Service) clearObservedDetachedOnTurnStarted(ctx context.Context, taskID
 	ps.stopSampler()
 	ps.lastSample = ""
 	wasParked := ps.parked
+	var sessionRevision uint64
 	if wasParked {
 		ps.parked = false
 		ps.revision++
+		sessionRevision = ps.revision
 	}
 	s.parkedStatesMu.Unlock()
 
 	if wasParked {
 		s.publishParkedChanged(ctx, taskID, sessionID)
-		s.updateTaskParkedState(ctx, taskID, sessionID, false)
+		s.updateTaskParkedState(ctx, taskID, sessionID, false, sessionRevision)
 	}
 }
 
@@ -152,7 +184,7 @@ func (s *Service) getOrCreateTaskParkedState(taskID string) *taskParkedState {
 	if ts, ok := s.taskParkedStates[taskID]; ok {
 		return ts
 	}
-	ts := &taskParkedState{members: make(map[string]bool)}
+	ts := &taskParkedState{members: make(map[string]bool), memberRevision: make(map[string]uint64)}
 	s.taskParkedStates[taskID] = ts
 	return ts
 }

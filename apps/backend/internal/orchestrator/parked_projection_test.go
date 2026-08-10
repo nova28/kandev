@@ -261,7 +261,7 @@ func TestClearObservedDetachedOnTurnStarted_UnparksAndPublishesWhenParked(t *tes
 	ps.parked = true
 	ps.lastSample = probeResultLive
 	ps.revision = 1
-	svc.updateTaskParkedState(context.Background(), taskID, sessionID, true)
+	svc.updateTaskParkedState(context.Background(), taskID, sessionID, true, 1)
 
 	svc.clearObservedDetachedOnTurnStarted(context.Background(), taskID, sessionID)
 
@@ -719,8 +719,8 @@ func TestTaskParkedProjectionSnapshot_MultiSessionOR(t *testing.T) {
 	const taskID = "task-or"
 
 	// session A is not parked, session B is parked.
-	svc.updateTaskParkedState(context.Background(), taskID, "sess-a", false)
-	svc.updateTaskParkedState(context.Background(), taskID, "sess-b", true)
+	svc.updateTaskParkedState(context.Background(), taskID, "sess-a", false, 1)
+	svc.updateTaskParkedState(context.Background(), taskID, "sess-b", true, 1)
 
 	parked, _, revision := svc.TaskParkedProjectionSnapshot(taskID)
 	if !parked {
@@ -730,8 +730,10 @@ func TestTaskParkedProjectionSnapshot_MultiSessionOR(t *testing.T) {
 		t.Fatal("expected non-zero revision after OR flip")
 	}
 
-	// Now session B clears — both sessions not parked → OR = false.
-	svc.updateTaskParkedState(context.Background(), taskID, "sess-b", false)
+	// Now session B clears — both sessions not parked → OR = false. A higher
+	// sessionRevision than sess-b's first call (1), reflecting a later
+	// session-level transition.
+	svc.updateTaskParkedState(context.Background(), taskID, "sess-b", false, 2)
 
 	parked, _, revision2 := svc.TaskParkedProjectionSnapshot(taskID)
 	if parked {
@@ -767,12 +769,12 @@ func TestUpdateTaskParkedState_Concurrent(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start
-			svc.updateTaskParkedState(context.Background(), taskID, "sess-a", true)
+			svc.updateTaskParkedState(context.Background(), taskID, "sess-a", true, 1)
 		}()
 		go func() {
 			defer wg.Done()
 			<-start
-			svc.updateTaskParkedState(context.Background(), taskID, "sess-b", true)
+			svc.updateTaskParkedState(context.Background(), taskID, "sess-b", true, 1)
 		}()
 		close(start)
 		wg.Wait()
@@ -809,7 +811,7 @@ func TestSampleAndPublishParked_StopsWhenNotParked(t *testing.T) {
 	ps.revision = 1
 	// Register this session as the task's only parked member, mirroring what
 	// onSessionParkedHook would already have done when it first parked.
-	svc.updateTaskParkedState(context.Background(), taskID, sessionID, true)
+	svc.updateTaskParkedState(context.Background(), taskID, sessionID, true, 1)
 
 	keepRunning := svc.sampleAndPublishParked(context.Background(), taskID, sessionID)
 	if keepRunning {

@@ -23,20 +23,21 @@ func (ps *sessionParkedState) computeParked(sessionState models.TaskSessionState
 }
 
 // probeRevalidationSnapshot captures the values D2's revalidation rule
-// compares against at probe completion. generation is the anti-ABA guard
-// documented on sessionParkedState — it is not part of the spec's Data
-// model and travels on no carrier.
+// compares against at probe completion. generation and stateGeneration are
+// the anti-ABA/anti-staleness guards documented on sessionParkedState — they
+// are not part of the spec's Data model and travel on no carrier.
 type probeRevalidationSnapshot struct {
 	observedDetached bool
 	turnMarker       uint64
 	generation       uint64
+	stateGeneration  uint64
 }
 
 // captureProbeSnapshot returns the session's current (observedDetached,
-// turnMarker, generation) triple, and ok=false when the session has no
-// parkedState row or is not currently attested. AC-40a: a probe is issued
-// only when the settling turn actually attested a detached launch, so the
-// common turn end pays nothing.
+// turnMarker, generation, stateGeneration) tuple, and ok=false when the
+// session has no parkedState row or is not currently attested. AC-40a: a
+// probe is issued only when the settling turn actually attested a detached
+// launch, so the common turn end pays nothing.
 func (s *Service) captureProbeSnapshot(sessionID string) (probeRevalidationSnapshot, bool) {
 	s.parkedStatesMu.RLock()
 	defer s.parkedStatesMu.RUnlock()
@@ -44,7 +45,12 @@ func (s *Service) captureProbeSnapshot(sessionID string) (probeRevalidationSnaps
 	if ps == nil || !ps.observedDetached {
 		return probeRevalidationSnapshot{}, false
 	}
-	return probeRevalidationSnapshot{observedDetached: true, turnMarker: ps.turnMarker, generation: ps.generation}, true
+	return probeRevalidationSnapshot{
+		observedDetached: true,
+		turnMarker:       ps.turnMarker,
+		generation:       ps.generation,
+		stateGeneration:  ps.stateGeneration,
+	}, true
 }
 
 // currentSessionState reads the session's live TaskSessionState immediately
@@ -82,7 +88,7 @@ func (s *Service) onSessionParkedHook(ctx context.Context, taskID, sessionID str
 
 	s.parkedStatesMu.Lock()
 	ps := s.parkedStates[sessionID]
-	if ps == nil || ps.observedDetached != snap.observedDetached || ps.turnMarker != snap.turnMarker || ps.generation != snap.generation {
+	if ps == nil || ps.observedDetached != snap.observedDetached || ps.turnMarker != snap.turnMarker || ps.generation != snap.generation || ps.stateGeneration != snap.stateGeneration {
 		// D2 revalidation, applied in the SAME critical section as the write
 		// below rather than as a separate, unlocked check beforehand — a
 		// concurrent turn_started (or an eviction) cannot slip a state change
@@ -96,9 +102,14 @@ func (s *Service) onSessionParkedHook(ctx context.Context, taskID, sessionID str
 	newParked := ps.computeParked(sessionState)
 	var startSampler bool
 	var samplerCtx context.Context
+	var sessionRevision uint64
 	if newParked != oldParked {
 		ps.parked = newParked
 		ps.revision++
+		// Captured in this same critical section — see updateTaskParkedState's
+		// doc comment (F7, Review round 7) for why the outside-lock call below
+		// needs it rather than trusting call order.
+		sessionRevision = ps.revision
 	}
 	if newParked {
 		ps.stopSampler()
@@ -129,7 +140,7 @@ func (s *Service) onSessionParkedHook(ctx context.Context, taskID, sessionID str
 
 	if newParked != oldParked {
 		s.publishParkedChanged(ctx, taskID, sessionID)
-		s.updateTaskParkedState(ctx, taskID, sessionID, newParked)
+		s.updateTaskParkedState(ctx, taskID, sessionID, newParked, sessionRevision)
 	}
 
 	if startSampler {
@@ -184,7 +195,7 @@ func (s *Service) sampleAndPublishParked(ctx context.Context, taskID, sessionID 
 
 	s.parkedStatesMu.Lock()
 	ps := s.parkedStates[sessionID]
-	if ps == nil || ps.observedDetached != snap.observedDetached || ps.turnMarker != snap.turnMarker || ps.generation != snap.generation {
+	if ps == nil || ps.observedDetached != snap.observedDetached || ps.turnMarker != snap.turnMarker || ps.generation != snap.generation || ps.stateGeneration != snap.stateGeneration {
 		// Discarded per D2, revalidated in the same critical section as the
 		// write below (see onSessionParkedHook). Nothing is written; the
 		// loop's next tick re-issues against whatever the new turn's state
@@ -195,9 +206,11 @@ func (s *Service) sampleAndPublishParked(ctx context.Context, taskID, sessionID 
 	ps.lastSample = sample
 	oldParked := ps.parked
 	newParked := ps.computeParked(sessionState)
+	var sessionRevision uint64
 	if newParked != oldParked {
 		ps.parked = newParked
 		ps.revision++
+		sessionRevision = ps.revision
 	}
 	if !newParked {
 		ps.stopSampler()
@@ -206,7 +219,7 @@ func (s *Service) sampleAndPublishParked(ctx context.Context, taskID, sessionID 
 
 	if newParked != oldParked {
 		s.publishParkedChanged(ctx, taskID, sessionID)
-		s.updateTaskParkedState(ctx, taskID, sessionID, newParked)
+		s.updateTaskParkedState(ctx, taskID, sessionID, newParked, sessionRevision)
 	}
 
 	return newParked
@@ -225,16 +238,23 @@ func (s *Service) unparkOnStateLeave(ctx context.Context, taskID, sessionID stri
 		return
 	}
 	ps.stopSampler()
+	// F6 (Review round 7): bump stateGeneration on every call, not only when
+	// wasParked — an in-flight sample racing this transition captured its
+	// snapshot before knowing whether the session was parked, so the
+	// revalidation this guards must not depend on that outcome either.
+	ps.stateGeneration++
 	wasParked := ps.parked
+	var sessionRevision uint64
 	if wasParked {
 		ps.parked = false
 		ps.revision++
+		sessionRevision = ps.revision
 	}
 	s.parkedStatesMu.Unlock()
 
 	if wasParked {
 		s.publishParkedChanged(ctx, taskID, sessionID)
-		s.updateTaskParkedState(ctx, taskID, sessionID, false)
+		s.updateTaskParkedState(ctx, taskID, sessionID, false, sessionRevision)
 	}
 }
 
@@ -264,6 +284,11 @@ func (s *Service) evictParkedState(ctx context.Context, taskID, sessionID string
 		ps.parked = false
 		ps.revision++
 	}
+	// Captured regardless of wasParked, for removeTaskParkedMember's ordering
+	// guard below (F7) — even a no-op eviction (already unparked) needs a
+	// revision to compare against a same-session write that might otherwise
+	// race it.
+	sessionRevision := ps.revision
 	ps.stopSampler()
 	ps.observedDetached = false
 	ps.turnMarker = 0
@@ -283,8 +308,15 @@ func (s *Service) evictParkedState(ctx context.Context, taskID, sessionID string
 
 	if wasParked {
 		s.publishParkedChanged(ctx, taskID, sessionID)
-		s.updateTaskParkedState(ctx, taskID, sessionID, false)
 	}
+	// Spec (Task-level projection → "A session's entry is removed from
+	// members when its parkedState row is evicted"): every eviction — not
+	// only remove=true — drops the session from the task's membership,
+	// never merely sets it to false. Leaving a false tombstone in ts.members
+	// forever is the unbounded-growth defect this call replaces: a task
+	// whose every session has since been deleted would otherwise still hold
+	// one map entry per session ever parked, for the life of the process.
+	s.removeTaskParkedMember(ctx, taskID, sessionID, sessionRevision)
 }
 
 // runParkingSampler ticks at BackgroundSampleInterval until context is done
@@ -373,7 +405,19 @@ func (s *Service) publishParkedChanged(ctx context.Context, taskID, sessionID st
 
 // updateTaskParkedState updates the task-level OR and publishes a task update
 // if the OR changed.
-func (s *Service) updateTaskParkedState(ctx context.Context, taskID, sessionID string, parked bool) {
+//
+// sessionRevision is the session's ps.revision at the exact instant this
+// write's parked value was decided, captured by the caller in the SAME
+// critical section as that decision (see onSessionParkedHook,
+// sampleAndPublishParked, unparkOnStateLeave). Two transitions for the same
+// session can call this function out of causal order — the older
+// goroutine's call can be descheduled between releasing parkedStatesMu and
+// reaching this call, and land after a newer transition's call already did
+// (Review round 7, F7). Comparing against the last-applied revision for
+// this session, per task, rejects the stale write rather than letting it
+// silently overwrite a newer one: the task-level OR would otherwise stay
+// wrong until an unrelated later transition happened to correct it.
+func (s *Service) updateTaskParkedState(ctx context.Context, taskID, sessionID string, parked bool, sessionRevision uint64) {
 	if taskID == "" {
 		return
 	}
@@ -382,6 +426,14 @@ func (s *Service) updateTaskParkedState(ctx context.Context, taskID, sessionID s
 	if ts.members == nil {
 		ts.members = make(map[string]bool)
 	}
+	if ts.memberRevision == nil {
+		ts.memberRevision = make(map[string]uint64)
+	}
+	if lastRevision, ok := ts.memberRevision[sessionID]; ok && sessionRevision <= lastRevision {
+		ts.mu.Unlock()
+		return
+	}
+	ts.memberRevision[sessionID] = sessionRevision
 	ts.members[sessionID] = parked
 	newTaskParked := anyParkedMember(ts.members)
 	changed := newTaskParked != ts.parked
@@ -390,6 +442,65 @@ func (s *Service) updateTaskParkedState(ctx context.Context, taskID, sessionID s
 		ts.revision++
 	}
 	ts.mu.Unlock()
+
+	if changed {
+		s.publishTaskParkedChanged(ctx, taskID)
+	}
+}
+
+// removeTaskParkedMember deletes a session's entry from the task's parked
+// membership (rather than setting it to false, which updateTaskParkedState
+// does for an ordinary transition), recomputes the task-level OR, and
+// publishes on change. This is what evictParkedState calls, per the spec's
+// eviction rule: a session's entry is removed from members when its
+// parkedState row is evicted, for every eviction cause — not only when the
+// session itself is deleted. Leaving a false tombstone behind would let
+// ts.members grow by one entry per session ever parked, for the life of the
+// process, even after the owning task and every one of its sessions are
+// gone.
+//
+// If this leaves members empty, the task-level row itself is dropped —
+// nothing will read it again until a future session on this task parks and
+// getOrCreateTaskParkedState recreates it.
+//
+// sessionRevision is the session's ps.revision captured by evictParkedState
+// in the same critical section as its own decision, mirroring
+// updateTaskParkedState's ordering guard (F7): a stale, delayed eviction
+// call must not remove a member a strictly newer transition already wrote.
+// Unlike updateTaskParkedState, a call at the SAME revision (no session-level
+// increment happened, e.g. the row was already unparked) still proceeds —
+// only a strictly newer recorded revision blocks the removal.
+func (s *Service) removeTaskParkedMember(ctx context.Context, taskID, sessionID string, sessionRevision uint64) {
+	if taskID == "" {
+		return
+	}
+	s.taskParkedStatesMu.Lock()
+	ts, ok := s.taskParkedStates[taskID]
+	if !ok {
+		s.taskParkedStatesMu.Unlock()
+		return
+	}
+	ts.mu.Lock()
+	if lastRevision, ok := ts.memberRevision[sessionID]; ok && sessionRevision < lastRevision {
+		ts.mu.Unlock()
+		s.taskParkedStatesMu.Unlock()
+		return
+	}
+	delete(ts.members, sessionID)
+	delete(ts.memberRevision, sessionID)
+	newTaskParked := anyParkedMember(ts.members)
+	changed := newTaskParked != ts.parked
+	if changed {
+		ts.parked = newTaskParked
+		ts.revision++
+	}
+	membersEmpty := len(ts.members) == 0
+	ts.mu.Unlock()
+
+	if membersEmpty {
+		delete(s.taskParkedStates, taskID)
+	}
+	s.taskParkedStatesMu.Unlock()
 
 	if changed {
 		s.publishTaskParkedChanged(ctx, taskID)

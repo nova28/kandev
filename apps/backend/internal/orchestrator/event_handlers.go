@@ -33,6 +33,15 @@ func toolKindToMessageType(normalized *streams.NormalizedPayload) string {
 
 func (s *Service) handleTaskDeleted(ctx context.Context, data watcher.TaskEventData) {
 	s.scheduler.RemoveTask(data.TaskID)
+	// Backstop GC for taskParkedStates: per-session deletion already drops
+	// this task's row via removeTaskParkedMember once its members map empties
+	// (evictParkedState -> removeTaskParkedMember, called from
+	// clearTurnActivity on each session's own deletion). This is a second,
+	// unconditional pass so a task-level row can never outlive the task
+	// itself, regardless of the order session and task deletion happen in.
+	s.taskParkedStatesMu.Lock()
+	delete(s.taskParkedStates, data.TaskID)
+	s.taskParkedStatesMu.Unlock()
 }
 
 func (s *Service) handleACPSessionCreated(ctx context.Context, data watcher.ACPSessionEventData) {

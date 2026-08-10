@@ -12,6 +12,7 @@ import (
 
 	"github.com/kandev/kandev/internal/agent/runtime/lifecycle"
 	"github.com/kandev/kandev/internal/agentctl/types/streams"
+	"github.com/kandev/kandev/internal/events"
 	"github.com/kandev/kandev/internal/task/models"
 )
 
@@ -108,6 +109,208 @@ func TestParkedDoesNotAffectNotifications(t *testing.T) {
 	}
 
 	t.Cleanup(func() { svc.evictParkedState(context.Background(), "t-ac76", "s-ac76", true) })
+}
+
+// TestParkedDoesNotAffectNotifications_AllCases strengthens the AC-76
+// structural guard above across the four cases the spec names — parked,
+// un-parked, unknown-probe, and no-recogniser — by asserting on the actual
+// published events.TaskSessionStateChanged frame (the event notification
+// dispatch reads), not just on the DB row and the parked-state bookkeeping.
+// It proves the parked hook is a pure observer of the transition: exactly
+// one state-changed event is published per transition, and its
+// notification-relevant fields (task_id, session_id, old_state, new_state,
+// error_message) are identical in shape across all four cases — the parked
+// projection neither adds, removes, delays, nor duplicates this publish,
+// regardless of what the probe or the recogniser conclude. (Review round 7,
+// test-honesty: the prior AC-76 test asserted only DB/in-memory state, never
+// the actual notification-triggering publish.)
+func TestParkedDoesNotAffectNotifications_AllCases(t *testing.T) {
+	cases := []struct {
+		name             string
+		observedDetached bool // recogniser attested a detached launch this turn
+		probeResult      string
+	}{
+		{"parked: attested + live probe", true, probeResultLive},
+		{"un-parked: attested + settled probe", true, probeResultSettled},
+		{"unknown-probe: attested but probe can't tell", true, probeResultUnknown},
+		{"no-recogniser: never attested, never probed", false, probeResultLive},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := setupTestRepo(t)
+			taskID, sessionID := "t-ac76-"+tc.name, "s-ac76-"+tc.name
+			seedSession(t, repo, taskID, sessionID, "")
+
+			recorded := &recordingEventBus{}
+			svc := createTestService(repo, newMockStepGetter(), newMockTaskRepo())
+			svc.eventBus = recorded
+			probe := &fakeProbe{result: tc.probeResult}
+			svc.SetBackgroundProbe(probe)
+			if tc.observedDetached {
+				svc.getOrCreateParkedState(sessionID).observedDetached = true
+			}
+			t.Cleanup(func() { svc.evictParkedState(context.Background(), taskID, sessionID, true) })
+
+			_, ok := svc.updateTaskSessionStateWithHook(
+				context.Background(), taskID, sessionID,
+				models.TaskSessionStateWaitingForInput,
+				"", false, nil,
+			)
+			if !ok {
+				t.Fatal("expected state transition to succeed")
+			}
+
+			var stateChanged []recordedEvent
+			for _, e := range recorded.events {
+				if e.subject == events.TaskSessionStateChanged {
+					stateChanged = append(stateChanged, e)
+				}
+			}
+			if len(stateChanged) != 1 {
+				t.Fatalf("expected exactly 1 events.TaskSessionStateChanged publish, got %d — the parked hook must neither suppress nor duplicate it", len(stateChanged))
+			}
+
+			data, ok := stateChanged[0].event.Data.(map[string]interface{})
+			if !ok {
+				t.Fatalf("expected event.Data to be a map, got %T", stateChanged[0].event.Data)
+			}
+			if data[metaKeyTaskID] != taskID {
+				t.Errorf("task_id = %v, want %v", data[metaKeyTaskID], taskID)
+			}
+			if data[metaKeySessionID] != sessionID {
+				t.Errorf("session_id = %v, want %v", data[metaKeySessionID], sessionID)
+			}
+			if data[metaKeyNewState] != string(models.TaskSessionStateWaitingForInput) {
+				t.Errorf("new_state = %v, want %v", data[metaKeyNewState], models.TaskSessionStateWaitingForInput)
+			}
+			if data["error_message"] != "" {
+				t.Errorf("error_message = %v, want empty — the parked hook must not attach an error", data["error_message"])
+			}
+		})
+	}
+}
+
+// TestClearObservedDetachedOnTurnStarted_OwnershipFilter is AC-79a's
+// ownership-filter clauses, which TestParkedFIFOOrdering does not exercise:
+// its turn_started events carry no ExecutionID/PromptGeneration, so they
+// never enter cancellationOwnsStreamEvent's identity check at all (Review
+// round 7, test-honesty). This drives handleAgentStreamEvent directly with
+// a claimed cancellation identity so the filter is actually in play.
+func TestClearObservedDetachedOnTurnStarted_OwnershipFilter(t *testing.T) {
+	newTurnStartedPayload := func(taskID, sessionID, executionID string, promptGeneration uint64) *lifecycle.AgentStreamEventPayload {
+		return &lifecycle.AgentStreamEventPayload{
+			TaskID:      taskID,
+			SessionID:   sessionID,
+			ExecutionID: executionID,
+			Data: &lifecycle.AgentStreamEventData{
+				Type:             streams.EventTypeTurnStarted,
+				PromptGeneration: promptGeneration,
+			},
+		}
+	}
+
+	t.Run("a turn_started from a SUPERSEDED execution is rejected", func(t *testing.T) {
+		svc := createTestService(setupTestRepo(t), newMockStepGetter(), newMockTaskRepo())
+		const sessionID = "session-superseded"
+		svc.markObservedDetached(sessionID)
+		ps := svc.parkedStateFor(sessionID)
+		baselineMarker := ps.turnMarker
+
+		operation, owner := svc.claimCancellation(sessionID, cancellationKindExplicit)
+		if !owner {
+			t.Fatal("expected to claim cancellation ownership")
+		}
+		svc.setCancellationIdentity(sessionID, operation, cancellationIdentity{
+			executionID:      "execution-owner",
+			promptGeneration: 7,
+		})
+
+		svc.handleAgentStreamEvent(context.Background(), newTurnStartedPayload("task-1", sessionID, "execution-superseded", 7))
+
+		if ps.turnMarker != baselineMarker {
+			t.Fatalf("expected turnMarker unchanged (event rejected by the ownership filter), got %d -> %d", baselineMarker, ps.turnMarker)
+		}
+		if !ps.observedDetached {
+			t.Fatal("expected observedDetached to remain true — the superseded event must never reach clearObservedDetachedOnTurnStarted")
+		}
+	})
+
+	t.Run("a turn_started from the OWNING execution is admitted", func(t *testing.T) {
+		svc := createTestService(setupTestRepo(t), newMockStepGetter(), newMockTaskRepo())
+		const sessionID = "session-owning"
+		svc.markObservedDetached(sessionID)
+		ps := svc.parkedStateFor(sessionID)
+		baselineMarker := ps.turnMarker
+
+		operation, owner := svc.claimCancellation(sessionID, cancellationKindExplicit)
+		if !owner {
+			t.Fatal("expected to claim cancellation ownership")
+		}
+		svc.setCancellationIdentity(sessionID, operation, cancellationIdentity{
+			executionID:      "execution-owner",
+			promptGeneration: 7,
+		})
+
+		svc.handleAgentStreamEvent(context.Background(), newTurnStartedPayload("task-1", sessionID, "execution-owner", 7))
+
+		if ps.turnMarker != baselineMarker+1 {
+			t.Fatalf("expected turnMarker to increment by 1 (event admitted), got %d -> %d", baselineMarker, ps.turnMarker)
+		}
+		if ps.observedDetached {
+			t.Fatal("expected observedDetached=false: the admitted turn_started must clear it")
+		}
+	})
+
+	t.Run("a turn_started carrying prompt_generation:0 (synthetic wakeup) is admitted", func(t *testing.T) {
+		svc := createTestService(setupTestRepo(t), newMockStepGetter(), newMockTaskRepo())
+		const sessionID = "session-wakeup"
+		svc.markObservedDetached(sessionID)
+		ps := svc.parkedStateFor(sessionID)
+		baselineMarker := ps.turnMarker
+
+		operation, owner := svc.claimCancellation(sessionID, cancellationKindExplicit)
+		if !owner {
+			t.Fatal("expected to claim cancellation ownership")
+		}
+		svc.setCancellationIdentity(sessionID, operation, cancellationIdentity{
+			executionID:      "execution-owner",
+			promptGeneration: 7,
+		})
+
+		// PromptGeneration:0 bypasses the generation half of the ownership
+		// check (cancellationOwnsStreamEvent) — the synthetic wakeup path
+		// (fireWakeup) carries no generation of its own. ExecutionID still
+		// matches the owner here; a 0 generation against a mismatched
+		// ExecutionID would correctly still be rejected by the identity half.
+		svc.handleAgentStreamEvent(context.Background(), newTurnStartedPayload("task-1", sessionID, "execution-owner", 0))
+
+		if ps.turnMarker != baselineMarker+1 {
+			t.Fatalf("expected turnMarker to increment by 1 (synthetic wakeup admitted), got %d -> %d", baselineMarker, ps.turnMarker)
+		}
+		if ps.observedDetached {
+			t.Fatal("expected observedDetached=false: the admitted synthetic-wakeup turn_started must clear it")
+		}
+	})
+
+	t.Run("a turn_started from an execution already marked completed is dropped", func(t *testing.T) {
+		svc := createTestService(setupTestRepo(t), newMockStepGetter(), newMockTaskRepo())
+		const sessionID, executionID = "session-tombstoned", "execution-done"
+		svc.markObservedDetached(sessionID)
+		ps := svc.parkedStateFor(sessionID)
+		baselineMarker := ps.turnMarker
+
+		svc.markExecutionCompleted(sessionID, executionID)
+
+		svc.handleAgentStreamEvent(context.Background(), newTurnStartedPayload("task-1", sessionID, executionID, 1))
+
+		if ps.turnMarker != baselineMarker {
+			t.Fatalf("expected turnMarker unchanged (event dropped as a completed-execution tombstone), got %d -> %d", baselineMarker, ps.turnMarker)
+		}
+		if !ps.observedDetached {
+			t.Fatal("expected observedDetached to remain true — a tombstoned execution's turn_started must never reach clearObservedDetachedOnTurnStarted")
+		}
+	})
 }
 
 // TestParkedEpochRestartSurvivable (AC-77 / AC-78) verifies that after a
