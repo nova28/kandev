@@ -14,7 +14,6 @@ afterEach(() => {
 const STEPS: WorkflowStep[] = [{ id: "step-1", title: "In Progress", color: "#888" }];
 const ICON_CHECK = ".tabler-icon-check";
 const ICON_LOADER2 = ".tabler-icon-loader-2";
-const BG_TESTID = '[data-testid="task-state-background-running"]';
 
 function makeTask(foregroundActivity?: ForegroundActivity | null): Task {
   return {
@@ -42,13 +41,12 @@ function renderSwimlane(foregroundActivity?: ForegroundActivity | null) {
 }
 
 describe("SwimlaneGraphContent — task-level background-running affordance", () => {
-  it("shows the background-running affordance for a background-running task chip, not the done check", () => {
+  it("shows the background spinner (IconLoader) for a background-running task chip, not the done check", () => {
     const { container } = renderSwimlane("background");
     // the swimlane task chip reflects the task-level
-    // aggregate — background-running (shared BackgroundWorkTaskIcon), never a done
-    // check for a task still doing background work, even when the coarse state is
-    // COMPLETED.
-    expect(container.querySelector(BG_TESTID)).not.toBeNull();
+    // aggregate — background-running (IconLoader), never a done check for a task
+    // still doing background work, even when the coarse state is COMPLETED.
+    expect(container.querySelector(".tabler-icon-loader")).not.toBeNull();
     expect(container.querySelector(ICON_CHECK)).toBeNull();
     expect(container.querySelector(ICON_LOADER2)).toBeNull();
   });

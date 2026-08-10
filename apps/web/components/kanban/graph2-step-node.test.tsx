@@ -19,7 +19,6 @@ afterEach(() => {
 const STEP: WorkflowStep = { id: "step-1", title: "In Progress", color: "#888" };
 const ICON_CHECK = ".tabler-icon-check";
 const ICON_LOADER2 = ".tabler-icon-loader-2";
-const BG_TESTID = '[data-testid="task-state-background-running"]';
 
 function makeTask(foregroundActivity?: ForegroundActivity | null): Task {
   return {
@@ -50,12 +49,12 @@ function renderCurrentNode(foregroundActivity?: ForegroundActivity | null) {
 }
 
 describe("Graph2StepNode — task-level background-running affordance", () => {
-  it("shows the background-running affordance for a background-running task, not the done check", () => {
+  it("shows the background spinner (IconLoader) for a background-running task, not the done check", () => {
     const { container } = renderCurrentNode("background");
     // idle foreground + live background work reads as
-    // background-running (shared BackgroundWorkTaskIcon), never the done check — even
-    // when the coarse task state is COMPLETED.
-    expect(container.querySelector(BG_TESTID)).not.toBeNull();
+    // background-running (segmented IconLoader), never the done check — even when
+    // the coarse task state is COMPLETED.
+    expect(container.querySelector(".tabler-icon-loader")).not.toBeNull();
     expect(container.querySelector(ICON_CHECK)).toBeNull();
     // Distinct by SHAPE from the generating spinner (IconLoader2), not hue alone.
     expect(container.querySelector(ICON_LOADER2)).toBeNull();

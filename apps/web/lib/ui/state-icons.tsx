@@ -104,6 +104,20 @@ const TASK_BACKGROUND_ICON: IconConfig = {
   className: "text-violet-500 animate-spin",
 };
 
+// The task-level PARKED affordance: distinct from TASK_BACKGROUND_ICON above.
+// TASK_BACKGROUND_ICON is the pre-existing foreground_activity === "background"
+// signal and stays byte-identical (AC-59) — a bare IconLoader with no
+// data-testid. Parked is a different condition (settled + a detached
+// background workload observed this turn) and renders through the shared
+// BackgroundWorkTaskIcon component (IconCircleDashed, data-testid, tooltip),
+// matching resolver A's precedent in task-item.tsx. The Icon/className here
+// are never read directly — getTaskStateIcon special-cases this sentinel to
+// BackgroundWorkTaskIcon — but they're set to the same shape for type safety.
+const TASK_PARKED_ICON: IconConfig = {
+  Icon: IconCircleDashed,
+  className: "text-violet-500 animate-spin",
+};
+
 const PENDING_PERMISSION_ICON: IconConfig = {
   Icon: IconShieldQuestion,
   className: STYLE_PERMISSION,
@@ -310,7 +324,7 @@ function getTaskStateIconConfig(state?: TaskState, options: TaskStateIconOptions
   // parked one — foregroundActivity is a MOST-ACTIVE-WINS aggregate and
   // parkedOnBackgroundWork is an OR, so both can legitimately be true at
   // once for a multi-session task.
-  if (parkedOnBackgroundWork) return TASK_BACKGROUND_ICON;
+  if (parkedOnBackgroundWork) return TASK_PARKED_ICON;
   if (isWaitingForInputState(state)) return TASK_STATE_ICONS.WAITING_FOR_INPUT;
   // Interrupted (startup reconciliation marker): replaces the idle/done
   // affordances but never overrides terminal states, which keep their own
@@ -333,9 +347,12 @@ export function getTaskStateIcon(
   if (config === TASK_INTERRUPTED_ICON) {
     return <InterruptedTaskIcon className={cn("h-4 w-4", className)} />;
   }
-  // The background-work affordance carries data-testid and a tooltip, so it
-  // must render through BackgroundWorkTaskIcon rather than a bare IconLoader.
-  if (config === TASK_BACKGROUND_ICON) {
+  // The PARKED affordance carries data-testid and a tooltip, so it must
+  // render through BackgroundWorkTaskIcon rather than a bare icon.
+  // TASK_BACKGROUND_ICON (the pre-existing foreground_activity === "background"
+  // branch) is deliberately NOT special-cased here — AC-59 requires it stay a
+  // bare IconLoader, byte-identical to before this feature.
+  if (config === TASK_PARKED_ICON) {
     return <BackgroundWorkTaskIcon className={cn("h-4 w-4", className)} />;
   }
   return <config.Icon className={cn("h-4 w-4", config.className, className)} />;

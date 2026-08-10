@@ -6,6 +6,7 @@ import {
   IconCheck,
   IconCircleCheck,
   IconCircleFilled,
+  IconLoader,
   IconLoader2,
   IconMessageQuestion,
   IconShieldQuestion,
@@ -137,13 +138,11 @@ describe("getTaskStateIcon — waiting-for-input variants", () => {
   });
 
   it("lets background activity win over a coarse waiting state without pending input", () => {
-    const { container } = render(
-      <TooltipProvider>
-        {getTaskStateIcon("WAITING_FOR_INPUT", undefined, { foregroundActivity: "background" })}
-      </TooltipProvider>,
-    );
-    expect(container.querySelector(BG_TESTID)).not.toBeNull();
-    expect(container.querySelector('[data-testid="task-state-waiting-for-input"]')).toBeNull();
+    expect(
+      iconType(
+        getTaskStateIcon("WAITING_FOR_INPUT", undefined, { foregroundActivity: "background" }),
+      ),
+    ).toBe(IconLoader);
   });
 });
 
@@ -160,14 +159,9 @@ describe("getTaskStateIcon — task-level activity tri-state", () => {
   });
 
   it("(b) background shows a working spinner — never the done check — over a done coarse state", () => {
-    const { container } = render(
-      <TooltipProvider>
-        {getTaskStateIcon("COMPLETED", undefined, { foregroundActivity: "background" })}
-      </TooltipProvider>,
-    );
-    expect(container.querySelector(BG_TESTID)).not.toBeNull();
-    // The done check must NOT appear when background work is live.
-    expect(container.querySelector('[data-testid="task-state-turn-finished"]')).toBeNull();
+    const bg = getTaskStateIcon("COMPLETED", undefined, { foregroundActivity: "background" });
+    expect(iconType(bg)).toBe(IconLoader);
+    expect(iconType(bg)).not.toBe(IconCheck);
   });
 
   it("(c) falls through to the coarse task state when no session is active", () => {
@@ -215,20 +209,15 @@ describe("getTaskStateIcon — task-level activity tri-state", () => {
     const generating = iconClassName(
       getTaskStateIcon("IN_PROGRESS", undefined, { foregroundActivity: "generating" }),
     );
+    const background = iconClassName(
+      getTaskStateIcon("IN_PROGRESS", undefined, { foregroundActivity: "background" }),
+    );
     const done = iconClassName(
       getTaskStateIcon("COMPLETED", undefined, { foregroundActivity: null }),
     );
-    // Background delegates to BackgroundWorkTaskIcon; the inner icon carries the
-    // violet class. Check it via render+querySelector rather than the wrapper props.
-    const { container } = render(
-      <TooltipProvider>
-        {getTaskStateIcon("IN_PROGRESS", undefined, { foregroundActivity: "background" })}
-      </TooltipProvider>,
-    );
-    const bgIcon = container.querySelector(BG_TESTID);
-    expect(bgIcon?.className).toContain("text-violet-500");
-    expect(bgIcon?.className).not.toContain(generating);
-    expect(bgIcon?.className).not.toContain(done);
+    expect(background).toContain("text-violet-500");
+    expect(background).not.toBe(generating);
+    expect(background).not.toBe(done);
   });
 });
 
@@ -264,16 +253,14 @@ describe("getTaskStateIcon — interrupted marker", () => {
         }),
       ),
     ).toBe(IconLoader2);
-    // background + interrupted: the background-running affordance wins.
-    const { container: bgContainer } = render(
-      <TooltipProvider>
-        {getTaskStateIcon("REVIEW", undefined, {
+    expect(
+      iconType(
+        getTaskStateIcon("REVIEW", undefined, {
           foregroundActivity: "background",
           interrupted: true,
-        })}
-      </TooltipProvider>,
-    );
-    expect(bgContainer.querySelector(BG_TESTID)).not.toBeNull();
+        }),
+      ),
+    ).toBe(IconLoader);
     expect(
       iconType(
         getTaskStateIcon("REVIEW", undefined, { hasPendingClarification: true, interrupted: true }),
@@ -562,9 +549,24 @@ describe("getTaskStateIcon — parked-on-background-work (AC-52, AC-23, AC-34)",
     ).toBe(IconLoader2);
   });
 
-  it("still shows the parked spinner when nothing is actively generating", () => {
+  // Per the spec's Rendering contract §3, the new branch sits AFTER BOTH
+  // foreground_activity branches (generating and background), not just
+  // generating — mirroring resolver A's ladder, where the parked branch is
+  // inserted after branch 4 (foregroundActivity === "background").
+  it("lets an active background session win over a parked one on the same task", () => {
+    expect(
+      iconType(
+        getTaskStateIcon("IN_PROGRESS", undefined, {
+          foregroundActivity: "background",
+          parkedOnBackgroundWork: true,
+        }),
+      ),
+    ).toBe(IconLoader);
+  });
+
+  it("shows the parked spinner when no foreground activity is in flight", () => {
     const icon = getTaskStateIcon("IN_PROGRESS", undefined, {
-      foregroundActivity: "background",
+      foregroundActivity: null,
       parkedOnBackgroundWork: true,
     });
     const container = render(<TooltipProvider>{icon}</TooltipProvider>).container;

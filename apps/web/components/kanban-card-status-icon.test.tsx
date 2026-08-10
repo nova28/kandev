@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { isValidElement, type ReactNode } from "react";
 import {
   IconCheck,
+  IconLoader,
   IconLoader2,
   IconMessageQuestion,
   IconShieldQuestion,
@@ -35,7 +36,7 @@ describe("renderTaskStatusIcon — task-level activity aggregate", () => {
       false,
       false,
     );
-    expect(iconType(node)).toBe(BackgroundWorkTaskIcon);
+    expect(iconType(node)).toBe(IconLoader);
     expect(iconType(node)).not.toBe(IconCheck);
   });
 
