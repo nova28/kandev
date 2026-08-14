@@ -1165,6 +1165,7 @@ func derefString(p *string) string {
 // is not derived from untrusted input — even though the value is
 // semantically the same as the base name taken from InferenceConfig.Command.
 var allowedProbeCommands = map[string]string{
+	"agy-acp":       "agy-acp",
 	"auggie":        "auggie",
 	"cursor-agent":  "cursor-agent",
 	"devin":         "devin",
