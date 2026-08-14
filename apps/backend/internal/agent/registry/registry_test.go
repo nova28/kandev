@@ -257,6 +257,9 @@ func TestRegistry_LoadDefaults(t *testing.T) {
 	if !reg.Exists("grok-acp") {
 		t.Error("expected default agent 'grok-acp' to be loaded")
 	}
+	if !reg.Exists("antigravity-acp") {
+		t.Error("expected private default agent 'antigravity-acp' to be loaded")
+	}
 }
 
 func TestRegistry_List_OrderedByDisplayOrder(t *testing.T) {
