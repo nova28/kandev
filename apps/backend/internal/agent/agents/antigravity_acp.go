@@ -34,7 +34,7 @@ func (a *AntigravityACP) ID() string          { return "antigravity-acp" }
 func (a *AntigravityACP) Name() string        { return "Google Antigravity ACP Agent" }
 func (a *AntigravityACP) DisplayName() string { return "Antigravity (experimental)" }
 func (a *AntigravityACP) Description() string {
-	return "Google Antigravity via the local agy-acp ACP bridge. Local executor only; MCP and permission bridging are not yet supported."
+	return "Google Antigravity via the local agy-acp ACP bridge. Local executor only; profile controls support sandbox and trusted-worktree permission bypass."
 }
 func (a *AntigravityACP) Enabled() bool     { return true }
 func (a *AntigravityACP) DisplayOrder() int { return 22 }
@@ -81,7 +81,29 @@ func (a *AntigravityACP) RemoteAuth() *RemoteAuth { return nil }
 func (a *AntigravityACP) InstallScript() string { return "" }
 
 func (a *AntigravityACP) PermissionSettings() map[string]PermissionSetting {
-	return emptyPermSettings
+	return antigravityACPPermSettings
+}
+
+// These flags are deliberately regular curated profile flags rather than the
+// deprecated global dangerous-permission field, which the current profile UI
+// does not expose. agy-acp parses them and forwards them to the child agy CLI.
+var antigravityACPPermSettings = map[string]PermissionSetting{
+	"agy_skip_permissions": {
+		Supported:   true,
+		Default:     false,
+		Label:       "Skip Antigravity confirmations",
+		Description: "Trusted local worktrees only. Bypasses Antigravity permission confirmations (--dangerously-skip-permissions).",
+		ApplyMethod: PermissionApplyMethodCLIFlag,
+		CLIFlag:     "--dangerously-skip-permissions",
+	},
+	"agy_sandbox": {
+		Supported:   true,
+		Default:     false,
+		Label:       "Request Antigravity sandbox",
+		Description: "Requests the installed Antigravity CLI sandbox mode (--sandbox).",
+		ApplyMethod: PermissionApplyMethodCLIFlag,
+		CLIFlag:     "--sandbox",
+	},
 }
 
 func (a *AntigravityACP) InferenceConfig() *InferenceConfig {

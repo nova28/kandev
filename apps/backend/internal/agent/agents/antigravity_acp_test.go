@@ -41,8 +41,18 @@ func TestAntigravityACPContract(t *testing.T) {
 	if a.RemoteAuth() != nil || a.InstallScript() != "" {
 		t.Error("the private bridge must not advertise unsupported remote executor setup")
 	}
-	if got := a.PermissionSettings(); len(got) != 0 {
-		t.Errorf("PermissionSettings() = %#v, want empty", got)
+	if got := a.PermissionSettings(); len(got) != 2 {
+		t.Errorf("PermissionSettings() = %#v, want two curated flags", got)
+	} else {
+		for key, flag := range map[string]string{
+			"agy_skip_permissions": "--dangerously-skip-permissions",
+			"agy_sandbox":          "--sandbox",
+		} {
+			setting, ok := got[key]
+			if !ok || !setting.Supported || setting.Default || setting.ApplyMethod != PermissionApplyMethodCLIFlag || setting.CLIFlag != flag {
+				t.Errorf("PermissionSettings()[%q] = %#v, want disabled curated CLI flag %q", key, setting, flag)
+			}
+		}
 	}
 	if got := a.InferenceConfig(); got == nil || !got.Supported || !slices.Equal(got.Command.Args(), []string{"agy-acp"}) {
 		t.Errorf("InferenceConfig() = %+v, want supported agy-acp", got)
