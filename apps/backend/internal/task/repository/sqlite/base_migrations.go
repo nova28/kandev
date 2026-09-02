@@ -352,6 +352,22 @@ func (r *Repository) runMigrations() error {
 	r.migrate.Apply("task_plan_revisions.workflow_step_name", `ALTER TABLE task_plan_revisions ADD COLUMN workflow_step_name TEXT NOT NULL DEFAULT ''`)
 	r.migrate.Apply("task_plan_revisions.workflow_step_color", `ALTER TABLE task_plan_revisions ADD COLUMN workflow_step_color TEXT NOT NULL DEFAULT ''`)
 
+	// CreateOfficeTaskSession's live-session guard filters task_sessions on
+	// (task_id, agent_profile_id) while holding the write transaction open.
+	// idx_task_sessions_task_id covers only the leading column, so the guard
+	// would otherwise scan every session row belonging to the task. Declared
+	// here rather than in the CREATE TABLE block because schema init is a
+	// no-op on an existing DB (see AGENTS.md "Schema & migrations"), and it
+	// must run after the table rebuilds above, which drop and recreate their
+	// own indexes.
+	//
+	// Deliberately NOT unique: a table-wide unique index on this pair broke
+	// live kanban-relaunch and workflow-replacement flows (see
+	// ErrOfficeSessionRaceConflict's doc comment). Uniqueness is enforced by
+	// the in-transaction guard, not by the schema.
+	r.migrate.Apply("idx_task_sessions_task_agent",
+		`CREATE INDEX IF NOT EXISTS idx_task_sessions_task_agent ON task_sessions(task_id, agent_profile_id)`)
+
 	return nil
 }
 

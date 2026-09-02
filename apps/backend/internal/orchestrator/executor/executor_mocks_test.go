@@ -930,12 +930,44 @@ func (m *mockRepository) GetTaskSessionByTaskAndAgent(ctx context.Context, taskI
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	var best *models.TaskSession
 	for _, s := range m.sessions {
-		if s.TaskID == taskID && s.AgentProfileID == agentInstanceID {
-			return s, nil
+		if s.TaskID != taskID || s.AgentProfileID != agentInstanceID {
+			continue
+		}
+		if best == nil || officeSessionSortsBefore(s, best) {
+			best = s
 		}
 	}
-	return nil, nil
+	return best, nil
+}
+
+// officeSessionSortsBefore reports whether a would be selected over b by the
+// repository's GetTaskSessionByTaskAndAgent ordering, which this mock must
+// mirror exactly:
+//
+//	ORDER BY CASE WHEN state IN ('COMPLETED','FAILED','CANCELLED')
+//	              THEN 1 ELSE 0 END,   -- live rows first
+//	         started_at DESC,
+//	         id DESC
+//	LIMIT 1
+//
+// The live-first term is load-bearing, not cosmetic: a terminal row created
+// after a live row (a stale duplicate resolving while the real session is
+// still running) must not shadow the live one. If this mock instead returned
+// an arbitrary match — as a range over m.sessions does, since Go randomizes
+// map iteration order — a caller test could not distinguish "reused the live
+// session" from "saw the terminal row and created a duplicate", which is the
+// exact bug the ordering exists to prevent.
+func officeSessionSortsBefore(a, b *models.TaskSession) bool {
+	aTerminal, bTerminal := isStopTerminalSessionState(a.State), isStopTerminalSessionState(b.State)
+	if aTerminal != bTerminal {
+		return !aTerminal
+	}
+	if !a.StartedAt.Equal(b.StartedAt) {
+		return a.StartedAt.After(b.StartedAt)
+	}
+	return a.ID > b.ID
 }
 func (m *mockRepository) ListTaskSessions(ctx context.Context, taskID string) ([]*models.TaskSession, error) {
 	m.mu.Lock()
