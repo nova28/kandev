@@ -48,7 +48,19 @@ type Engine struct {
 	persistence Persistence
 	loader      StateLoader
 	probes      map[string]ProbeLease
+	lastSweep   time.Time
 }
+
+// stateRetentionTTL bounds how long a settled session's route state stays in
+// the process-local cache. It is only enforced when a StateLoader is wired,
+// since that is what makes eviction safe: the next selectContext call for a
+// session that resurfaces after this window rehydrates from durable storage
+// instead of silently restarting at generation 0.
+const stateRetentionTTL = 24 * time.Hour
+
+// sweepInterval throttles the retirement pass so a busy process does not walk
+// the full state/probe maps on every selectContext call.
+const sweepInterval = time.Minute
 
 func NewEngine(options ...EngineOption) *Engine {
 	engine := &Engine{
@@ -130,6 +142,8 @@ func (e *Engine) selectContext(
 ) (RouteDecision, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	now := e.now()
+	e.sweepLocked(now)
 	state, exists, err := e.loadStateLocked(ctx, sessionID)
 	if err != nil {
 		return RouteDecision{}, err
@@ -142,9 +156,8 @@ func (e *Engine) selectContext(
 		return RouteDecision{}, ErrStaleGeneration
 	}
 	generation := currentGeneration + 1
-	now := e.now()
 	for _, candidate := range profile.Candidates {
-		if !e.candidateSelectable(candidate, sessionID, generation, excludeProfileID, preferredProfileID, now) {
+		if !e.candidateSelectable(candidate, sessionID, generation, excludeProfileID, preferredProfileID) {
 			continue
 		}
 		decision := RouteDecision{
@@ -167,6 +180,12 @@ func (e *Engine) selectContext(
 		}
 		if err := e.claimAndPersist(ctx, expectedGeneration, decision, nextState); err != nil {
 			delete(e.states, sessionID)
+			if lease, ok := e.takeProbeLocked(sessionID, generation, candidate.ID); ok && e.circuits != nil {
+				// The claim never landed, so this attempt has no launch result to
+				// probe for. Release as a failure (fail-closed) rather than
+				// stranding the lease for its full duration or guessing success.
+				e.circuits.ReleaseProbe(lease, false, circuitBackoff)
+			}
 			return RouteDecision{}, err
 		}
 		e.states[sessionID] = nextState
@@ -208,14 +227,14 @@ func (e *Engine) loadStateLocked(ctx context.Context, sessionID string) (RouteSt
 
 const probeLeaseDuration = 30 * time.Second
 
-func (e *Engine) candidateSelectable(candidate Candidate, sessionID string, generation int64, excludeProfileID, preferredProfileID string, now time.Time) bool {
+func (e *Engine) candidateSelectable(candidate Candidate, sessionID string, generation int64, excludeProfileID, preferredProfileID string) bool {
 	if !candidate.Enabled || candidate.ID == excludeProfileID {
 		return false
 	}
 	if preferredProfileID != "" && candidate.ID != preferredProfileID {
 		return false
 	}
-	if candidate.BindingKey == "" || !e.circuits.IsOpen(candidate.BindingKey, now) {
+	if candidate.BindingKey == "" || !e.circuits.IsOpen(candidate.BindingKey) {
 		return true
 	}
 	lease, ok := e.circuits.AcquireProbe(candidate.BindingKey, probeLeaseDuration)
@@ -230,6 +249,42 @@ func (e *Engine) candidateSelectable(candidate Candidate, sessionID string, gene
 
 func probeKey(sessionID string, generation int64, candidateID string) string {
 	return sessionID + ":" + fmt.Sprint(generation) + ":" + candidateID
+}
+
+// sweepLocked retires stale in-memory bookkeeping so a long-lived process does
+// not accumulate one entry per historical session forever. Caller holds e.mu.
+func (e *Engine) sweepLocked(now time.Time) {
+	if !e.lastSweep.IsZero() && now.Sub(e.lastSweep) < sweepInterval {
+		return
+	}
+	e.lastSweep = now
+	for key, lease := range e.probes {
+		if !lease.ExpiresAt.IsZero() && now.After(lease.ExpiresAt) {
+			delete(e.probes, key)
+		}
+	}
+	// Route state is only evicted when a loader can rehydrate it durably; with
+	// no loader the map is the sole source of truth and must never shrink on
+	// its own.
+	if e.loader == nil {
+		return
+	}
+	for key, state := range e.states {
+		if now.Sub(state.UpdatedAt) > stateRetentionTTL {
+			delete(e.states, key)
+		}
+	}
+}
+
+// takeProbeLocked removes and returns the probe lease held for this attempt,
+// if any. Caller holds e.mu.
+func (e *Engine) takeProbeLocked(sessionID string, generation int64, candidateID string) (ProbeLease, bool) {
+	key := probeKey(sessionID, generation, candidateID)
+	lease, ok := e.probes[key]
+	if ok {
+		delete(e.probes, key)
+	}
+	return lease, ok
 }
 
 func (e *Engine) persistNoEligible(ctx context.Context, expectedGeneration int64, state RouteState) error {
@@ -658,11 +713,7 @@ func (e *Engine) ReleaseProbe(decision RouteDecision, success bool) {
 		return
 	}
 	e.mu.Lock()
-	key := probeKey(decision.SessionID, decision.Generation, decision.ExecutionProfileID)
-	lease, ok := e.probes[key]
-	if ok {
-		delete(e.probes, key)
-	}
+	lease, ok := e.takeProbeLocked(decision.SessionID, decision.Generation, decision.ExecutionProfileID)
 	e.mu.Unlock()
 	if ok {
 		e.circuits.ReleaseProbe(lease, success, circuitBackoff)

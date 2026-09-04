@@ -378,3 +378,119 @@ func TestEngineUsesExclusiveProbeForExpiredCircuit(t *testing.T) {
 func containsSensitive(value, sensitive string) bool {
 	return sensitive != "" && strings.Contains(value, sensitive)
 }
+
+type errorPersistence struct{ err error }
+
+func (p errorPersistence) SaveRouteState(context.Context, RouteState) error { return p.err }
+func (p errorPersistence) AppendRouteAttempt(context.Context, RouteAttempt) error {
+	return nil
+}
+
+// TestEngineReleasesProbeLeaseWhenClaimFails covers the P2 finding: a probe
+// lease acquired for the winning candidate must not survive a failed
+// claimAndPersist, or the e.probes entry leaks for the life of the process
+// (nothing else will ever call ReleaseProbe for that generation).
+func TestEngineReleasesProbeLeaseWhenClaimFails(t *testing.T) {
+	now := time.Unix(600, 0)
+	engine := NewEngine(
+		WithClock(func() time.Time { return now }),
+		WithPersistence(errorPersistence{err: errors.New("boom")}),
+	)
+	engine.Circuits().Open("shared", now.Add(-time.Second), routingerr.CodeQuotaLimited)
+	profile := Profile{ID: "dynamic-1", Candidates: []Candidate{
+		{ID: "first", Enabled: true, BindingKey: "shared"},
+	}}
+	if _, err := engine.Select("session-1", profile, 0, ""); err == nil {
+		t.Fatal("expected the persistence failure to surface")
+	}
+	if len(engine.probes) != 0 {
+		t.Fatalf("probe lease was stranded after a failed claim: %#v", engine.probes)
+	}
+}
+
+// TestCircuitRegistryDropsClosedCircuitFromMemory covers the P2 finding that
+// CircuitRegistry.circuits grows without bound: a closed circuit is
+// indistinguishable from an absent one (see IsOpen/AcquireProbe), so it must
+// not be kept in memory once a probe succeeds.
+func TestCircuitRegistryDropsClosedCircuitFromMemory(t *testing.T) {
+	now := time.Unix(700, 0)
+	registry := NewCircuitRegistry(WithCircuitClock(func() time.Time { return now }))
+	registry.Open("provider:x", now.Add(-time.Second), routingerr.CodeQuotaLimited)
+	lease, ok := registry.AcquireProbe("provider:x", time.Minute)
+	if !ok {
+		t.Fatal("expected a probe lease")
+	}
+	registry.ReleaseProbe(lease, true, time.Second)
+	if _, tracked := registry.circuits["provider:x"]; tracked {
+		t.Fatal("a closed circuit should be dropped from the in-memory map")
+	}
+	if registry.IsOpen("provider:x") {
+		t.Fatal("a dropped circuit must still read as closed")
+	}
+}
+
+type nilStateLoader struct{}
+
+func (nilStateLoader) LoadRouteState(context.Context, string) (*RouteState, error) {
+	return nil, nil
+}
+
+// TestEngineRetiresStaleRouteStateWhenLoaderCanRehydrate covers the P2
+// finding that Engine.states grows without bound: once a StateLoader is
+// wired, a settled session's cached state is safe to retire because the next
+// select for that session rehydrates from durable storage instead of
+// silently restarting at generation 0.
+func TestEngineRetiresStaleRouteStateWhenLoaderCanRehydrate(t *testing.T) {
+	now := time.Unix(1000, 0)
+	engine := NewEngine(WithClock(func() time.Time { return now }), WithStateLoader(nilStateLoader{}))
+	profile := Profile{ID: "dynamic-1", Candidates: []Candidate{{ID: "first", Enabled: true}}}
+	if _, err := engine.Select("session-1", profile, 0, ""); err != nil {
+		t.Fatalf("Select: %v", err)
+	}
+	if _, ok := engine.states["session-1"]; !ok {
+		t.Fatal("expected cached state right after selection")
+	}
+	now = now.Add(stateRetentionTTL + time.Hour)
+	if _, err := engine.Select("session-2", profile, 0, ""); err != nil {
+		t.Fatalf("Select session-2: %v", err)
+	}
+	if _, ok := engine.states["session-1"]; ok {
+		t.Fatal("stale route state should have been retired once a durable loader is configured")
+	}
+}
+
+// TestEngineNeverEvictsRouteStateWithoutALoader guards the safety condition
+// on the retirement sweep above: with no durable loader, the in-memory map is
+// the only copy of route state, so it must never shrink on its own.
+func TestEngineNeverEvictsRouteStateWithoutALoader(t *testing.T) {
+	now := time.Unix(1000, 0)
+	engine := NewEngine(WithClock(func() time.Time { return now }))
+	profile := Profile{ID: "dynamic-1", Candidates: []Candidate{{ID: "first", Enabled: true}}}
+	if _, err := engine.Select("session-1", profile, 0, ""); err != nil {
+		t.Fatalf("Select: %v", err)
+	}
+	now = now.Add(stateRetentionTTL + time.Hour)
+	if _, err := engine.Select("session-2", profile, 0, ""); err != nil {
+		t.Fatalf("Select session-2: %v", err)
+	}
+	if _, ok := engine.states["session-1"]; !ok {
+		t.Fatal("route state must not be evicted without a durable loader")
+	}
+}
+
+// TestEngineSweepsExpiredProbeLeases covers the general leak-prevention case
+// for e.probes: any lease past its own expiry is safe to drop even when no
+// caller ever explicitly releases it.
+func TestEngineSweepsExpiredProbeLeases(t *testing.T) {
+	now := time.Unix(1000, 0)
+	engine := NewEngine(WithClock(func() time.Time { return now }))
+	engine.probes["stale-key"] = ProbeLease{Key: "stale-key", ExpiresAt: now.Add(-time.Second)}
+	profile := Profile{ID: "dynamic-1", Candidates: []Candidate{{ID: "first", Enabled: true}}}
+	now = now.Add(sweepInterval + time.Second)
+	if _, err := engine.Select("session-1", profile, 0, ""); err != nil {
+		t.Fatalf("Select: %v", err)
+	}
+	if _, ok := engine.probes["stale-key"]; ok {
+		t.Fatal("expired probe lease should have been swept")
+	}
+}

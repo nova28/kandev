@@ -81,7 +81,10 @@ func NewCircuitRegistry(options ...CircuitRegistryOption) *CircuitRegistry {
 	return registry
 }
 
-// Restore loads durable circuit state before routing workers start.
+// Restore loads durable circuit state before routing workers start. Closed
+// snapshots are skipped: IsOpen and AcquireProbe treat an absent key and a
+// closed one identically, so loading them would only regrow the in-memory map
+// with entries that no longer need tracking.
 func (r *CircuitRegistry) Restore(ctx context.Context) error {
 	if r.persist == nil {
 		return nil
@@ -93,6 +96,9 @@ func (r *CircuitRegistry) Restore(ctx context.Context) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for _, snapshot := range snapshots {
+		if snapshot.State == CircuitClosed {
+			continue
+		}
 		r.circuits[snapshot.Key] = circuit{
 			state: snapshot.State, until: snapshot.Until,
 			code: snapshot.Code, probeUntil: snapshot.ProbeUntil,
@@ -107,11 +113,16 @@ func (r *CircuitRegistry) Open(key string, until time.Time, code routingerr.Code
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.circuits[key] = circuit{state: CircuitOpen, until: until, code: code}
-	r.persistSnapshotLocked(key)
+	entry := circuit{state: CircuitOpen, until: until, code: code}
+	r.circuits[key] = entry
+	r.persistSnapshotLocked(key, entry)
 }
 
-func (r *CircuitRegistry) IsOpen(key string, now time.Time) bool {
+// IsOpen reports whether a candidate must go through the probe path before
+// selection. Recovery is probe-driven, not time-driven: an expired open
+// circuit stays unavailable until AcquireProbe grants the exclusive lease, so
+// this check does not take a clock.
+func (r *CircuitRegistry) IsOpen(key string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	entry, ok := r.circuits[key]
@@ -147,7 +158,7 @@ func (r *CircuitRegistry) AcquireProbe(key string, duration time.Duration) (Prob
 	entry.state = CircuitHalfOpen
 	entry.probeUntil = lease.ExpiresAt
 	r.circuits[key] = entry
-	r.persistSnapshotLocked(key)
+	r.persistSnapshotLocked(key, entry)
 	return lease, true
 }
 
@@ -161,25 +172,24 @@ func (r *CircuitRegistry) ReleaseProbe(lease ProbeLease, success bool, backoff t
 	if !ok || entry.state != CircuitHalfOpen || !entry.probeUntil.Equal(lease.ExpiresAt) {
 		return
 	}
-	entry.probeUntil = time.Time{}
 	if success {
-		entry.state = CircuitClosed
-		entry.until = time.Time{}
-		entry.code = ""
-	} else {
-		entry.state = CircuitOpen
-		entry.until = r.now().Add(backoff)
-	}
-	r.circuits[lease.Key] = entry
-	r.persistSnapshotLocked(lease.Key)
-}
-
-func (r *CircuitRegistry) persistSnapshotLocked(key string) {
-	if r.persist == nil {
+		// A closed circuit is indistinguishable from an absent one (see
+		// IsOpen/AcquireProbe), so drop it from the in-memory map instead of
+		// keeping a settled entry around for the life of the process. The
+		// durable store still records the closed state for Restore's benefit.
+		delete(r.circuits, lease.Key)
+		r.persistSnapshotLocked(lease.Key, circuit{state: CircuitClosed})
 		return
 	}
-	entry, ok := r.circuits[key]
-	if !ok {
+	entry.probeUntil = time.Time{}
+	entry.state = CircuitOpen
+	entry.until = r.now().Add(backoff)
+	r.circuits[lease.Key] = entry
+	r.persistSnapshotLocked(lease.Key, entry)
+}
+
+func (r *CircuitRegistry) persistSnapshotLocked(key string, entry circuit) {
+	if r.persist == nil {
 		return
 	}
 	// Selection remains fail-closed in memory if persistence is temporarily
