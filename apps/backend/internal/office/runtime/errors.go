@@ -20,4 +20,10 @@ var (
 	// either) in a workspace that has at least one project to choose from.
 	// Caller-correctable: the caller should retry with an explicit project_id.
 	ErrProjectRequired = fmt.Errorf("project_id is required")
+	// ErrInvalidListParams is returned when a board-read query parameter
+	// fails validation.
+	ErrInvalidListParams = fmt.Errorf("invalid list parameters")
+	// ErrCommentBodyRequired is returned when a comment body is empty or
+	// whitespace-only.
+	ErrCommentBodyRequired = fmt.Errorf("comment body is required")
 )

@@ -821,6 +821,7 @@ func newRuntimeHandlerHarnessWithProjectManager(
 		}),
 		nil,
 		runEvents,
+		nil,
 	))
 	return &handlerHarness{
 		router:     router,

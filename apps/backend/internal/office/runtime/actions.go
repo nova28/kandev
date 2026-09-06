@@ -368,13 +368,51 @@ func NewActions(deps ActionDependencies) *Actions {
 	return &Actions{deps: deps}
 }
 
+// canAnnotateTask enforces the annotation predicate (REQ-OFFICE-COORDINATOR-
+// AUTHORITY-004): a task-bound run may only annotate its own bound task,
+// byte-for-byte today's behavior; a taskless run may annotate any task in
+// its workspace, whether or not that task is in its (narrower) task-mutation
+// scope. A cross-workspace target and a nonexistent one refuse with the
+// same sentinel so annotation cannot be used as an existence oracle; a
+// failed lookup is returned as-is so an outage is not read as a refusal.
+// canAnnotateTask is the annotation scope predicate: a task-bound run may
+// annotate only its own task; a taskless run may annotate any task that
+// resolves to its own workspace claim. The two checks never interact — a
+// task-bound run never consults a workspace lookup, and a taskless run
+// never falls back to its (absent) task id.
+func (a *Actions) canAnnotateTask(ctx context.Context, runCtx RunContext, taskID string) error {
+	if strings.TrimSpace(runCtx.TaskID) != "" {
+		if taskID != runCtx.TaskID {
+			return ErrTaskOutOfScope
+		}
+		return nil
+	}
+	if strings.TrimSpace(runCtx.WorkspaceID) == "" {
+		return ErrWorkspaceOutOfScope
+	}
+	if a.deps.Tasks == nil {
+		return fmt.Errorf("%w: tasks", ErrRuntimeDependencyMissing)
+	}
+	workspaceID, err := a.deps.Tasks.GetTaskWorkspaceID(ctx, taskID)
+	if err != nil {
+		return err
+	}
+	if workspaceID == "" || workspaceID != runCtx.WorkspaceID {
+		return ErrTaskOutOfScope
+	}
+	return nil
+}
+
 // PostComment records an agent-authored task comment when the run is scoped for it.
 func (a *Actions) PostComment(ctx context.Context, runCtx RunContext, taskID, body string) error {
 	if !runCtx.Capabilities.Allows(CapabilityPostComment) {
 		return ErrCapabilityDenied
 	}
-	if !runCtx.CanMutateTask(taskID) {
-		return ErrTaskOutOfScope
+	if strings.TrimSpace(body) == "" {
+		return ErrCommentBodyRequired
+	}
+	if err := a.canAnnotateTask(ctx, runCtx, taskID); err != nil {
+		return err
 	}
 	if a.deps.Comments == nil {
 		return fmt.Errorf("%w: comments", ErrRuntimeDependencyMissing)

@@ -20,6 +20,7 @@ type Handler struct {
 	actions     *Actions
 	skillLister SkillLister
 	runEvents   RunEventAppender
+	taskLister  TaskFilteredLister
 }
 
 // RunEventAppender records runtime behavior against a run.
@@ -33,12 +34,14 @@ func NewHandler(
 	actions *Actions,
 	skillLister SkillLister,
 	runEvents RunEventAppender,
+	taskLister TaskFilteredLister,
 ) *Handler {
 	return &Handler{
 		agentSvc:    agentSvc,
 		actions:     actions,
 		skillLister: skillLister,
 		runEvents:   runEvents,
+		taskLister:  taskLister,
 	}
 }
 
@@ -47,6 +50,7 @@ func RegisterRoutes(group *gin.RouterGroup, h *Handler) {
 	group.POST("/runtime/comments", h.postComment)
 	group.POST("/runtime/tasks/:id/status", h.updateTaskStatus)
 	group.POST("/runtime/tasks/:id/subtasks", h.createSubtask)
+	group.GET("/runtime/tasks", h.listTasks)
 	group.POST("/runtime/tasks", h.createTask)
 	group.POST("/runtime/agents", h.createAgent)
 	group.GET("/runtime/projects", h.listProjects)
@@ -408,7 +412,8 @@ func (h *Handler) respondRuntimeError(
 	targetID string,
 	err error,
 ) {
-	if errors.Is(err, errTaskTitleRequired) || errors.Is(err, ErrProjectRequired) {
+	if errors.Is(err, errTaskTitleRequired) || errors.Is(err, ErrProjectRequired) ||
+		errors.Is(err, ErrInvalidListParams) || errors.Is(err, ErrCommentBodyRequired) {
 		h.appendDeniedRunEvent(c.Request.Context(), runCtx, action, targetType, targetID, err)
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return

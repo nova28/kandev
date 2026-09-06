@@ -288,9 +288,11 @@ func (si *SchedulerIntegration) prepareAndLaunch(
 	si.snapshotRunSkills(ctx, run.ID, manifest, instructionsDir)
 
 	runCtx, err := (&officeruntime.ContextBuilder{
-		Agents: si.svc,
-		Runs:   si.svc.repo,
-		Seats:  si.svc,
+		Agents:       si.svc,
+		Runs:         si.svc.repo,
+		Seats:        si.svc,
+		RunnerLister: si.svc.repo,
+		ScopeEvents:  si.svc,
 	}).BuildAndPersist(ctx, run)
 	if err != nil {
 		si.logger.Warn("runtime context build failed; retrying run",
