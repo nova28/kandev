@@ -45,6 +45,15 @@ func setWorkingRunID(t *testing.T, db *sqlx.DB, agentID, runID string) {
 	}
 }
 
+// setPauseReason seeds pause_reason directly, bypassing the CASes under
+// test so a test can set up an arbitrary (status, pause_reason) pair.
+func setPauseReason(t *testing.T, db *sqlx.DB, agentID, reason string) {
+	t.Helper()
+	if _, err := db.Exec(`UPDATE agent_profiles SET pause_reason = ? WHERE id = ?`, reason, agentID); err != nil {
+		t.Fatalf("seed pause_reason: %v", err)
+	}
+}
+
 // TestMarkAgentWorking_FromIdle is the core DR-14 write: before this method
 // existed, no production code path could ever produce this status.
 func TestMarkAgentWorking_FromIdle(t *testing.T) {

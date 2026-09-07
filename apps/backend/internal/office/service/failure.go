@@ -126,7 +126,10 @@ func (s *Service) MarkAgentRunFailedFixed(
 // recovery back up, instead of reporting success on work that never
 // happened. Unpausing CASes on the status this call itself observed
 // rather than a fresh re-read, so a concurrent manual stop landing in
-// the same window is refused instead of silently reverted.
+// the same window is refused instead of silently reverted. The final
+// pause-reason clear CASes on the pause reason itself, not status,
+// since the requeue loop above may already have moved the agent to
+// working by the time this function reaches it.
 func (s *Service) MarkAgentPausedFixed(
 	ctx context.Context, userID, agentID string,
 ) error {
@@ -139,7 +142,6 @@ func (s *Service) MarkAgentPausedFixed(
 		return nil
 	}
 
-	currentStatus := agent.Status
 	if agent.Status == models.AgentStatusPaused {
 		// QueueRun's guardAgentStatus rejects paused/stopped/pending_approval,
 		// so the agent must reach idle before the requeue loop below.
@@ -148,7 +150,6 @@ func (s *Service) MarkAgentPausedFixed(
 		); err != nil {
 			return fmt.Errorf("unpause agent: %w", err)
 		}
-		currentStatus = models.AgentStatusIdle
 	}
 
 	if err := s.repo.ResetAgentConsecutiveFailures(ctx, agentID); err != nil {
@@ -188,7 +189,12 @@ func (s *Service) MarkAgentPausedFixed(
 		return err
 	}
 
-	if err := s.UpdateAgentStatusFrom(ctx, agentID, currentStatus, currentStatus, ""); err != nil {
+	// The status this function observed is stale by construction: the
+	// requeue loop above just queued runs for this agent, so the scheduler
+	// may already have claimed one and moved the agent to working. Clear
+	// the pause reason on its own value rather than asserting a status
+	// nobody here still owns.
+	if err := s.ClearAgentPauseReasonIfCurrent(ctx, agentID, agent.PauseReason); err != nil {
 		return fmt.Errorf("clear pause reason: %w", err)
 	}
 	return s.repo.DismissInboxItem(ctx, userID, InboxKindAgentPausedAfterFails, agentID)

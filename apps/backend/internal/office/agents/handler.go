@@ -393,6 +393,10 @@ func (h *Handler) updateAgentStatus(c *gin.Context) {
 		c.Request.Context(), c.Param("id"),
 		models.AgentStatus(req.Status), req.PauseReason)
 	if err != nil {
+		if errors.Is(err, ErrAgentStatusChanged) {
+			c.JSON(http.StatusConflict, gin.H{"error": err.Error(), "code": "agent_status_changed"})
+			return
+		}
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}

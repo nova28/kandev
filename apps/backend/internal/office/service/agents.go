@@ -216,6 +216,26 @@ func (s *Service) UpdateAgentStatus(
 	return agent, nil
 }
 
+// ClearAgentPauseReasonIfCurrent clears the pause reason only while it
+// still matches expectedReason, touching neither status nor
+// working_run_id. Callers that need to clear a pause reason as the last
+// step of a recovery sequence use this instead of UpdateAgentStatusFrom,
+// since by that point the agent's status may have legitimately moved on
+// (e.g. the scheduler claimed a requeued run), which would make a status
+// CAS fail even though the recovery itself succeeded.
+func (s *Service) ClearAgentPauseReasonIfCurrent(
+	ctx context.Context, id, expectedReason string,
+) error {
+	changed, err := s.repo.ClearAgentPauseReasonIfCurrent(ctx, id, expectedReason)
+	if err != nil {
+		return fmt.Errorf("persist pause reason: %w", err)
+	}
+	if !changed {
+		return ErrAgentStatusChanged
+	}
+	return nil
+}
+
 // UpdateAgentStatusFrom validates and persists a transition against the
 // status the caller itself observed (`expected`), rather than this call's
 // own fresh read. The write only lands while the row is still in

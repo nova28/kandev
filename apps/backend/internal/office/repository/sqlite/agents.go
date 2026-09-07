@@ -426,19 +426,44 @@ func (r *Repository) UpdateAgentStatusFields(
 // writer moved the row first — fails closed instead of silently
 // overwriting whatever that writer set.
 //
-// Unlike UpdateAgentStatusFields, this is not a "working" writer: it
-// always clears working_run_id rather than special-casing a `working`
-// target, since MarkAgentWorking/ClearAgentWorking (agent_working_status.go)
-// own that transition's own CAS.
+// working_run_id is preserved when newStatus is `working` and cleared
+// otherwise. MarkAgentWorking/ClearAgentWorking (agent_working_status.go)
+// own the working_run_id value itself via their own CAS; this call must
+// not erase it out from under a live run when a `working -> working`
+// write reaches it (validateStatusTransition treats from == to as a
+// no-op transition, so that write is reachable here).
 func (r *Repository) UpdateAgentStatusIfCurrent(
 	ctx context.Context, id, expected, newStatus, pauseReason string,
 ) (bool, error) {
 	now := time.Now().UTC()
 	res, err := r.db.ExecContext(ctx, r.db.Rebind(`
 		UPDATE agent_profiles
-		SET status = ?, pause_reason = ?, working_run_id = '', updated_at = ?
+		SET status = ?, pause_reason = ?,
+			working_run_id = CASE WHEN ? = 'working' THEN working_run_id ELSE '' END,
+			updated_at = ?
 		WHERE id = ? AND status = ? AND `+agentInstanceFilter+`
-	`), newStatus, pauseReason, now, id, expected)
+	`), newStatus, pauseReason, newStatus, now, id, expected)
+	if err != nil {
+		return false, err
+	}
+	return rowsChanged(res)
+}
+
+// ClearAgentPauseReasonIfCurrent clears pause_reason only when the row's
+// pause_reason still matches expected. It touches neither status nor
+// working_run_id, so a caller that already applied a status transition —
+// and may have raced with the scheduler moving the agent further before
+// this call runs — can still complete a pause-reason cleanup instead of
+// asserting a status that is stale by construction.
+func (r *Repository) ClearAgentPauseReasonIfCurrent(
+	ctx context.Context, id, expectedReason string,
+) (bool, error) {
+	now := time.Now().UTC()
+	res, err := r.db.ExecContext(ctx, r.db.Rebind(`
+		UPDATE agent_profiles
+		SET pause_reason = '', updated_at = ?
+		WHERE id = ? AND pause_reason = ? AND `+agentInstanceFilter+`
+	`), now, id, expectedReason)
 	if err != nil {
 		return false, err
 	}

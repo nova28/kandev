@@ -2,6 +2,7 @@ package agents
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/kandev/kandev/internal/office/models"
@@ -65,5 +66,56 @@ func TestUpdateAgentStatusIfCurrent_RefusesConcurrentStop(t *testing.T) {
 	}
 	if got.Status != models.AgentStatusStopped {
 		t.Fatalf("status = %q, want stopped", got.Status)
+	}
+}
+
+// TestUpdateAgentStatus_PersistsValidTransition exercises
+// AgentService.UpdateAgentStatus itself, not the repository primitive
+// underneath it: a valid transition is validated, persisted via the CAS,
+// and the returned agent reflects the new state.
+func TestUpdateAgentStatus_PersistsValidTransition(t *testing.T) {
+	svc, repo := newTestAgentService(t)
+	agent := &models.AgentInstance{WorkspaceID: "ws-1", Name: "Direct", Role: models.AgentRoleWorker}
+	stored := createAndGetAgent(t, svc, repo, agent)
+
+	updated, err := svc.UpdateAgentStatus(context.Background(), stored.ID, models.AgentStatusPaused, "manual pause")
+	if err != nil {
+		t.Fatalf("UpdateAgentStatus: %v", err)
+	}
+	if updated.Status != models.AgentStatusPaused || updated.PauseReason != "manual pause" {
+		t.Fatalf("returned agent status=%q pause_reason=%q, want paused/%q",
+			updated.Status, updated.PauseReason, "manual pause")
+	}
+	got, err := repo.GetAgentInstance(context.Background(), stored.ID)
+	if err != nil {
+		t.Fatalf("get agent: %v", err)
+	}
+	if got.Status != models.AgentStatusPaused || got.PauseReason != "manual pause" {
+		t.Fatalf("persisted status=%q pause_reason=%q, want paused/%q",
+			got.Status, got.PauseReason, "manual pause")
+	}
+}
+
+// TestUpdateAgentStatus_RejectsInvalidTransition pins that
+// AgentService.UpdateAgentStatus validates before it ever reaches the
+// CAS: a transition absent from allowedTransitions is rejected and
+// nothing is written.
+func TestUpdateAgentStatus_RejectsInvalidTransition(t *testing.T) {
+	svc, repo := newTestAgentService(t)
+	agent := &models.AgentInstance{WorkspaceID: "ws-1", Name: "Invalid", Role: models.AgentRoleWorker}
+	stored := createAndGetAgent(t, svc, repo, agent)
+
+	// idle -> working is not in allowedTransitions[idle]; only
+	// MarkAgentWorking (agent_working_status.go) owns that transition.
+	_, err := svc.UpdateAgentStatus(context.Background(), stored.ID, models.AgentStatusWorking, "")
+	if !errors.Is(err, ErrAgentStatusTransition) {
+		t.Fatalf("err = %v, want ErrAgentStatusTransition", err)
+	}
+	got, err := repo.GetAgentInstance(context.Background(), stored.ID)
+	if err != nil {
+		t.Fatalf("get agent: %v", err)
+	}
+	if got.Status != models.AgentStatusIdle {
+		t.Fatalf("status = %q, want unchanged idle", got.Status)
 	}
 }

@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kandev/kandev/internal/events"
+	"github.com/kandev/kandev/internal/events/bus"
 	"github.com/kandev/kandev/internal/office/models"
 	"github.com/kandev/kandev/internal/office/service"
 )
@@ -340,6 +342,73 @@ func TestMarkAgentPausedFixed_RequeueFailureIsResumable(t *testing.T) {
 	dismissed, err = svc.IsInboxItemDismissed(ctx, "user-1", service.InboxKindAgentPausedAfterFails, "agent-resume")
 	if err != nil {
 		t.Fatalf("check dismissed after resume: %v", err)
+	}
+	if !dismissed {
+		t.Fatal("inbox item not dismissed after a successful resume")
+	}
+}
+
+// TestMarkAgentPausedFixed_ClearsPauseReasonDespiteConcurrentWorkingClaim
+// pins Blocker 2: the requeue loop hands runs back to the scheduler before
+// this function reaches its final step, so a live claim on one of those
+// runs can move the agent to "working" before the pause reason is
+// cleared. The clear must not assert the status observed at unpause (here,
+// "idle") — that status is stale by construction the moment a run is
+// queued. A run-queued subscriber (delivered synchronously, standing in
+// for a scheduler pickup) flips the agent to working mid-call.
+func TestMarkAgentPausedFixed_ClearsPauseReasonDespiteConcurrentWorkingClaim(t *testing.T) {
+	svc, eb := newTestServiceWithBus(t)
+	ctx := context.Background()
+
+	createTestAgent(t, svc, "ws-1", "agent-working-claim")
+	taskID := "task-working-claim-1"
+	insertSyntheticTask(t, svc, taskID, "ws-1", "agent-working-claim")
+	w := queueAndReadRun(t, svc, "agent-working-claim", taskID)
+	if err := svc.HandleAgentFailure(ctx, w, "boom"); err != nil {
+		t.Fatalf("handle failure: %v", err)
+	}
+	// One failure is below the default threshold of 3, so drive the agent
+	// into the auto-paused state directly, mirroring
+	// TestMarkAgentPausedFixed_RequeueFailureIsResumable.
+	svc.ExecSQL(t,
+		`UPDATE agent_profiles SET status = 'paused',
+		 pause_reason = 'Auto-paused: 1 consecutive failures. Last error: boom',
+		 consecutive_failures = 1 WHERE id = 'agent-working-claim'`)
+
+	flipped := false
+	sub, err := eb.Subscribe(events.OfficeRunQueued, func(_ context.Context, _ *bus.Event) error {
+		if flipped {
+			return nil
+		}
+		flipped = true
+		svc.ExecSQL(t, `UPDATE agent_profiles SET status = 'working' WHERE id = 'agent-working-claim'`)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	defer func() { _ = sub.Unsubscribe() }()
+
+	if err := svc.MarkAgentPausedFixed(ctx, "user-1", "agent-working-claim"); err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	if !flipped {
+		t.Fatal("test setup broken: the run-queued hook never fired")
+	}
+
+	agent, err := svc.GetAgentInstance(ctx, "agent-working-claim")
+	if err != nil {
+		t.Fatalf("get agent after: %v", err)
+	}
+	if agent.Status != models.AgentStatusWorking {
+		t.Fatalf("status = %q, want working — the claim mid-recovery must survive", agent.Status)
+	}
+	if agent.PauseReason != "" {
+		t.Fatalf("pause reason = %q, want cleared despite the status having moved on", agent.PauseReason)
+	}
+	dismissed, err := svc.IsInboxItemDismissed(ctx, "user-1", service.InboxKindAgentPausedAfterFails, "agent-working-claim")
+	if err != nil {
+		t.Fatalf("check dismissed: %v", err)
 	}
 	if !dismissed {
 		t.Fatal("inbox item not dismissed after a successful resume")
