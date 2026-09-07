@@ -420,6 +420,31 @@ func (r *Repository) UpdateAgentStatusFields(
 	return err
 }
 
+// UpdateAgentStatusIfCurrent persists status + pause_reason only when the
+// row is still in `expected` status. Returns whether the write landed, so
+// a caller whose own status observation has gone stale — a concurrent
+// writer moved the row first — fails closed instead of silently
+// overwriting whatever that writer set.
+//
+// Unlike UpdateAgentStatusFields, this is not a "working" writer: it
+// always clears working_run_id rather than special-casing a `working`
+// target, since MarkAgentWorking/ClearAgentWorking (agent_working_status.go)
+// own that transition's own CAS.
+func (r *Repository) UpdateAgentStatusIfCurrent(
+	ctx context.Context, id, expected, newStatus, pauseReason string,
+) (bool, error) {
+	now := time.Now().UTC()
+	res, err := r.db.ExecContext(ctx, r.db.Rebind(`
+		UPDATE agent_profiles
+		SET status = ?, pause_reason = ?, working_run_id = '', updated_at = ?
+		WHERE id = ? AND status = ? AND `+agentInstanceFilter+`
+	`), newStatus, pauseReason, now, id, expected)
+	if err != nil {
+		return false, err
+	}
+	return rowsChanged(res)
+}
+
 // GetAgentInstanceByNameAny returns the first agent instance matching a name
 // across all workspaces. Used for ID-or-name lookups without workspace context.
 func (r *Repository) GetAgentInstanceByNameAny(

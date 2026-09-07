@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -113,17 +114,22 @@ func (s *Service) MarkAgentRunFailedFixed(
 	return s.requeueRunForTask(ctx, run.AgentProfileID, taskID)
 }
 
-// MarkAgentPausedFixed unpauses an auto-paused agent, clears the
-// counter, dismisses the inbox entry, and re-queues task_assigned
-// runs for every task whose current assignee is still this agent
-// and whose most recent run is failed.
+// MarkAgentPausedFixed unpauses an auto-paused agent, resets the
+// failure counter, re-queues task_assigned runs for every task whose
+// current assignee is still this agent and whose most recent run is
+// failed, and only then clears the pause reason and dismisses the
+// inbox entry.
+//
+// The pause reason is this function's own resume sentinel: it is
+// cleared last, so a partial failure (a requeue error, a concurrent
+// status change) leaves the agent exactly where a retry can pick the
+// recovery back up, instead of reporting success on work that never
+// happened. Unpausing CASes on the status this call itself observed
+// rather than a fresh re-read, so a concurrent manual stop landing in
+// the same window is refused instead of silently reverted.
 func (s *Service) MarkAgentPausedFixed(
 	ctx context.Context, userID, agentID string,
 ) error {
-	if err := s.repo.DismissInboxItem(ctx, userID, InboxKindAgentPausedAfterFails, agentID); err != nil {
-		return fmt.Errorf("dismiss: %w", err)
-	}
-
 	agent, err := s.repo.GetAgentInstance(ctx, agentID)
 	if err != nil {
 		return fmt.Errorf("get agent: %w", err)
@@ -133,12 +139,20 @@ func (s *Service) MarkAgentPausedFixed(
 		return nil
 	}
 
-	if err := s.repo.UpdateAgentStatusFields(ctx, agentID, string(agent.Status), ""); err != nil {
-		return fmt.Errorf("clear pause reason: %w", err)
+	currentStatus := agent.Status
+	if agent.Status == models.AgentStatusPaused {
+		// QueueRun's guardAgentStatus rejects paused/stopped/pending_approval,
+		// so the agent must reach idle before the requeue loop below.
+		if err := s.UpdateAgentStatusFrom(
+			ctx, agentID, models.AgentStatusPaused, models.AgentStatusIdle, agent.PauseReason,
+		); err != nil {
+			return fmt.Errorf("unpause agent: %w", err)
+		}
+		currentStatus = models.AgentStatusIdle
 	}
+
 	if err := s.repo.ResetAgentConsecutiveFailures(ctx, agentID); err != nil {
-		s.logger.Warn("reset counter on unpause failed",
-			zap.String("agent", agentID), zap.Error(err))
+		return fmt.Errorf("reset consecutive failures: %w", err)
 	}
 
 	// Re-queue runs for the tasks affected by the pause AND
@@ -152,6 +166,7 @@ func (s *Service) MarkAgentPausedFixed(
 		return fmt.Errorf("list failed runs: %w", err)
 	}
 	seenTasks := map[string]bool{}
+	var requeueErrs []error
 	for _, wID := range runIDs {
 		// Auto-dismiss every prior failed run row so it doesn't
 		// re-emerge in the inbox when the agent unpauses.
@@ -166,12 +181,17 @@ func (s *Service) MarkAgentPausedFixed(
 		}
 		seenTasks[taskID] = true
 		if err := s.requeueRunForTask(ctx, agentID, taskID); err != nil {
-			s.logger.Warn("requeue on unpause failed",
-				zap.String("agent", agentID), zap.String("task_id", taskID),
-				zap.Error(err))
+			requeueErrs = append(requeueErrs, fmt.Errorf("requeue task %s: %w", taskID, err))
 		}
 	}
-	return nil
+	if err := errors.Join(requeueErrs...); err != nil {
+		return err
+	}
+
+	if err := s.UpdateAgentStatusFrom(ctx, agentID, currentStatus, currentStatus, ""); err != nil {
+		return fmt.Errorf("clear pause reason: %w", err)
+	}
+	return s.repo.DismissInboxItem(ctx, userID, InboxKindAgentPausedAfterFails, agentID)
 }
 
 // IsInboxItemDismissed delegates to the repository — exposed so the

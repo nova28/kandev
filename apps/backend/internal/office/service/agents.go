@@ -28,6 +28,7 @@ var (
 	ErrAgentReportsToInvalid = errors.New("reports_to agent does not exist in this workspace")
 	ErrAgentReportsToSelf    = errors.New("agent cannot report to itself")
 	ErrAgentStatusTransition = errors.New("invalid status transition")
+	ErrAgentStatusChanged    = errors.New("agent status changed before the update could be applied")
 )
 
 // validRoles enumerates accepted roles.
@@ -201,12 +202,40 @@ func (s *Service) UpdateAgentStatus(
 	if err := validateStatusTransition(agent.Status, newStatus); err != nil {
 		return nil, err
 	}
-	if dbErr := s.repo.UpdateAgentStatusFields(ctx, agent.ID, string(newStatus), pauseReason); dbErr != nil {
+	changed, dbErr := s.repo.UpdateAgentStatusIfCurrent(
+		ctx, agent.ID, string(agent.Status), string(newStatus), pauseReason,
+	)
+	if dbErr != nil {
 		return nil, fmt.Errorf("persist agent status: %w", dbErr)
+	}
+	if !changed {
+		return nil, ErrAgentStatusChanged
 	}
 	agent.Status = newStatus
 	agent.PauseReason = pauseReason
 	return agent, nil
+}
+
+// UpdateAgentStatusFrom validates and persists a transition against the
+// status the caller itself observed (`expected`), rather than this call's
+// own fresh read. The write only lands while the row is still in
+// `expected` status, so a status change that happened between the
+// caller's observation and this call is refused instead of silently
+// applied against a status nobody validated.
+func (s *Service) UpdateAgentStatusFrom(
+	ctx context.Context, id string, expected, newStatus models.AgentStatus, pauseReason string,
+) error {
+	if err := validateStatusTransition(expected, newStatus); err != nil {
+		return err
+	}
+	changed, err := s.repo.UpdateAgentStatusIfCurrent(ctx, id, string(expected), string(newStatus), pauseReason)
+	if err != nil {
+		return fmt.Errorf("persist agent status: %w", err)
+	}
+	if !changed {
+		return ErrAgentStatusChanged
+	}
+	return nil
 }
 
 // DeleteAgentInstance deletes an agent instance from the DB.

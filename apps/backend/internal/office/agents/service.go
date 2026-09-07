@@ -44,6 +44,7 @@ var (
 	ErrAgentReportsToSelf    = errors.New("agent cannot report to itself")
 	ErrAgentReportsToCycle   = errors.New("agent reporting structure cannot contain a cycle")
 	ErrAgentStatusTransition = errors.New("invalid status transition")
+	ErrAgentStatusChanged    = errors.New("agent status changed before the update could be applied")
 )
 
 // GovernanceSettingsReader reads workspace governance settings.
@@ -651,8 +652,14 @@ func (s *AgentService) UpdateAgentStatus(
 	if err := validateStatusTransition(agent.Status, newStatus); err != nil {
 		return nil, err
 	}
-	if dbErr := s.repo.UpdateAgentStatusFields(ctx, agent.ID, string(newStatus), pauseReason); dbErr != nil {
+	changed, dbErr := s.repo.UpdateAgentStatusIfCurrent(
+		ctx, agent.ID, string(agent.Status), string(newStatus), pauseReason,
+	)
+	if dbErr != nil {
 		return nil, fmt.Errorf("persist agent status: %w", dbErr)
+	}
+	if !changed {
+		return nil, ErrAgentStatusChanged
 	}
 	agent.Status = newStatus
 	agent.PauseReason = pauseReason

@@ -3,6 +3,7 @@ package service_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -228,4 +229,119 @@ func TestOnAssigneeChanged_DismissesPriorEntryWithoutResettingCounter(t *testing
 	}
 	// Sanity: settling time so any async event handlers complete.
 	time.Sleep(10 * time.Millisecond)
+}
+
+// TestUpdateAgentStatusFrom_RefusesConcurrentManualStop is the committed
+// form of the Triage scratch evidence: MarkAgentPausedFixed reads the
+// agent and observes "paused" (T1), an operator's manual stop lands
+// paused -> stopped before the write-back runs (T2), and the write-back
+// asserts the status T1 actually observed. Before UpdateAgentStatusFrom
+// existed, the equivalent unconditional write silently reverted the
+// operator's stop.
+func TestUpdateAgentStatusFrom_RefusesConcurrentManualStop(t *testing.T) {
+	svc, _ := newTestServiceWithBus(t)
+	ctx := context.Background()
+
+	createTestAgent(t, svc, "ws-1", "agent-race")
+	svc.ExecSQL(t,
+		`UPDATE agent_profiles SET status = 'paused', pause_reason = 'Auto-paused: test' WHERE id = 'agent-race'`)
+
+	// T1 observes status=paused (mirrors failure.go's GetAgentInstance read).
+	agent, err := svc.GetAgentInstance(ctx, "agent-race")
+	if err != nil {
+		t.Fatalf("get agent: %v", err)
+	}
+	if agent.Status != models.AgentStatusPaused {
+		t.Fatalf("precondition: status = %q, want paused", agent.Status)
+	}
+
+	// T2: an operator's manual stop lands before T1's write-back runs.
+	svc.ExecSQL(t, `UPDATE agent_profiles SET status = 'stopped' WHERE id = 'agent-race'`)
+
+	// T1's write-back asserts the status it originally observed.
+	err = svc.UpdateAgentStatusFrom(ctx, "agent-race", agent.Status, models.AgentStatusIdle, agent.PauseReason)
+	if !errors.Is(err, service.ErrAgentStatusChanged) {
+		t.Fatalf("err = %v, want ErrAgentStatusChanged", err)
+	}
+
+	got, err := svc.GetAgentInstance(ctx, "agent-race")
+	if err != nil {
+		t.Fatalf("get agent after: %v", err)
+	}
+	if got.Status != models.AgentStatusStopped {
+		t.Fatalf("status = %q, want stopped — T1's stale write-back must not clobber the manual stop", got.Status)
+	}
+}
+
+// TestMarkAgentPausedFixed_RequeueFailureIsResumable pins finding (b):
+// when recovery genuinely fails partway (here, a manual stop lands before
+// "Mark fixed" runs, so the requeue's guardAgentStatus refuses), the
+// pause reason and inbox entry must survive so a retry can pick the
+// recovery back up — not report success on work that never happened,
+// and not repeat the already-applied unpause.
+func TestMarkAgentPausedFixed_RequeueFailureIsResumable(t *testing.T) {
+	svc, _ := newTestServiceWithBus(t)
+	ctx := context.Background()
+
+	createTestAgent(t, svc, "ws-1", "agent-resume")
+	taskID := "task-resume-1"
+	insertSyntheticTask(t, svc, taskID, "ws-1", "agent-resume")
+	w := queueAndReadRun(t, svc, "agent-resume", taskID)
+	if err := svc.HandleAgentFailure(ctx, w, "boom"); err != nil {
+		t.Fatalf("handle failure: %v", err)
+	}
+	// The agent was auto-paused, then an operator's manual stop landed
+	// before "Mark fixed" ran — paused -> stopped is a valid transition
+	// that leaves the auto-pause reason and failure counter untouched.
+	svc.ExecSQL(t,
+		`UPDATE agent_profiles SET status = 'stopped',
+		 pause_reason = 'Auto-paused: 1 consecutive failures. Last error: boom',
+		 consecutive_failures = 1 WHERE id = 'agent-resume'`)
+
+	if err := svc.MarkAgentPausedFixed(ctx, "user-1", "agent-resume"); err == nil {
+		t.Fatal("expected an error: the agent is stopped, so the requeue must fail")
+	}
+
+	agent, err := svc.GetAgentInstance(ctx, "agent-resume")
+	if err != nil {
+		t.Fatalf("get agent: %v", err)
+	}
+	if agent.Status != models.AgentStatusStopped {
+		t.Fatalf("status = %q, want stopped (must not be resurrected to idle)", agent.Status)
+	}
+	if !strings.HasPrefix(agent.PauseReason, "Auto-paused:") {
+		t.Fatal("pause reason cleared despite the requeue failure — a retry would lose the resume sentinel")
+	}
+	dismissed, err := svc.IsInboxItemDismissed(ctx, "user-1", service.InboxKindAgentPausedAfterFails, "agent-resume")
+	if err != nil {
+		t.Fatalf("check dismissed: %v", err)
+	}
+	if dismissed {
+		t.Fatal("inbox item dismissed despite the requeue failure")
+	}
+
+	// The operator resolves the stop (stopped -> idle is valid); a retry
+	// now completes the missing steps without repeating the status write.
+	svc.ExecSQL(t, `UPDATE agent_profiles SET status = 'idle' WHERE id = 'agent-resume'`)
+	if err := svc.MarkAgentPausedFixed(ctx, "user-1", "agent-resume"); err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+
+	agent, err = svc.GetAgentInstance(ctx, "agent-resume")
+	if err != nil {
+		t.Fatalf("get agent after resume: %v", err)
+	}
+	if agent.Status != models.AgentStatusIdle {
+		t.Fatalf("status after resume = %q, want idle", agent.Status)
+	}
+	if agent.PauseReason != "" {
+		t.Fatalf("pause reason after resume = %q, want cleared", agent.PauseReason)
+	}
+	dismissed, err = svc.IsInboxItemDismissed(ctx, "user-1", service.InboxKindAgentPausedAfterFails, "agent-resume")
+	if err != nil {
+		t.Fatalf("check dismissed after resume: %v", err)
+	}
+	if !dismissed {
+		t.Fatal("inbox item not dismissed after a successful resume")
+	}
 }
