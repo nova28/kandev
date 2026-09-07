@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/kandev/kandev/internal/common/skillslug"
 	"github.com/kandev/kandev/internal/office/models"
 	"github.com/kandev/kandev/internal/office/repository/sqlite"
+	"github.com/kandev/kandev/internal/office/skills"
 )
 
 // PreviewImport diffs a bundle against the current workspace state.
@@ -58,16 +60,31 @@ func (s *ConfigService) previewSkills(
 	}
 	bySlug := make(map[string]bool, len(existing))
 	for _, sk := range existing {
-		bySlug[sk.Slug] = true
+		bySlug[skillslug.Normalize(sk.Slug)] = true
 	}
 	for _, sk := range incoming {
-		if bySlug[sk.Slug] {
-			diff.Updated = append(diff.Updated, sk.Slug)
+		slug := canonicalSkillSlug(sk)
+		if bySlug[slug] {
+			diff.Updated = append(diff.Updated, slug)
 		} else {
-			diff.Created = append(diff.Created, sk.Slug)
+			diff.Created = append(diff.Created, slug)
 		}
 	}
 	return nil
+}
+
+// canonicalSkillSlug projects a bundle skill entry to the slug a successful
+// apply would persist: generated from the name when the entry omits one,
+// then normalized to canonical form. It performs no validation, since a
+// malformed caller-supplied slug is resolveSkillSlugs's job to reject — this
+// is also used by preview/diff paths that report a projected value without
+// enforcing it.
+func canonicalSkillSlug(cfg SkillConfig) string {
+	slug := cfg.Slug
+	if slug == "" {
+		slug = skills.GenerateSlug(cfg.Name)
+	}
+	return skillslug.Normalize(slug)
 }
 
 func (s *ConfigService) previewRoutines(
@@ -345,16 +362,25 @@ func reportsToCycleExists(
 func (s *ConfigService) applySkills(
 	ctx context.Context, wsID string, incoming []SkillConfig, result *ImportResult,
 ) error {
+	resolvedSlugs, err := resolveSkillSlugs(incoming)
+	if err != nil {
+		return err
+	}
+	if dupSlug, ok := duplicateSkillSlug(resolvedSlugs); ok {
+		return fmt.Errorf("duplicate skill slug %q in import bundle", dupSlug)
+	}
+
 	existing, err := s.repo.ListSkills(ctx, wsID)
 	if err != nil {
 		return err
 	}
 	bySlug := make(map[string]*models.Skill, len(existing))
 	for _, sk := range existing {
-		bySlug[sk.Slug] = sk
+		bySlug[skillslug.Normalize(sk.Slug)] = sk
 	}
-	for _, cfg := range incoming {
-		if skill, ok := bySlug[cfg.Slug]; ok {
+	for i, cfg := range incoming {
+		slug := resolvedSlugs[i]
+		if skill, ok := bySlug[slug]; ok {
 			fields := sqlite.SkillConfigFields{
 				Name:        cfg.Name,
 				Description: cfg.Description,
@@ -369,7 +395,7 @@ func (s *ConfigService) applySkills(
 			skill := &models.Skill{
 				WorkspaceID: wsID,
 				Name:        cfg.Name,
-				Slug:        cfg.Slug,
+				Slug:        slug,
 				Description: cfg.Description,
 				SourceType:  models.SkillSourceType(cfg.SourceType),
 				Content:     cfg.Content,
@@ -381,6 +407,41 @@ func (s *ConfigService) applySkills(
 		}
 	}
 	return nil
+}
+
+// resolveSkillSlugs validates and canonicalizes every incoming skill's slug,
+// in bundle order, mirroring SkillService.ValidateAndPrepareSkill: a
+// caller-supplied slug must be well-formed or the request is rejected
+// outright (no coercion), and an omitted slug is generated from the name.
+// A malformed slug aborts the whole import rather than being skipped —
+// ApplyIncoming discards filesystem parse errors, so silently dropping the
+// entry here would drop a user's skill with no signal.
+func resolveSkillSlugs(incoming []SkillConfig) ([]string, error) {
+	resolved := make([]string, len(incoming))
+	for i, cfg := range incoming {
+		if cfg.Slug != "" && !skillslug.WellFormed(cfg.Slug) {
+			return nil, fmt.Errorf(
+				"invalid skill slug %q: must contain only letters, digits, underscore, and hyphen", cfg.Slug)
+		}
+		resolved[i] = canonicalSkillSlug(cfg)
+	}
+	return resolved, nil
+}
+
+// duplicateSkillSlug reports the first canonical slug that appears more than
+// once in resolved, mirroring duplicateAgentName. applyImport runs outside a
+// transaction, so two bundle entries colliding on the
+// UNIQUE(workspace_id, slug) index mid-loop would leave a partially-applied
+// import.
+func duplicateSkillSlug(resolved []string) (string, bool) {
+	seen := make(map[string]struct{}, len(resolved))
+	for _, slug := range resolved {
+		if _, ok := seen[slug]; ok {
+			return slug, true
+		}
+		seen[slug] = struct{}{}
+	}
+	return "", false
 }
 
 func (s *ConfigService) applyRoutines(

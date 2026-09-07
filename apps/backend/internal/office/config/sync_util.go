@@ -1,6 +1,7 @@
 package config
 
 import (
+	"github.com/kandev/kandev/internal/common/skillslug"
 	"github.com/kandev/kandev/internal/office/configloader"
 	"github.com/kandev/kandev/internal/office/models"
 )
@@ -28,10 +29,13 @@ func agentNames(in []*models.AgentInstance) []string {
 	return out
 }
 
+// skillSlugs returns the canonical form of every skill's slug, so it can be
+// compared against skillBundleSlugs/bundleSkillSet without either side
+// orphaning a legacy, not-yet-canonicalized row.
 func skillSlugs(in []*models.Skill) []string {
 	out := make([]string, len(in))
 	for i, sk := range in {
-		out[i] = sk.Slug
+		out[i] = skillslug.Normalize(sk.Slug)
 	}
 	return out
 }
@@ -60,10 +64,11 @@ func agentBundleNames(in []AgentConfig) []string {
 	return out
 }
 
+// skillBundleSlugs mirrors skillSlugs for bundle-side skill entries.
 func skillBundleSlugs(in []SkillConfig) []string {
 	out := make([]string, len(in))
 	for i, sk := range in {
-		out[i] = sk.Slug
+		out[i] = canonicalSkillSlug(sk)
 	}
 	return out
 }
@@ -95,7 +100,7 @@ func bundleAgentSet(in []AgentConfig) map[string]bool {
 func bundleSkillSet(in []SkillConfig) map[string]bool {
 	out := make(map[string]bool, len(in))
 	for _, sk := range in {
-		out[sk.Slug] = true
+		out[canonicalSkillSlug(sk)] = true
 	}
 	return out
 }

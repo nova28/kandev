@@ -30,9 +30,9 @@ func TestDiffBundles_ClassifiesEveryEntityType(t *testing.T) {
 	assertStrings(t, "agents created", preview.Agents.Created, []string{"new-agent"})
 	assertStrings(t, "agents deleted", preview.Agents.Deleted, []string{"gone-agent"})
 
-	assertStrings(t, "skills updated", preview.Skills.Updated, []string{"code-review"})
-	assertStrings(t, "skills created", preview.Skills.Created, []string{"new-skill"})
-	assertStrings(t, "skills deleted", preview.Skills.Deleted, []string{"gone-skill"})
+	assertStrings(t, "skills updated", preview.Skills.Updated, []string{"kandev-code-review"})
+	assertStrings(t, "skills created", preview.Skills.Created, []string{"kandev-new-skill"})
+	assertStrings(t, "skills deleted", preview.Skills.Deleted, []string{"kandev-gone-skill"})
 
 	assertStrings(t, "routines updated", preview.Routines.Updated, []string{"standup"})
 	assertStrings(t, "routines created", preview.Routines.Created, []string{"new-routine"})
@@ -51,13 +51,13 @@ func TestDiffBundles_SkillsKeyOnSlug(t *testing.T) {
 
 	renamed := diffBundles(
 		&ConfigBundle{Skills: []SkillConfig{{Name: "Deep Review", Slug: "code-review"}}}, existing)
-	assertStrings(t, "renamed updated", renamed.Skills.Updated, []string{"code-review"})
+	assertStrings(t, "renamed updated", renamed.Skills.Updated, []string{"kandev-code-review"})
 	assertStrings(t, "renamed deleted", renamed.Skills.Deleted, nil)
 
 	reslugged := diffBundles(
 		&ConfigBundle{Skills: []SkillConfig{{Name: "Code Review", Slug: "deep-review"}}}, existing)
-	assertStrings(t, "reslugged created", reslugged.Skills.Created, []string{"deep-review"})
-	assertStrings(t, "reslugged deleted", reslugged.Skills.Deleted, []string{"code-review"})
+	assertStrings(t, "reslugged created", reslugged.Skills.Created, []string{"kandev-deep-review"})
+	assertStrings(t, "reslugged deleted", reslugged.Skills.Deleted, []string{"kandev-code-review"})
 }
 
 func TestDiffBundles_EmptySides(t *testing.T) {
@@ -70,7 +70,7 @@ func TestDiffBundles_EmptySides(t *testing.T) {
 	toEmpty := diffBundles(&ConfigBundle{}, full)
 	assertStrings(t, "nothing created", toEmpty.Agents.Created, nil)
 	assertStrings(t, "everything deleted", toEmpty.Agents.Deleted, []string{"ada"})
-	assertStrings(t, "skills deleted", toEmpty.Skills.Deleted, []string{"code-review"})
+	assertStrings(t, "skills deleted", toEmpty.Skills.Deleted, []string{"kandev-code-review"})
 	assertStrings(t, "routines deleted", toEmpty.Routines.Deleted, []string{"standup"})
 	assertStrings(t, "projects deleted", toEmpty.Projects.Deleted, []string{"apollo"})
 
@@ -102,7 +102,7 @@ func TestAppendDeletions_ReportsRowsMissingFromBundle(t *testing.T) {
 	}
 
 	assertStrings(t, "agents deleted", preview.Agents.Deleted, []string{"gone-agent"})
-	assertStrings(t, "skills deleted", preview.Skills.Deleted, []string{"gone-skill"})
+	assertStrings(t, "skills deleted", preview.Skills.Deleted, []string{"kandev-gone-skill"})
 	assertStrings(t, "routines deleted", preview.Routines.Deleted, []string{"gone-routine"})
 	assertStrings(t, "projects deleted", preview.Projects.Deleted, []string{"gone-project"})
 	assertStrings(t, "created bucket untouched", preview.Agents.Created, []string{"pre-existing"})
@@ -158,7 +158,7 @@ func TestDeleteRowsMissingFromBundle_RemovesOnlyAbsentRows(t *testing.T) {
 		t.Fatalf("deleteRowsMissingFromBundle: %v", err)
 	}
 
-	assertRemainingNames(t, env, testWorkspaceID, []string{"ada"}, []string{"code-review"},
+	assertRemainingNames(t, env, testWorkspaceID, []string{"ada"}, []string{"kandev-code-review"},
 		[]string{"standup"}, []string{"apollo"})
 }
 
@@ -193,7 +193,7 @@ func TestDeleteRowsMissingFromBundle_LeavesOtherWorkspacesAlone(t *testing.T) {
 		t.Fatalf("deleteRowsMissingFromBundle: %v", err)
 	}
 
-	assertRemainingNames(t, env, "ws-other", []string{"foreign-agent"}, []string{"foreign-skill"},
+	assertRemainingNames(t, env, "ws-other", []string{"foreign-agent"}, []string{"kandev-foreign-skill"},
 		[]string{"foreign-routine"}, []string{"foreign-project"})
 }
 

@@ -66,7 +66,7 @@ func TestModelNameExtractors(t *testing.T) {
 	assertStrings(t, "agentNames empty", agentNames(nil), []string{})
 
 	skills := []*models.Skill{{Slug: "code-review"}, {Slug: "triage"}}
-	assertStrings(t, "skillSlugs", skillSlugs(skills), []string{"code-review", "triage"})
+	assertStrings(t, "skillSlugs", skillSlugs(skills), []string{"kandev-code-review", "kandev-triage"})
 	assertStrings(t, "skillSlugs empty", skillSlugs(nil), []string{})
 
 	routines := []*models.Routine{{Name: "standup"}}
@@ -86,7 +86,7 @@ func TestBundleNameExtractors(t *testing.T) {
 	bundle.Projects = append(bundle.Projects, ProjectConfig{Name: "gemini"})
 
 	assertStrings(t, "agentBundleNames", agentBundleNames(bundle.Agents), []string{"ada", "grace"})
-	assertStrings(t, "skillBundleSlugs", skillBundleSlugs(bundle.Skills), []string{"code-review", "triage"})
+	assertStrings(t, "skillBundleSlugs", skillBundleSlugs(bundle.Skills), []string{"kandev-code-review", "kandev-triage"})
 	assertStrings(t, "routineBundleNames", routineBundleNames(bundle.Routines), []string{"standup", "retro"})
 	assertStrings(t, "projectBundleNames", projectBundleNames(bundle.Projects), []string{"apollo", "gemini"})
 }
@@ -102,7 +102,8 @@ func TestBundleSets(t *testing.T) {
 	assertEqual(t, "agent set lacks cto role", agentSet["cto"], false)
 
 	skillSet := bundleSkillSet(bundle.Skills)
-	assertEqual(t, "skill set has slug", skillSet["code-review"], true)
+	assertEqual(t, "skill set has canonical slug", skillSet["kandev-code-review"], true)
+	assertEqual(t, "skill set does not key on raw slug", skillSet["code-review"], false)
 	assertEqual(t, "skill set does not key on name", skillSet["Code Review"], false)
 
 	routineSet := bundleRoutineSet(bundle.Routines)

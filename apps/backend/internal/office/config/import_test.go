@@ -34,7 +34,7 @@ func TestApplyImport_CreatesEveryFieldFromBundle(t *testing.T) {
 	assertEqual(t, "agent desired skills", agent.DesiredSkills, `["go","sql"]`)
 	assertEqual(t, "agent executor preference", agent.ExecutorPreference, "local_docker")
 
-	skill := skillBySlug(t, env, testWorkspaceID, "code-review")
+	skill := skillBySlug(t, env, testWorkspaceID, "kandev-code-review")
 	assertEqual(t, "skill workspace", skill.WorkspaceID, testWorkspaceID)
 	assertEqual(t, "skill name", skill.Name, "Code Review")
 	assertEqual(t, "skill description", skill.Description, "reviews diffs")
@@ -119,7 +119,7 @@ func TestApplyImport_UpdatesExistingRowsInPlace(t *testing.T) {
 		t.Fatalf("seed import: %v", err)
 	}
 	agentID := agentByName(t, env, testWorkspaceID, "ada").ID
-	skillID := skillBySlug(t, env, testWorkspaceID, "code-review").ID
+	skillID := skillBySlug(t, env, testWorkspaceID, "kandev-code-review").ID
 	routineID := routineByName(t, env, testWorkspaceID, "standup").ID
 	projectID := projectByName(t, env, testWorkspaceID, "apollo").ID
 
@@ -159,7 +159,7 @@ func TestApplyImport_UpdatesExistingRowsInPlace(t *testing.T) {
 	assertEqual(t, "agent desired skills", agent.DesiredSkills, `["rust"]`)
 	assertEqual(t, "agent executor preference", agent.ExecutorPreference, "local_pc")
 
-	skill := skillBySlug(t, env, testWorkspaceID, "code-review")
+	skill := skillBySlug(t, env, testWorkspaceID, "kandev-code-review")
 	assertEqual(t, "skill id stable", skill.ID, skillID)
 	assertEqual(t, "skill name", skill.Name, "Deep Review")
 	assertEqual(t, "skill description", skill.Description, "reads everything")
@@ -253,6 +253,129 @@ func TestApplyImport_MatchesExistingByNameNotIdentity(t *testing.T) {
 	skill := skillBySlug(t, env, testWorkspaceID, "code-review")
 	assertEqual(t, "skill id reused", skill.ID, existingSkill.ID)
 	assertEqual(t, "skill renamed", skill.Name, "Renamed Review")
+}
+
+// TestApplyImport_RejectsMalformedSlug proves a caller-supplied slug outside
+// the safe path-component charset aborts the whole import rather than being
+// silently persisted. Before this fix, ApplyImport wrote "../escape" as the
+// skill's slug with no error, producing a row lifecycle.skill/paths.go's
+// isValidSlug would drop at delivery and system_sync would never repair.
+func TestApplyImport_RejectsMalformedSlug(t *testing.T) {
+	env := newTestEnv(t)
+	ctx := context.Background()
+
+	bundle := &ConfigBundle{Skills: []SkillConfig{{Name: "Escape", Slug: "../escape"}}}
+	result, err := env.svc.ApplyImport(ctx, testWorkspaceID, bundle)
+	if err == nil {
+		t.Fatal("expected an error for a malformed skill slug, got nil")
+	}
+	if result != nil {
+		t.Errorf("result should be nil on error, got %+v", result)
+	}
+
+	skills, err := env.repo.ListSkills(ctx, testWorkspaceID)
+	if err != nil {
+		t.Fatalf("list skills: %v", err)
+	}
+	assertEqual(t, "no skill persisted", len(skills), 0)
+}
+
+// TestApplyImport_NormalizesWellFormedSlugToCanonical proves a well-formed
+// but non-canonical slug is persisted with the kandev- prefix on create,
+// mirroring SkillService.ValidateAndPrepareSkill.
+func TestApplyImport_NormalizesWellFormedSlugToCanonical(t *testing.T) {
+	env := newTestEnv(t)
+	ctx := context.Background()
+
+	bundle := &ConfigBundle{Skills: []SkillConfig{{Name: "Code Review", Slug: "code-review"}}}
+	result, err := env.svc.ApplyImport(ctx, testWorkspaceID, bundle)
+	if err != nil {
+		t.Fatalf("ApplyImport: %v", err)
+	}
+	assertEqual(t, "created count", result.CreatedCount, 1)
+
+	skill := skillBySlug(t, env, testWorkspaceID, "kandev-code-review")
+	assertEqual(t, "skill name", skill.Name, "Code Review")
+}
+
+// TestApplyImport_MatchesLegacyRawSlugRow proves a skill row that predates
+// canonicalization (persisted with a raw, non-prefixed slug) is matched and
+// updated by an incoming bundle entry carrying the same raw slug, rather
+// than being orphaned by a new canonical-slug row alongside it.
+func TestApplyImport_MatchesLegacyRawSlugRow(t *testing.T) {
+	env := newTestEnv(t)
+	ctx := context.Background()
+	legacy := seedSkill(t, env, testWorkspaceID, "code-review")
+
+	bundle := &ConfigBundle{Skills: []SkillConfig{{Name: "Renamed", Slug: "code-review"}}}
+	result, err := env.svc.ApplyImport(ctx, testWorkspaceID, bundle)
+	if err != nil {
+		t.Fatalf("ApplyImport: %v", err)
+	}
+	assertEqual(t, "created count", result.CreatedCount, 0)
+	assertEqual(t, "updated count", result.UpdatedCount, 1)
+
+	skills, err := env.repo.ListSkills(ctx, testWorkspaceID)
+	if err != nil {
+		t.Fatalf("list skills: %v", err)
+	}
+	assertEqual(t, "no duplicate row created", len(skills), 1)
+	assertEqual(t, "legacy row id reused", skills[0].ID, legacy.ID)
+	assertEqual(t, "legacy row slug left untouched", skills[0].Slug, "code-review")
+	assertEqual(t, "legacy row renamed", skills[0].Name, "Renamed")
+}
+
+// TestApplyImport_RejectsDuplicateCanonicalSlug proves two bundle entries
+// that normalize to the same canonical slug abort the whole import instead
+// of racing the UNIQUE(workspace_id, slug) index mid-loop, since applyImport
+// runs outside a transaction.
+func TestApplyImport_RejectsDuplicateCanonicalSlug(t *testing.T) {
+	env := newTestEnv(t)
+	ctx := context.Background()
+
+	bundle := &ConfigBundle{Skills: []SkillConfig{
+		{Name: "First", Slug: "code-review"},
+		{Name: "Second", Slug: "kandev-code-review"},
+	}}
+	result, err := env.svc.ApplyImport(ctx, testWorkspaceID, bundle)
+	if err == nil {
+		t.Fatal("expected an error for a duplicate canonical skill slug, got nil")
+	}
+	if result != nil {
+		t.Errorf("result should be nil on error, got %+v", result)
+	}
+
+	skills, err := env.repo.ListSkills(ctx, testWorkspaceID)
+	if err != nil {
+		t.Fatalf("list skills: %v", err)
+	}
+	assertEqual(t, "no skill persisted", len(skills), 0)
+}
+
+// TestApplyIncoming_LegacyRawSlugRowSurvivesPrune proves ApplyIncoming's
+// prune pass keeps a legacy raw-slug row that is still present (under its
+// raw slug) in the filesystem snapshot, rather than deleting and
+// re-creating it under the canonical slug because the keep-set was built
+// from unnormalized bundle slugs.
+func TestApplyIncoming_LegacyRawSlugRowSurvivesPrune(t *testing.T) {
+	env := newTestEnv(t)
+	ctx := context.Background()
+	legacy := seedSkill(t, env, testWorkspaceID, "code-review")
+	env.writeFSSkill(t, "code-review", "# Code Review\n")
+
+	result, err := env.svc.ApplyIncoming(ctx, testWorkspaceID)
+	if err != nil {
+		t.Fatalf("ApplyIncoming: %v", err)
+	}
+	assertEqual(t, "created count", result.CreatedCount, 0)
+	assertEqual(t, "updated count", result.UpdatedCount, 1)
+
+	skills, err := env.repo.ListSkills(ctx, testWorkspaceID)
+	if err != nil {
+		t.Fatalf("list skills: %v", err)
+	}
+	assertEqual(t, "legacy row survives, not pruned", len(skills), 1)
+	assertEqual(t, "legacy row id reused", skills[0].ID, legacy.ID)
 }
 
 // TestApplyImport_IgnoresOtherWorkspaces confirms an import scoped to one
@@ -392,8 +515,8 @@ func TestPreviewImport_ClassifiesCreatesAndUpdates(t *testing.T) {
 
 	assertStrings(t, "agents updated", preview.Agents.Updated, []string{"ada"})
 	assertStrings(t, "agents created", preview.Agents.Created, []string{"grace"})
-	assertStrings(t, "skills updated", preview.Skills.Updated, []string{"code-review"})
-	assertStrings(t, "skills created", preview.Skills.Created, []string{"triage"})
+	assertStrings(t, "skills updated", preview.Skills.Updated, []string{"kandev-code-review"})
+	assertStrings(t, "skills created", preview.Skills.Created, []string{"kandev-triage"})
 	assertStrings(t, "routines updated", preview.Routines.Updated, []string{"standup"})
 	assertStrings(t, "routines created", preview.Routines.Created, []string{"retro"})
 	assertStrings(t, "projects updated", preview.Projects.Updated, []string{"apollo"})

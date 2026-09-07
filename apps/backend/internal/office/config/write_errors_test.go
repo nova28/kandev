@@ -99,7 +99,7 @@ func TestDeleteRowsMissingFromBundle_PropagatesDeleteErrors(t *testing.T) {
 			"skills",
 			func(t *testing.T, env *testEnv) { seedSkill(t, env, testWorkspaceID, "gone") },
 			func(t *testing.T, env *testEnv) {
-				assertRemainingNames(t, env, testWorkspaceID, nil, []string{"gone"}, nil, nil)
+				assertRemainingNames(t, env, testWorkspaceID, nil, []string{"kandev-gone"}, nil, nil)
 			},
 		},
 		{

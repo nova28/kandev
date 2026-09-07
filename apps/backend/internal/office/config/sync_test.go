@@ -256,8 +256,8 @@ func TestIncomingDiff_CombinesPreviewAndDeletions(t *testing.T) {
 
 	assertStrings(t, "agents updated", diff.Preview.Agents.Updated, []string{"ada"})
 	assertStrings(t, "agents deleted", diff.Preview.Agents.Deleted, []string{"gone-agent"})
-	assertStrings(t, "skills created", diff.Preview.Skills.Created, []string{"code-review"})
-	assertStrings(t, "skills deleted", diff.Preview.Skills.Deleted, []string{"gone-skill"})
+	assertStrings(t, "skills created", diff.Preview.Skills.Created, []string{"kandev-code-review"})
+	assertStrings(t, "skills deleted", diff.Preview.Skills.Deleted, []string{"kandev-gone-skill"})
 	assertStrings(t, "routines created", diff.Preview.Routines.Created, []string{"standup"})
 	assertStrings(t, "routines deleted", diff.Preview.Routines.Deleted, []string{"gone-routine"})
 	assertStrings(t, "projects created", diff.Preview.Projects.Created, []string{"apollo"})
@@ -371,7 +371,7 @@ func TestApplyIncoming_ImportsAndPrunes(t *testing.T) {
 	assertEqual(t, "created count", result.CreatedCount, 3) // skill + routine + project
 	assertEqual(t, "updated count", result.UpdatedCount, 1) // ada
 
-	assertRemainingNames(t, env, testWorkspaceID, []string{"ada"}, []string{"code-review"},
+	assertRemainingNames(t, env, testWorkspaceID, []string{"ada"}, []string{"kandev-code-review"},
 		[]string{"standup"}, []string{"apollo"})
 
 	// The updated agent carries the on-disk values.
@@ -402,7 +402,7 @@ func TestApplyIncoming_IsIdempotent(t *testing.T) {
 	assertEqual(t, "second created", second.CreatedCount, 0)
 	assertEqual(t, "second updated", second.UpdatedCount, 4)
 	assertEqual(t, "agent id stable", agentByName(t, env, testWorkspaceID, "ada").ID, agentID)
-	assertRemainingNames(t, env, testWorkspaceID, []string{"ada"}, []string{"code-review"},
+	assertRemainingNames(t, env, testWorkspaceID, []string{"ada"}, []string{"kandev-code-review"},
 		[]string{"standup"}, []string{"apollo"})
 }
 
@@ -463,7 +463,7 @@ func TestApplyOutgoing_WritesDatabaseStateToDisk(t *testing.T) {
 	}
 	assertStrings(t, "agents on disk",
 		sortedCopy(agentBundleNames(bundle.Agents)), []string{"ada", "grace"})
-	assertStrings(t, "skills on disk", skillBundleSlugs(bundle.Skills), []string{"code-review"})
+	assertStrings(t, "skills on disk", skillBundleSlugs(bundle.Skills), []string{"kandev-code-review"})
 	assertStrings(t, "routines on disk", routineBundleNames(bundle.Routines), []string{"standup"})
 	assertStrings(t, "projects on disk", projectBundleNames(bundle.Projects), []string{"apollo"})
 

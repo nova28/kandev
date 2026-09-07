@@ -2,6 +2,8 @@ package config
 
 import (
 	"context"
+
+	"github.com/kandev/kandev/internal/common/skillslug"
 )
 
 // appendDeletions adds names of DB rows missing from the bundle to preview.*.Deleted.
@@ -79,7 +81,7 @@ func (s *ConfigService) deleteMissingSkills(
 	}
 	keep := bundleSkillSet(bundle.Skills)
 	for _, sk := range rows {
-		if keep[sk.Slug] {
+		if keep[skillslug.Normalize(sk.Slug)] {
 			continue
 		}
 		if err := s.repo.DeleteSkill(ctx, sk.ID); err != nil {
@@ -143,10 +145,11 @@ func diffBundles(incoming, existing *ConfigBundle) *ImportPreview {
 
 	existSkills := bundleSkillSet(existing.Skills)
 	for _, sk := range incoming.Skills {
-		if existSkills[sk.Slug] {
-			preview.Skills.Updated = append(preview.Skills.Updated, sk.Slug)
+		slug := canonicalSkillSlug(sk)
+		if existSkills[slug] {
+			preview.Skills.Updated = append(preview.Skills.Updated, slug)
 		} else {
-			preview.Skills.Created = append(preview.Skills.Created, sk.Slug)
+			preview.Skills.Created = append(preview.Skills.Created, slug)
 		}
 	}
 	preview.Skills.Deleted = missingNames(

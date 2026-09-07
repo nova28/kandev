@@ -189,7 +189,7 @@ func TestHandler_PreviewImport(t *testing.T) {
 	decodeBody(t, rec, &out)
 	assertStrings(t, "agents updated", out.Preview.Agents.Updated, []string{"ada"})
 	assertStrings(t, "agents created", out.Preview.Agents.Created, []string{"grace"})
-	assertStrings(t, "skills created", out.Preview.Skills.Created, []string{"triage"})
+	assertStrings(t, "skills created", out.Preview.Skills.Created, []string{"kandev-triage"})
 
 	// Preview must not have written anything.
 	agents, err := env.repo.ListAgentInstances(context.Background(), testWorkspaceID)
@@ -340,7 +340,7 @@ func TestHandler_SyncApplyIncoming(t *testing.T) {
 	decodeBody(t, rec, &out)
 	assertEqual(t, "created count", out.Result.CreatedCount, 4)
 
-	assertRemainingNames(t, env, testWorkspaceID, []string{"ada"}, []string{"code-review"},
+	assertRemainingNames(t, env, testWorkspaceID, []string{"ada"}, []string{"kandev-code-review"},
 		[]string{"standup"}, []string{"apollo"})
 }
 

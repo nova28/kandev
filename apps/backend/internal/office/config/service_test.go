@@ -224,7 +224,7 @@ func TestExportBundle_LeaksOtherWorkspaces_KnownDefect(t *testing.T) {
 	names := agentBundleNames(bundle.Agents)
 	sort.Strings(names)
 	assertStrings(t, "agents across workspaces", names, []string{"ada", "grace"})
-	assertStrings(t, "skills across workspaces", skillBundleSlugs(bundle.Skills), []string{"triage"})
+	assertStrings(t, "skills across workspaces", skillBundleSlugs(bundle.Skills), []string{"kandev-triage"})
 	assertStrings(t, "routines across workspaces",
 		routineBundleNames(bundle.Routines), []string{"retro"})
 	assertStrings(t, "projects across workspaces",
