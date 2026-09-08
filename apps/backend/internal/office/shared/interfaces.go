@@ -14,6 +14,13 @@ import (
 // trigger for it.
 var ErrEngineNoSession = errors.New("workflow engine: no active session for task")
 
+// ErrAgentStatusChanged is returned when an agent status compare-and-set
+// finds the row no longer in the status the caller observed. It lives here
+// so a transport layer can recognise the conflict without importing the
+// service package that produced it: office/service and office/agents both
+// alias this value, so errors.Is matches whichever one wrapped it.
+var ErrAgentStatusChanged = errors.New("agent status changed before the update could be applied")
+
 // AgentReader provides read access to agent instances.
 // Implemented by the agents feature (and transitionally by office/service.Service).
 type AgentReader interface {

@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/kandev/kandev/internal/office/models"
 	"github.com/kandev/kandev/internal/office/repository/sqlite"
+	"github.com/kandev/kandev/internal/office/shared"
 
 	"go.uber.org/zap"
 )
@@ -28,7 +29,9 @@ var (
 	ErrAgentReportsToInvalid = errors.New("reports_to agent does not exist in this workspace")
 	ErrAgentReportsToSelf    = errors.New("agent cannot report to itself")
 	ErrAgentStatusTransition = errors.New("invalid status transition")
-	ErrAgentStatusChanged    = errors.New("agent status changed before the update could be applied")
+	// ErrAgentStatusChanged aliases the shared sentinel so a transport layer
+	// can recognise a CAS conflict without importing this package.
+	ErrAgentStatusChanged = shared.ErrAgentStatusChanged
 )
 
 // validRoles enumerates accepted roles.

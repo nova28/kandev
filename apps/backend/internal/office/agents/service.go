@@ -44,7 +44,9 @@ var (
 	ErrAgentReportsToSelf    = errors.New("agent cannot report to itself")
 	ErrAgentReportsToCycle   = errors.New("agent reporting structure cannot contain a cycle")
 	ErrAgentStatusTransition = errors.New("invalid status transition")
-	ErrAgentStatusChanged    = errors.New("agent status changed before the update could be applied")
+	// ErrAgentStatusChanged aliases the shared sentinel so a transport layer
+	// can recognise a CAS conflict without importing this package.
+	ErrAgentStatusChanged = shared.ErrAgentStatusChanged
 )
 
 // GovernanceSettingsReader reads workspace governance settings.

@@ -1,11 +1,13 @@
 package dashboard
 
 import (
+	"errors"
 	"net/http"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/kandev/kandev/internal/office/models"
+	"github.com/kandev/kandev/internal/office/shared"
 )
 
 // -- Inbox, Activity, Runs --
@@ -69,6 +71,13 @@ func (h *Handler) dismissInboxItem(c *gin.Context) {
 		}
 	case "agent_paused_after_failures":
 		if err := h.svc.MarkFixedHandler().MarkAgentPausedFixed(ctx, dashboardUserID, req.ItemID); err != nil {
+			// A concurrent writer moving the agent mid-recovery (a manual
+			// stop, a second auto-pause) is an expected conflict the caller
+			// can retry, not an internal failure.
+			if errors.Is(err, shared.ErrAgentStatusChanged) {
+				c.JSON(http.StatusConflict, gin.H{"error": err.Error(), "code": "agent_status_changed"})
+				return
+			}
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
