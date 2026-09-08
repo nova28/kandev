@@ -508,7 +508,7 @@ func TestPreviewImport_ClassifiesCreatesAndUpdates(t *testing.T) {
 	bundle.Routines = append(bundle.Routines, RoutineConfig{Name: "retro"})
 	bundle.Projects = append(bundle.Projects, ProjectConfig{Name: "gemini"})
 
-	preview, err := env.svc.PreviewImport(ctx, testWorkspaceID, bundle)
+	preview, _, err := env.svc.PreviewImport(ctx, testWorkspaceID, bundle)
 	if err != nil {
 		t.Fatalf("PreviewImport: %v", err)
 	}
@@ -537,7 +537,7 @@ func TestPreviewImport_EmptyBundleYieldsEmptyDiffs(t *testing.T) {
 	env := newTestEnv(t)
 	seedAgent(t, env, testWorkspaceID, "ada")
 
-	preview, err := env.svc.PreviewImport(context.Background(), testWorkspaceID, &ConfigBundle{})
+	preview, _, err := env.svc.PreviewImport(context.Background(), testWorkspaceID, &ConfigBundle{})
 	if err != nil {
 		t.Fatalf("PreviewImport: %v", err)
 	}
@@ -553,7 +553,7 @@ func TestPreviewImport_ScopesToWorkspace(t *testing.T) {
 	env := newTestEnv(t)
 	seedAgent(t, env, "ws-other", "ada")
 
-	preview, err := env.svc.PreviewImport(context.Background(), testWorkspaceID, fullBundle())
+	preview, _, err := env.svc.PreviewImport(context.Background(), testWorkspaceID, fullBundle())
 	if err != nil {
 		t.Fatalf("PreviewImport: %v", err)
 	}
@@ -565,11 +565,59 @@ func TestPreviewImport_PropagatesRepositoryErrors(t *testing.T) {
 	env := newTestEnv(t)
 	env.closeDB(t)
 
-	preview, err := env.svc.PreviewImport(context.Background(), testWorkspaceID, fullBundle())
+	preview, _, err := env.svc.PreviewImport(context.Background(), testWorkspaceID, fullBundle())
 	if err == nil {
 		t.Fatal("expected an error from a closed database, got nil")
 	}
 	if preview != nil {
 		t.Errorf("preview should be nil on error, got %+v", preview)
+	}
+}
+
+// TestPreviewImport_FlagsMalformedSlugInsteadOfPromisingIt proves a preview
+// no longer reports a slug ApplyImport would reject as a clean Created
+// entry: the malformed entry is dropped from the diff and surfaced as a
+// ParseError instead, so a caller cannot show a clean diff and then hit a
+// hard failure on Apply.
+func TestPreviewImport_FlagsMalformedSlugInsteadOfPromisingIt(t *testing.T) {
+	env := newTestEnv(t)
+
+	bundle := &ConfigBundle{Skills: []SkillConfig{{Name: "Escape", Slug: "../escape"}}}
+	preview, errs, err := env.svc.PreviewImport(context.Background(), testWorkspaceID, bundle)
+	if err != nil {
+		t.Fatalf("PreviewImport: %v", err)
+	}
+	assertStrings(t, "skills created", preview.Skills.Created, nil)
+	assertStrings(t, "skills updated", preview.Skills.Updated, nil)
+	if len(errs) != 1 {
+		t.Fatalf("errors = %+v, want exactly one malformed-slug entry", errs)
+	}
+	if errs[0].FilePath != "../escape" {
+		t.Errorf("error FilePath = %q, want the offending slug", errs[0].FilePath)
+	}
+}
+
+// TestPreviewImport_FlagsCanonicalDuplicatePairInsteadOfTwoCleanEntries
+// proves a bundle where two skill entries canonicalize to the same slug does
+// not preview as two independent clean creates: only the first is listed,
+// and the second is reported as a duplicate ParseError, matching what
+// ApplyImport's duplicateSkillSlug guard will actually do.
+func TestPreviewImport_FlagsCanonicalDuplicatePairInsteadOfTwoCleanEntries(t *testing.T) {
+	env := newTestEnv(t)
+
+	bundle := &ConfigBundle{Skills: []SkillConfig{
+		{Name: "First", Slug: "code-review"},
+		{Name: "Second", Slug: "kandev-code-review"},
+	}}
+	preview, errs, err := env.svc.PreviewImport(context.Background(), testWorkspaceID, bundle)
+	if err != nil {
+		t.Fatalf("PreviewImport: %v", err)
+	}
+	assertStrings(t, "skills created", preview.Skills.Created, []string{"kandev-code-review"})
+	if len(errs) != 1 {
+		t.Fatalf("errors = %+v, want exactly one duplicate-slug entry", errs)
+	}
+	if errs[0].FilePath != "kandev-code-review" {
+		t.Errorf("error FilePath = %q, want the colliding canonical slug", errs[0].FilePath)
 	}
 }

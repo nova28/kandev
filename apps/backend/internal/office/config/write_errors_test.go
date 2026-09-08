@@ -159,7 +159,7 @@ func TestPreviewImport_PropagatesPerEntityErrors(t *testing.T) {
 			env := newTestEnv(t)
 			env.dropTable(t, table)
 
-			preview, err := env.svc.PreviewImport(
+			preview, _, err := env.svc.PreviewImport(
 				context.Background(), testWorkspaceID, fullBundle())
 			if err == nil {
 				t.Fatalf("expected an error after dropping %s, got nil", table)

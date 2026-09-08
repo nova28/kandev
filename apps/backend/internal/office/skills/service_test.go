@@ -758,6 +758,36 @@ func TestGetSkillFromConfig_MissingIDWrapsErrSkillNotFound(t *testing.T) {
 	}
 }
 
+// TestGetSkillFromConfig_ResolvesLegacyRawSlugToCanonicalRow covers the
+// agent-manifest lookup path: a skill created with a bare slug is persisted
+// under its canonical kandev-prefixed form, but a reference recorded before
+// that canonicalization (an agent's desired_skills, a config-import bundle
+// entry) still uses the raw slug. GetSkillFromConfig must resolve it via a
+// canonical-form comparison rather than dropping the skill silently.
+func TestGetSkillFromConfig_ResolvesLegacyRawSlugToCanonicalRow(t *testing.T) {
+	svc := newTestSkillService(t)
+	ctx := context.Background()
+
+	skill := &models.Skill{WorkspaceID: "ws-1", Name: "Code Review", Slug: "code-review"}
+	if err := svc.ValidateAndPrepareSkill(ctx, skill); err != nil {
+		t.Fatalf("ValidateAndPrepareSkill: %v", err)
+	}
+	if err := svc.CreateSkill(ctx, skill); err != nil {
+		t.Fatalf("CreateSkill: %v", err)
+	}
+	if skill.Slug != "kandev-code-review" {
+		t.Fatalf("seeded skill slug = %q, want canonicalized to kandev-code-review", skill.Slug)
+	}
+
+	got, err := svc.GetSkillFromConfig(ctx, "code-review")
+	if err != nil {
+		t.Fatalf("GetSkillFromConfig(%q): %v", "code-review", err)
+	}
+	if got.ID != skill.ID {
+		t.Errorf("resolved skill ID = %q, want %q", got.ID, skill.ID)
+	}
+}
+
 func TestImportFromSource_RepoDiscovery(t *testing.T) {
 	svc := newTestSkillService(t)
 	ctx := context.Background()

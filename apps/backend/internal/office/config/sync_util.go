@@ -139,6 +139,7 @@ func writeBundleEntities(w *configloader.FileWriter, bundle *ConfigBundle) error
 			return err
 		}
 	}
+	writtenSlugs := make([]string, 0, len(bundle.Skills))
 	for _, sk := range bundle.Skills {
 		content := sk.Content
 		if content == "" {
@@ -147,6 +148,10 @@ func writeBundleEntities(w *configloader.FileWriter, bundle *ConfigBundle) error
 		if err := w.WriteSkill(defaultWorkspaceName, sk.Slug, content); err != nil {
 			return err
 		}
+		writtenSlugs = append(writtenSlugs, sk.Slug)
+	}
+	if err := w.PruneCanonicalDuplicateSkills(defaultWorkspaceName, writtenSlugs); err != nil {
+		return err
 	}
 	for _, r := range bundle.Routines {
 		routine := &models.Routine{

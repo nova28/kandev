@@ -265,6 +265,18 @@ func (s *SkillService) GetSkillFromConfig(ctx context.Context, idOrSlug string) 
 			return sk, nil
 		}
 	}
+	// A reference recorded before its skill's slug was canonicalized (or
+	// written by a caller that never applies the prefix) no longer matches
+	// exactly. Falling back to a canonical-form comparison here keeps such a
+	// reference resolving instead of silently dropping the skill.
+	if skillslug.WellFormed(idOrSlug) {
+		canonical := skillslug.Normalize(idOrSlug)
+		for _, sk := range skills {
+			if skillslug.WellFormed(sk.Slug) && skillslug.Normalize(sk.Slug) == canonical {
+				return sk, nil
+			}
+		}
+	}
 	return nil, fmt.Errorf("%w: %s", ErrSkillNotFound, idOrSlug)
 }
 

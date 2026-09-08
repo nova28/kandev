@@ -92,12 +92,16 @@ func (h *Handler) previewImport(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	preview, err := h.svc.PreviewImport(c.Request.Context(), c.Param("wsId"), &bundle)
+	preview, errs, err := h.svc.PreviewImport(c.Request.Context(), c.Param("wsId"), &bundle)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"preview": preview})
+	resp := gin.H{"preview": preview}
+	if len(errs) > 0 {
+		resp["errors"] = errs
+	}
+	c.JSON(http.StatusOK, resp)
 }
 
 func (h *Handler) applyImport(c *gin.Context) {

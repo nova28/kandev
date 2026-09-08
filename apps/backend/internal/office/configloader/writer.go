@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/kandev/kandev/internal/common/skillslug"
 	"github.com/kandev/kandev/internal/office/models"
 )
 
@@ -93,6 +94,59 @@ func (w *FileWriter) WriteSkill(workspaceName, slug, content string) error {
 		return fmt.Errorf("write skill file: %w", err)
 	}
 	return w.loader.Reload(workspaceName)
+}
+
+// PruneCanonicalDuplicateSkills removes on-disk skill directories that
+// canonicalize to the same slug as one of the just-written names but are not
+// themselves one of those names. Slug canonicalization can rename a skill on
+// create; without this, the pre-canonicalization directory from a previous
+// export lingers beside the new one, and the next filesystem sync sees two
+// entries for the same skill and refuses to pick one. It never removes a
+// directory whose canonical form has no counterpart in written, so an
+// unrelated on-disk-only skill survives an export untouched.
+func (w *FileWriter) PruneCanonicalDuplicateSkills(workspaceName string, written []string) error {
+	if !isValidPathComponent(workspaceName) {
+		return fmt.Errorf("invalid workspace name")
+	}
+	dir := filepath.Join(w.basePath, "workspaces", workspaceName, "skills")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("read skills dir: %w", err)
+	}
+	writtenNames := make(map[string]bool, len(written))
+	writtenCanonical := make(map[string]bool, len(written))
+	for _, slug := range written {
+		writtenNames[slug] = true
+		writtenCanonical[canonicalOrSelf(slug)] = true
+	}
+	pruned := false
+	for _, entry := range entries {
+		name := entry.Name()
+		if !entry.IsDir() || writtenNames[name] || !writtenCanonical[canonicalOrSelf(name)] {
+			continue
+		}
+		if err := os.RemoveAll(filepath.Join(dir, name)); err != nil {
+			return fmt.Errorf("prune stale skill dir %q: %w", name, err)
+		}
+		pruned = true
+	}
+	if !pruned {
+		return nil
+	}
+	return w.loader.Reload(workspaceName)
+}
+
+// canonicalOrSelf normalizes slug when it is safe to (well-formed), and
+// returns it unchanged otherwise so a directory name that predates slug
+// validation never collides with an unrelated canonical name by accident.
+func canonicalOrSelf(slug string) string {
+	if !skillslug.WellFormed(slug) {
+		return slug
+	}
+	return skillslug.Normalize(slug)
 }
 
 // DeleteSkill removes a skill directory from disk.

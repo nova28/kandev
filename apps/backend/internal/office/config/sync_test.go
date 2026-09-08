@@ -572,3 +572,42 @@ func TestSyncRoundTrip_DiskToDatabaseToDisk(t *testing.T) {
 	// preserve: the importer forces every created project to "active".
 	assertEqual(t, "project status", bundle.Projects[0].Status, "active")
 }
+
+// TestSyncRoundTrip_SkillCanonicalizationDoesNotWedge covers the gap in
+// TestSyncRoundTrip_DiskToDatabaseToDisk: that test only crosses each
+// direction once, so it never exercises what happens after a create renames
+// a skill's slug. A second incoming sync must still see exactly one skill,
+// under its canonical slug — not a duplicate-slug error from a stale,
+// pre-canonicalization directory left behind by the outgoing export.
+func TestSyncRoundTrip_SkillCanonicalizationDoesNotWedge(t *testing.T) {
+	env := newTestEnv(t)
+	ctx := context.Background()
+	env.writeFSSkill(t, "code-review", "# Code Review\n\nread the diff\n")
+
+	if _, err := env.svc.ApplyIncoming(ctx, testWorkspaceID); err != nil {
+		t.Fatalf("ApplyIncoming #1: %v", err)
+	}
+	if err := env.svc.ApplyOutgoing(ctx, testWorkspaceID); err != nil {
+		t.Fatalf("ApplyOutgoing: %v", err)
+	}
+	if _, err := os.Stat(env.wsPath("skills", "code-review")); !os.IsNotExist(err) {
+		t.Errorf("stale pre-canonicalization skill dir should be pruned on export, stat err = %v", err)
+	}
+	if _, err := os.Stat(env.wsPath("skills", "kandev-code-review", "SKILL.md")); err != nil {
+		t.Errorf("canonical skill dir should exist after export: %v", err)
+	}
+
+	result, err := env.svc.ApplyIncoming(ctx, testWorkspaceID)
+	if err != nil {
+		t.Fatalf("ApplyIncoming #2: %v", err)
+	}
+	assertEqual(t, "created count", result.CreatedCount, 0)
+	assertEqual(t, "updated count", result.UpdatedCount, 1)
+
+	skills, err := env.repo.ListSkills(ctx, testWorkspaceID)
+	if err != nil {
+		t.Fatalf("list skills: %v", err)
+	}
+	assertEqual(t, "skill count after two round trips", len(skills), 1)
+	assertEqual(t, "skill slug stays canonical", skills[0].Slug, "kandev-code-review")
+}

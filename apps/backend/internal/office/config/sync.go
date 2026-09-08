@@ -65,14 +65,14 @@ func (s *ConfigService) IncomingDiff(ctx context.Context, workspaceID string) (*
 	if err != nil {
 		return nil, err
 	}
-	preview, err := s.PreviewImport(ctx, workspaceID, bundle)
+	preview, skillErrs, err := s.PreviewImport(ctx, workspaceID, bundle)
 	if err != nil {
 		return nil, err
 	}
 	if err := s.appendDeletions(ctx, workspaceID, bundle, preview); err != nil {
 		return nil, err
 	}
-	return &SyncDiff{Direction: "incoming", Preview: preview, Errors: parseErrs}, nil
+	return &SyncDiff{Direction: "incoming", Preview: preview, Errors: append(parseErrs, skillErrs...)}, nil
 }
 
 // OutgoingDiff returns the changes that exporting the DB to the on-disk config

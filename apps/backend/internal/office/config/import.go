@@ -10,24 +10,28 @@ import (
 	"github.com/kandev/kandev/internal/office/skills"
 )
 
-// PreviewImport diffs a bundle against the current workspace state.
+// PreviewImport diffs a bundle against the current workspace state. The
+// returned []ParseError reports bundle skill entries that a real ApplyImport
+// would reject (malformed slug, canonical-duplicate slug pair) — Created and
+// Updated only ever list slugs an apply could actually persist.
 func (s *ConfigService) PreviewImport(
 	ctx context.Context, workspaceID string, bundle *ConfigBundle,
-) (*ImportPreview, error) {
+) (*ImportPreview, []ParseError, error) {
 	preview := &ImportPreview{}
 	if err := s.previewAgents(ctx, workspaceID, bundle.Agents, &preview.Agents); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	if err := s.previewSkills(ctx, workspaceID, bundle.Skills, &preview.Skills); err != nil {
-		return nil, err
+	skillErrs, err := s.previewSkills(ctx, workspaceID, bundle.Skills, &preview.Skills)
+	if err != nil {
+		return nil, nil, err
 	}
 	if err := s.previewRoutines(ctx, workspaceID, bundle.Routines, &preview.Routines); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err := s.previewProjects(ctx, workspaceID, bundle.Projects, &preview.Projects); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return preview, nil
+	return preview, skillErrs, nil
 }
 
 func (s *ConfigService) previewAgents(
@@ -51,26 +55,44 @@ func (s *ConfigService) previewAgents(
 	return nil
 }
 
+// previewSkills classifies each incoming skill as Created or Updated, and
+// reports (rather than aborts on) any entry a real apply would reject: a
+// malformed slug, or a slug that canonicalizes to one already claimed
+// earlier in this same bundle. A rejected entry contributes to neither list,
+// so Created/Updated never promise a result ApplyImport can't deliver.
 func (s *ConfigService) previewSkills(
 	ctx context.Context, wsID string, incoming []SkillConfig, diff *ImportDiff,
-) error {
+) ([]ParseError, error) {
 	existing, err := s.repo.ListSkills(ctx, wsID)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	bySlug := make(map[string]bool, len(existing))
 	for _, sk := range existing {
 		bySlug[skillslug.Normalize(sk.Slug)] = true
 	}
-	for _, sk := range incoming {
-		slug := canonicalSkillSlug(sk)
+	var errs []ParseError
+	seenSlugs := make(map[string]bool, len(incoming))
+	for _, cfg := range incoming {
+		if cfg.Slug != "" && !skillslug.WellFormed(cfg.Slug) {
+			errs = append(errs, ParseError{WorkspaceID: wsID, FilePath: cfg.Slug, Error: fmt.Sprintf(
+				"invalid skill slug %q: must contain only letters, digits, underscore, and hyphen", cfg.Slug)})
+			continue
+		}
+		slug := canonicalSkillSlug(cfg)
+		if seenSlugs[slug] {
+			errs = append(errs, ParseError{WorkspaceID: wsID, FilePath: slug, Error: fmt.Sprintf(
+				"duplicate skill slug %q in import bundle", slug)})
+			continue
+		}
+		seenSlugs[slug] = true
 		if bySlug[slug] {
 			diff.Updated = append(diff.Updated, slug)
 		} else {
 			diff.Created = append(diff.Created, slug)
 		}
 	}
-	return nil
+	return errs, nil
 }
 
 // canonicalSkillSlug projects a bundle skill entry to the slug a successful
