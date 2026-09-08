@@ -132,6 +132,38 @@ func TestUpdateAgentStatusIfCurrent_PreservesWorkingRunIDWhenTargetIsWorking(t *
 	}
 }
 
+// TestUpdateAgentStatusIfCurrent_PreservesPauseReasonWhenTargetIsWorking pins
+// the Review round 2 blocker: a `working -> working` write is reachable here
+// (validateStatusTransition treats from == to as a no-op transition), and
+// UpdateAgentStatusFields has always refused to let such a write touch
+// pause_reason. Without the same guard, a stale caller's pause_reason value
+// overwrites whatever a concurrent auto-pause or manual clear just set,
+// including materializing a phantom "Auto-paused:" reason on an agent that is
+// still working (ListAutoPausedAgentsForInbox keys on pause_reason alone).
+func TestUpdateAgentStatusIfCurrent_PreservesPauseReasonWhenTargetIsWorking(t *testing.T) {
+	repo, db := newTestRepoWithDB(t)
+	ctx := context.Background()
+	workingStatusAgent(t, repo, "agent-cas-working-reason", "working")
+	setPauseReason(t, db, "agent-cas-working-reason", "")
+
+	changed, err := repo.UpdateAgentStatusIfCurrent(
+		ctx, "agent-cas-working-reason", "working", "working", "Auto-paused: stale",
+	)
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if !changed {
+		t.Fatal("changed = false, want true: expected status matched the row")
+	}
+	agent, err := repo.GetAgentInstance(ctx, "agent-cas-working-reason")
+	if err != nil {
+		t.Fatalf("get agent: %v", err)
+	}
+	if agent.PauseReason != "" {
+		t.Fatalf("pause reason = %q, want untouched (empty) for a working -> working write", agent.PauseReason)
+	}
+}
+
 // TestClearAgentPauseReasonIfCurrent_MatchesExpected is the ordinary CAS
 // write: pause_reason is still what the caller expected.
 func TestClearAgentPauseReasonIfCurrent_MatchesExpected(t *testing.T) {

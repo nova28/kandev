@@ -431,18 +431,22 @@ func (r *Repository) UpdateAgentStatusFields(
 // own the working_run_id value itself via their own CAS; this call must
 // not erase it out from under a live run when a `working -> working`
 // write reaches it (validateStatusTransition treats from == to as a
-// no-op transition, so that write is reachable here).
+// no-op transition, so that write is reachable here). pause_reason is
+// guarded by the same condition: a `working -> working` write must not
+// let a stale caller's pause_reason argument overwrite the value a
+// concurrent auto-pause or clear just set.
 func (r *Repository) UpdateAgentStatusIfCurrent(
 	ctx context.Context, id, expected, newStatus, pauseReason string,
 ) (bool, error) {
 	now := time.Now().UTC()
 	res, err := r.db.ExecContext(ctx, r.db.Rebind(`
 		UPDATE agent_profiles
-		SET status = ?, pause_reason = ?,
+		SET status = ?,
+			pause_reason = CASE WHEN ? = 'working' THEN pause_reason ELSE ? END,
 			working_run_id = CASE WHEN ? = 'working' THEN working_run_id ELSE '' END,
 			updated_at = ?
 		WHERE id = ? AND status = ? AND `+agentInstanceFilter+`
-	`), newStatus, pauseReason, newStatus, now, id, expected)
+	`), newStatus, newStatus, pauseReason, newStatus, now, id, expected)
 	if err != nil {
 		return false, err
 	}
