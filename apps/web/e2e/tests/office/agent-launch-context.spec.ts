@@ -8,54 +8,136 @@ import { test, expect } from "../../fixtures/office-fixture";
  * What an office agent actually receives at launch.
  *
  * This is the regression net for the "agents stop getting <X>"
- * class of bug. The asserts cover the three legs an agent depends
+ * class of bug. The asserts cover the four legs an agent depends
  * on:
  *
  *   1. Bundled system SKILL.md files materialised under the
- *      worktree's per-agent skill dir (`.agents/skills/kandev-*`).
- *   2. `KANDEV_CLI` env contract — the binary exists at the path
+ *      worktree's per-agent skill dir (`.agents/skills/kandev-*`)
+ *      for an office-routed launch, which carries the Office
+ *      runtime env those skills' instructions depend on.
+ *   2. The same bundled system skills stay OFF a plain kanban
+ *      launch, which never carries that env (e.g. a heavy-routine
+ *      task materialised via the kanban StartTask path) — their
+ *      instructions would just fail on a missing CLI/credentials.
+ *      A sibling user-authored skill is used as a control to prove
+ *      skill deploy still ran for that launch.
+ *   3. `KANDEV_CLI` env contract — the binary exists at the path
  *      the runtime injects, and `agentctl --help` succeeds.
- *   3. Run detail's `runtime.skills` snapshot records the same
+ *   4. Run detail's `runtime.skills` snapshot records the same
  *      slugs that landed on disk (proves the dispatcher actually
  *      took the snapshot, not just that the file deployer ran).
  *
  * If any of those break silently, the CEO gets garbage prompts /
- * a broken CLI / missing skills and the user only notices when
- * the org grinds to a halt.
+ * a broken CLI / missing skills / skills it can't run and the user
+ * only notices when the org grinds to a halt.
  */
 
 const BACKEND_DIR = path.resolve(__dirname, "../../../../../apps/backend");
 const AGENTCTL_BIN = path.join(BACKEND_DIR, "bin", "agentctl");
 
 test.describe("Office agent launch context", () => {
-  test("bundled system skills materialise on the agent's worktree at launch", async ({
+  test("bundled system skills materialise on an office-routed agent's worktree at launch", async ({
     apiClient,
-    seedData,
+    officeApi,
+    officeSeed,
   }) => {
     test.setTimeout(60_000);
 
-    // 1. Prime the bundled system-skill sync for the seedData workspace
-    //    (the lazy sync runs on the first /skills list). The kanban
-    //    seed workspace shares the same lazy-sync path as office.
+    // 1. Prime the bundled system-skill sync for the office workspace
+    //    (the lazy sync runs on the first /skills list).
     const primingRes = await apiClient.rawRequest(
       "GET",
-      `/api/v1/office/workspaces/${seedData.workspaceId}/skills`,
+      `/api/v1/office/workspaces/${officeSeed.workspaceId}/skills`,
     );
     expect(primingRes.ok).toBe(true);
     const primed = (await primingRes.json()) as { skills?: Array<{ slug: string }> };
     const slugs = (primed.skills ?? []).map((s) => s.slug);
     expect(slugs).toContain("kandev-protocol");
 
-    // 2. Attach the bundled slug to the seed agent's desired_skills.
-    //    The runtime materializer resolves slugs against the
-    //    workspace skill registry at session start.
-    await apiClient.setProfileDesiredSkills(seedData.agentProfileId, ["kandev-protocol"]);
+    // 2. The onboarded CEO already carries kandev-protocol in its
+    //    desired_skills (system-skills.spec.ts pins the onboarding
+    //    backfill), so no explicit attach is needed here.
+
+    // 3. Launch a real session through the Office scheduler. A bare
+    //    createTask leaves the task unassigned, which never reaches the
+    //    dispatcher; assigning it fires task_assigned -> Run ->
+    //    StartTaskWithEnv, the only launch path that carries the
+    //    KANDEV_CLI / KANDEV_RUN_ID env pair bundled system skills
+    //    require (see isOfficeRuntimeEnv in
+    //    internal/agent/runtime/lifecycle/skill_deploy.go).
+    const task = (await officeApi.createTask(officeSeed.workspaceId, "Launch context — bundled skills", {
+      workflow_id: officeSeed.workflowId,
+      description: "/e2e:simple-message",
+    })) as { id: string };
+    await officeApi.assignTask(task.id, officeSeed.agentId);
+
+    // 4. Wait for the task's worktree path to settle.
+    let worktreePath = "";
+    await expect
+      .poll(
+        async () => {
+          const env = await apiClient.getTaskEnvironment(task.id);
+          worktreePath = env?.workspace_path ?? env?.repos?.[0]?.worktree_path ?? "";
+          return worktreePath;
+        },
+        { timeout: 40_000, message: "task environment workspace_path never appeared" },
+      )
+      .not.toBe("");
+
+    // 5. The bundled SKILL.md landed at the agent-type-specific
+    //    skill dir. mock-agent doesn't declare a custom
+    //    ProjectSkillDir, so the default ".agents/skills" applies.
+    const skillFile = path.join(worktreePath, ".agents", "skills", "kandev-protocol", "SKILL.md");
+    await expect
+      .poll(() => fs.existsSync(skillFile), {
+        timeout: 15_000,
+        message: skillFile,
+      })
+      .toBe(true);
+    // Frontmatter from internal/office/configloader/skills/kandev-protocol
+    // — pin that the bundled body actually reached the worktree, not
+    // just an empty file.
+    const content = fs.readFileSync(skillFile, "utf8");
+    expect(content).toMatch(/kandev/i);
+  });
+
+  test("bundled system skills do not materialise on a plain kanban launch (no Office runtime env)", async ({
+    apiClient,
+    officeApi,
+    seedData,
+  }) => {
+    test.setTimeout(60_000);
+
+    // 1. Prime the bundled system-skill sync for the seedData workspace.
+    //    The kanban seed workspace shares the same lazy-sync path as
+    //    office, so kandev-protocol is visible here too.
+    const primingRes = await apiClient.rawRequest(
+      "GET",
+      `/api/v1/office/workspaces/${seedData.workspaceId}/skills`,
+    );
+    expect(primingRes.ok).toBe(true);
+
+    // 2. Attach the bundled system skill AND a plain user-authored
+    //    control skill. The control skill proves the deploy pipeline
+    //    actually ran for this launch, so the system skill's absence
+    //    below is the office-runtime gate working, not "deploy never
+    //    ran" (which would also make it "absent").
+    const userSkill = (await officeApi.createSkill(seedData.workspaceId, {
+      name: "Kanban control skill",
+      slug: `e2e-kanban-control-${Date.now()}`,
+      content: "# kanban control skill\n\nAlways deployed regardless of Office runtime.",
+    })) as { slug: string };
+    await apiClient.setProfileDesiredSkills(seedData.agentProfileId, [
+      "kandev-protocol",
+      userSkill.slug,
+    ]);
 
     try {
-      // 3. Launch a real session.
+      // 3. Launch a real session on the plain kanban path — no Office
+      //    scheduler involved, so KANDEV_CLI / KANDEV_RUN_ID stay unset.
       const task = await apiClient.createTaskWithAgent(
         seedData.workspaceId,
-        "Launch context — bundled skills",
+        "Launch context — kanban has no office runtime",
         seedData.agentProfileId,
         {
           description: "/e2e:simple-message",
@@ -78,21 +160,23 @@ test.describe("Office agent launch context", () => {
         )
         .not.toBe("");
 
-      // 5. The bundled SKILL.md landed at the agent-type-specific
-      //    skill dir. mock-agent doesn't declare a custom
-      //    ProjectSkillDir, so the default ".agents/skills" applies.
-      const skillFile = path.join(worktreePath, ".agents", "skills", "kandev-protocol", "SKILL.md");
+      // 5. Control: the user-authored skill still deploys on a kanban
+      //    launch — only bundled system skills are gated.
+      const userSkillFile = path.join(worktreePath, ".agents", "skills", userSkill.slug, "SKILL.md");
       await expect
-        .poll(() => fs.existsSync(skillFile), {
+        .poll(() => fs.existsSync(userSkillFile), {
           timeout: 15_000,
-          message: skillFile,
+          message: userSkillFile,
         })
         .toBe(true);
-      // Frontmatter from internal/office/configloader/skills/kandev-protocol
-      // — pin that the bundled body actually reached the worktree, not
-      // just an empty file.
-      const content = fs.readFileSync(skillFile, "utf8");
-      expect(content).toMatch(/kandev/i);
+
+      // 6. The bundled system skill must not materialise: its
+      //    instructions assume KANDEV_CLI, which this launch never sets.
+      const systemSkillFile = path.join(worktreePath, ".agents", "skills", "kandev-protocol", "SKILL.md");
+      expect(
+        fs.existsSync(systemSkillFile),
+        "kandev-protocol must not materialise on a kanban launch without Office runtime env",
+      ).toBe(false);
     } finally {
       // Tidy up so the worker's next test doesn't inherit the attach.
       await apiClient.setProfileDesiredSkills(seedData.agentProfileId, []);

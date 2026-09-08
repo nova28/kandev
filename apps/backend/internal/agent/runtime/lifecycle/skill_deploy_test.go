@@ -174,47 +174,68 @@ func TestRunSkillDeploy_MergesMetadataOnPreparedRequest(t *testing.T) {
 }
 
 // TestRunSkillDeploy_OfficeRuntimeFromEnv verifies OfficeRuntime is derived
-// from the presence of KANDEV_CLI in the prepared (finalized) launch env —
-// present for an office scheduler launch, absent for a kanban launch (e.g.
-// a heavy-routine task), which is the signal system skills gate on.
+// from the prepared (finalized) launch env carrying BOTH KANDEV_CLI and
+// KANDEV_RUN_ID — both present for an office scheduler launch, both absent
+// for a kanban launch (e.g. a heavy-routine task), which is the signal
+// system skills gate on. KANDEV_CLI alone is deliberately insufficient: see
+// the "KANDEV_CLI present without KANDEV_RUN_ID" case below.
 func TestRunSkillDeploy_OfficeRuntimeFromEnv(t *testing.T) {
 	rich := &settingsmodels.AgentProfile{ID: "p1", AgentID: "a1", SkillIDs: `["sk-foo"]`}
 
-	t.Run("KANDEV_CLI absent", func(t *testing.T) {
-		mgr := newSkillDeployTestManager(t)
-		rec := &recordingDeployer{}
-		mgr.skillDeployer = rec
-		mgr.agentProfileReader = &fakeProfileReader{profile: rich}
+	cases := []struct {
+		name string
+		env  map[string]string
+		want bool
+	}{
+		{
+			name: "neither key present",
+			env:  map[string]string{"GITLAB_TOKEN": "x"},
+			want: false,
+		},
+		{
+			// A profile env_vars entry can name a key "KANDEV_CLI" (nothing
+			// rejects the reserved prefix) and mergeEnvFillMissing backfills
+			// it into an ordinary kanban launch's env. That alone must not
+			// flip OfficeRuntime on, since KANDEV_RUN_ID — set only by the
+			// Office scheduler from a real Run row — is still absent.
+			name: "KANDEV_CLI present without KANDEV_RUN_ID",
+			env:  map[string]string{"KANDEV_CLI": "/usr/local/bin/agentctl"},
+			want: false,
+		},
+		{
+			name: "KANDEV_RUN_ID present without KANDEV_CLI",
+			env:  map[string]string{"KANDEV_RUN_ID": "run-1"},
+			want: false,
+		},
+		{
+			name: "both KANDEV_CLI and KANDEV_RUN_ID present",
+			env: map[string]string{
+				"KANDEV_CLI":    "/usr/local/bin/agentctl",
+				"KANDEV_RUN_ID": "run-1",
+			},
+			want: true,
+		},
+	}
 
-		mgr.runSkillDeploy(context.Background(),
-			&LaunchRequest{AgentProfileID: "p1"},
-			&LaunchRequest{WorkspacePath: "/tmp/ws", Env: map[string]string{"GITLAB_TOKEN": "x"}})
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mgr := newSkillDeployTestManager(t)
+			rec := &recordingDeployer{}
+			mgr.skillDeployer = rec
+			mgr.agentProfileReader = &fakeProfileReader{profile: rich}
 
-		if rec.called.Load() != 1 {
-			t.Fatalf("expected deployer once, got %d", rec.called.Load())
-		}
-		if rec.last.OfficeRuntime {
-			t.Errorf("OfficeRuntime should be false without KANDEV_CLI in env")
-		}
-	})
+			mgr.runSkillDeploy(context.Background(),
+				&LaunchRequest{AgentProfileID: "p1"},
+				&LaunchRequest{WorkspacePath: "/tmp/ws", Env: tc.env})
 
-	t.Run("KANDEV_CLI present", func(t *testing.T) {
-		mgr := newSkillDeployTestManager(t)
-		rec := &recordingDeployer{}
-		mgr.skillDeployer = rec
-		mgr.agentProfileReader = &fakeProfileReader{profile: rich}
-
-		mgr.runSkillDeploy(context.Background(),
-			&LaunchRequest{AgentProfileID: "p1"},
-			&LaunchRequest{WorkspacePath: "/tmp/ws", Env: map[string]string{"KANDEV_CLI": "/usr/local/bin/agentctl"}})
-
-		if rec.called.Load() != 1 {
-			t.Fatalf("expected deployer once, got %d", rec.called.Load())
-		}
-		if !rec.last.OfficeRuntime {
-			t.Errorf("OfficeRuntime should be true with KANDEV_CLI in env")
-		}
-	})
+			if rec.called.Load() != 1 {
+				t.Fatalf("expected deployer once, got %d", rec.called.Load())
+			}
+			if rec.last.OfficeRuntime != tc.want {
+				t.Errorf("OfficeRuntime = %v, want %v", rec.last.OfficeRuntime, tc.want)
+			}
+		})
+	}
 }
 
 // TestRunSkillDeploy_NoProfileID verifies that a launch without a profile id

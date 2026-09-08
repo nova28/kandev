@@ -44,7 +44,7 @@ func (m *Manager) runSkillDeploy(ctx context.Context, original, prepared *Launch
 		ExecutorType:  prepared.ExecutorType,
 		WorkspaceID:   profile.WorkspaceID,
 		SessionID:     original.SessionID,
-		OfficeRuntime: prepared.Env["KANDEV_CLI"] != "",
+		OfficeRuntime: isOfficeRuntimeEnv(prepared.Env),
 	}
 	result, err := m.skillDeployer.DeploySkills(ctx, req)
 	if err != nil {
@@ -55,6 +55,21 @@ func (m *Manager) runSkillDeploy(ctx context.Context, original, prepared *Launch
 		return
 	}
 	mergeSkillMetadata(prepared, result)
+}
+
+// isOfficeRuntimeEnv reports whether the finalized launch env was built by
+// the Office scheduler path, not merely that a launch happens to carry a
+// KANDEV_CLI value. KANDEV_CLI alone is not sufficient: mergeEnvFillMissing
+// backfills an agent profile's own env_vars into the finalized env, and an
+// operator can freely name a profile env var "KANDEV_CLI" (nothing rejects
+// the reserved prefix), which would satisfy a single-key check on an
+// ordinary kanban launch that never went through Office. KANDEV_RUN_ID is
+// only ever set by SchedulerIntegration.buildEnvVars
+// (internal/office/service/env_builder.go) from a real dispatched Run row,
+// so requiring both keys keeps a profile-level collision on either name
+// from producing a false OfficeRuntime=true.
+func isOfficeRuntimeEnv(env map[string]string) bool {
+	return env["KANDEV_CLI"] != "" && env["KANDEV_RUN_ID"] != ""
 }
 
 // mergeSkillMetadata applies the deployer's output to the prepared

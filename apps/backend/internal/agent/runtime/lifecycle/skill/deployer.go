@@ -85,10 +85,10 @@ type Request struct {
 	ExecutorType  string
 	WorkspaceID   string
 	SessionID     string
-	// OfficeRuntime reports whether the finalized launch env carries the
-	// Office runtime variables (KANDEV_CLI, KANDEV_API_KEY, ...) that
-	// bundled system skills depend on. When false, system skills are
-	// omitted from the manifest — see appendSkills.
+	// OfficeRuntime reports whether the finalized launch env was built by
+	// the Office scheduler path (both KANDEV_CLI and KANDEV_RUN_ID present —
+	// see isOfficeRuntimeEnv in lifecycle/skill_deploy.go). When false,
+	// system skills are omitted from the manifest — see appendSkills.
 	OfficeRuntime bool
 }
 

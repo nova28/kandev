@@ -32,9 +32,10 @@ type SkillDeployRequest struct {
 	ExecutorType  string
 	WorkspaceID   string
 	SessionID     string
-	// OfficeRuntime reports whether the finalized launch env carries the
-	// Office runtime variables (KANDEV_CLI, KANDEV_API_KEY, ...) that
-	// bundled system skills depend on.
+	// OfficeRuntime reports whether the finalized launch env was built by
+	// the Office scheduler path (both KANDEV_CLI and KANDEV_RUN_ID present —
+	// see isOfficeRuntimeEnv in skill_deploy.go), which bundled system
+	// skills require to function.
 	OfficeRuntime bool
 }
 
