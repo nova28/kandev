@@ -453,6 +453,30 @@ func (r *Repository) UpdateAgentStatusIfCurrent(
 	return rowsChanged(res)
 }
 
+// UnpauseAgentIfCurrent moves a paused agent to newStatus only while the
+// row is still status='paused' AND pause_reason still matches
+// expectedReason. Unlike UpdateAgentStatusIfCurrent, the SET clause never
+// touches pause_reason — a recovery sequence that needs the pause reason to
+// survive the unpause step (so a later step can still CAS on the value it
+// originally observed) must not have this write silently rewrite it back to
+// what was true at read time. A concurrent writer that changed the pause
+// reason while status stayed 'paused' — a second auto-pause landing on an
+// already-paused agent, for example — is refused instead of clobbered.
+func (r *Repository) UnpauseAgentIfCurrent(
+	ctx context.Context, id, expectedReason, newStatus string,
+) (bool, error) {
+	now := time.Now().UTC()
+	res, err := r.db.ExecContext(ctx, r.db.Rebind(`
+		UPDATE agent_profiles
+		SET status = ?, working_run_id = '', updated_at = ?
+		WHERE id = ? AND status = ? AND pause_reason = ? AND `+agentInstanceFilter+`
+	`), newStatus, now, id, string(models.AgentStatusPaused), expectedReason)
+	if err != nil {
+		return false, err
+	}
+	return rowsChanged(res)
+}
+
 // ClearAgentPauseReasonIfCurrent clears pause_reason only when the row's
 // pause_reason still matches expected. It touches neither status nor
 // working_run_id, so a caller that already applied a status transition —

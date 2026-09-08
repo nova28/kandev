@@ -219,7 +219,7 @@ func (s *Service) UpdateAgentStatus(
 // ClearAgentPauseReasonIfCurrent clears the pause reason only while it
 // still matches expectedReason, touching neither status nor
 // working_run_id. Callers that need to clear a pause reason as the last
-// step of a recovery sequence use this instead of UpdateAgentStatusFrom,
+// step of a recovery sequence use this instead of UnpauseAgentIfCurrent,
 // since by that point the agent's status may have legitimately moved on
 // (e.g. the scheduler claimed a requeued run), which would make a status
 // CAS fail even though the recovery itself succeeded.
@@ -236,19 +236,17 @@ func (s *Service) ClearAgentPauseReasonIfCurrent(
 	return nil
 }
 
-// UpdateAgentStatusFrom validates and persists a transition against the
-// status the caller itself observed (`expected`), rather than this call's
-// own fresh read. The write only lands while the row is still in
-// `expected` status, so a status change that happened between the
-// caller's observation and this call is refused instead of silently
-// applied against a status nobody validated.
-func (s *Service) UpdateAgentStatusFrom(
-	ctx context.Context, id string, expected, newStatus models.AgentStatus, pauseReason string,
+// UnpauseAgentIfCurrent moves a paused agent to newStatus only while the
+// row's pause_reason still matches expectedReason (status is asserted as
+// 'paused' by the underlying statement). The write leaves pause_reason
+// untouched, so a recovery sequence's later steps can still CAS on the
+// value this call itself observed. A concurrent writer that changed the
+// pause reason — even while status stayed 'paused' — is refused instead of
+// silently reverted alongside the status write.
+func (s *Service) UnpauseAgentIfCurrent(
+	ctx context.Context, id string, newStatus models.AgentStatus, expectedReason string,
 ) error {
-	if err := validateStatusTransition(expected, newStatus); err != nil {
-		return err
-	}
-	changed, err := s.repo.UpdateAgentStatusIfCurrent(ctx, id, string(expected), string(newStatus), pauseReason)
+	changed, err := s.repo.UnpauseAgentIfCurrent(ctx, id, expectedReason, string(newStatus))
 	if err != nil {
 		return fmt.Errorf("persist agent status: %w", err)
 	}

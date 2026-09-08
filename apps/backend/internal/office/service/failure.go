@@ -124,12 +124,13 @@ func (s *Service) MarkAgentRunFailedFixed(
 // cleared last, so a partial failure (a requeue error, a concurrent
 // status change) leaves the agent exactly where a retry can pick the
 // recovery back up, instead of reporting success on work that never
-// happened. Unpausing CASes on the status this call itself observed
-// rather than a fresh re-read, so a concurrent manual stop landing in
-// the same window is refused instead of silently reverted. The final
-// pause-reason clear CASes on the pause reason itself, not status,
-// since the requeue loop above may already have moved the agent to
-// working by the time this function reaches it.
+// happened. Unpausing CASes on both the status and the pause reason this
+// call itself observed, and leaves the pause reason untouched, so a
+// concurrent manual stop or a concurrent pause-reason change (e.g. a
+// second auto-pause) landing in the same window is refused instead of
+// silently reverted. The final pause-reason clear CASes on the pause
+// reason itself, not status, since the requeue loop above may already
+// have moved the agent to working by the time this function reaches it.
 func (s *Service) MarkAgentPausedFixed(
 	ctx context.Context, userID, agentID string,
 ) error {
@@ -145,8 +146,8 @@ func (s *Service) MarkAgentPausedFixed(
 	if agent.Status == models.AgentStatusPaused {
 		// QueueRun's guardAgentStatus rejects paused/stopped/pending_approval,
 		// so the agent must reach idle before the requeue loop below.
-		if err := s.UpdateAgentStatusFrom(
-			ctx, agentID, models.AgentStatusPaused, models.AgentStatusIdle, agent.PauseReason,
+		if err := s.UnpauseAgentIfCurrent(
+			ctx, agentID, models.AgentStatusIdle, agent.PauseReason,
 		); err != nil {
 			return fmt.Errorf("unpause agent: %w", err)
 		}

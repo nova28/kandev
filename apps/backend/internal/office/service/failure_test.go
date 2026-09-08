@@ -233,14 +233,13 @@ func TestOnAssigneeChanged_DismissesPriorEntryWithoutResettingCounter(t *testing
 	time.Sleep(10 * time.Millisecond)
 }
 
-// TestUpdateAgentStatusFrom_RefusesConcurrentManualStop is the committed
+// TestUnpauseAgentIfCurrent_RefusesConcurrentManualStop is the committed
 // form of the Triage scratch evidence: MarkAgentPausedFixed reads the
 // agent and observes "paused" (T1), an operator's manual stop lands
 // paused -> stopped before the write-back runs (T2), and the write-back
-// asserts the status T1 actually observed. Before UpdateAgentStatusFrom
-// existed, the equivalent unconditional write silently reverted the
-// operator's stop.
-func TestUpdateAgentStatusFrom_RefusesConcurrentManualStop(t *testing.T) {
+// asserts the status T1 actually observed. Before this CAS existed, the
+// equivalent unconditional write silently reverted the operator's stop.
+func TestUnpauseAgentIfCurrent_RefusesConcurrentManualStop(t *testing.T) {
 	svc, _ := newTestServiceWithBus(t)
 	ctx := context.Background()
 
@@ -261,7 +260,7 @@ func TestUpdateAgentStatusFrom_RefusesConcurrentManualStop(t *testing.T) {
 	svc.ExecSQL(t, `UPDATE agent_profiles SET status = 'stopped' WHERE id = 'agent-race'`)
 
 	// T1's write-back asserts the status it originally observed.
-	err = svc.UpdateAgentStatusFrom(ctx, "agent-race", agent.Status, models.AgentStatusIdle, agent.PauseReason)
+	err = svc.UnpauseAgentIfCurrent(ctx, "agent-race", models.AgentStatusIdle, agent.PauseReason)
 	if !errors.Is(err, service.ErrAgentStatusChanged) {
 		t.Fatalf("err = %v, want ErrAgentStatusChanged", err)
 	}
@@ -272,6 +271,56 @@ func TestUpdateAgentStatusFrom_RefusesConcurrentManualStop(t *testing.T) {
 	}
 	if got.Status != models.AgentStatusStopped {
 		t.Fatalf("status = %q, want stopped — T1's stale write-back must not clobber the manual stop", got.Status)
+	}
+}
+
+// TestUnpauseAgentIfCurrent_RefusesConcurrentPauseReasonChange pins the
+// Review round 3 blocker: a concurrent writer that changes pause_reason
+// while leaving status = 'paused' (e.g. a second autoPauseAgent call
+// landing on an already-paused agent) must not be silently reverted by
+// the unpause step, and must not leave the later pause-reason clear
+// matching a value nobody currently holds. Before this CAS covered
+// pause_reason, T1's write-back both succeeded and rewrote pause_reason
+// back to the stale value it read, clobbering B and resurrecting the
+// agent to idle despite the newer failure that just repaused it.
+func TestUnpauseAgentIfCurrent_RefusesConcurrentPauseReasonChange(t *testing.T) {
+	svc, _ := newTestServiceWithBus(t)
+	ctx := context.Background()
+
+	createTestAgent(t, svc, "ws-1", "agent-reason-race")
+	svc.ExecSQL(t,
+		`UPDATE agent_profiles SET status = 'paused', pause_reason = 'Auto-paused: reason A' WHERE id = 'agent-reason-race'`)
+
+	// T1 observes pause_reason="Auto-paused: reason A" (mirrors
+	// MarkAgentPausedFixed's GetAgentInstance read).
+	agent, err := svc.GetAgentInstance(ctx, "agent-reason-race")
+	if err != nil {
+		t.Fatalf("get agent: %v", err)
+	}
+	if agent.PauseReason != "Auto-paused: reason A" {
+		t.Fatalf("precondition: pause_reason = %q, want reason A", agent.PauseReason)
+	}
+
+	// T2: a later failure re-pauses the agent with a new reason while
+	// status stays 'paused' (autoPauseAgent has no already-paused guard).
+	svc.ExecSQL(t,
+		`UPDATE agent_profiles SET pause_reason = 'Auto-paused: reason B' WHERE id = 'agent-reason-race'`)
+
+	// T1's write-back asserts the pause reason it originally observed.
+	err = svc.UnpauseAgentIfCurrent(ctx, "agent-reason-race", models.AgentStatusIdle, agent.PauseReason)
+	if !errors.Is(err, service.ErrAgentStatusChanged) {
+		t.Fatalf("err = %v, want ErrAgentStatusChanged", err)
+	}
+
+	got, err := svc.GetAgentInstance(ctx, "agent-reason-race")
+	if err != nil {
+		t.Fatalf("get agent after: %v", err)
+	}
+	if got.Status != models.AgentStatusPaused {
+		t.Fatalf("status = %q, want paused — T1's stale write-back must not resurrect the agent", got.Status)
+	}
+	if got.PauseReason != "Auto-paused: reason B" {
+		t.Fatalf("pause_reason = %q, want reason B — T1's write-back must not clobber the newer reason", got.PauseReason)
 	}
 }
 
