@@ -701,6 +701,7 @@ func sessionACPConfigBaseline(session *models.TaskSession) map[string]string {
 
 // routeParams holds all dependencies needed for HTTP and WebSocket route registration.
 type routeParams struct {
+	ctx                           context.Context
 	router                        *gin.Engine
 	gateway                       *gateways.Gateway
 	taskSvc                       *taskservice.Service
@@ -1452,6 +1453,10 @@ func registerSecondaryRoutes(
 		p.features.NeedsYouInbox,
 	)
 	p.log.Debug("Registered Clarification handlers (HTTP)")
+
+	if p.features.Coordinator {
+		registerCoordinatorRoutes(p)
+	}
 
 	failedinbox.RegisterRoutes(p.router, p.taskSvc, p.taskRepo, p.log, p.features.NeedsYouInbox)
 	p.log.Debug("Registered Failed Inbox handlers (HTTP)")

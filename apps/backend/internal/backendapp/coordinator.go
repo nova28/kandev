@@ -1,0 +1,96 @@
+package backendapp
+
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"github.com/gin-gonic/gin"
+
+	settingsstore "github.com/kandev/kandev/internal/agent/settings/store"
+	"github.com/kandev/kandev/internal/common/logger"
+	"github.com/kandev/kandev/internal/coordinator"
+	"github.com/kandev/kandev/internal/db"
+	"github.com/kandev/kandev/internal/events/bus"
+	gateways "github.com/kandev/kandev/internal/gateway/websocket"
+	"github.com/kandev/kandev/internal/persistence/requiredstores"
+	taskservice "github.com/kandev/kandev/internal/task/service"
+)
+
+// initCoordinatorWiring builds the coordinator store unconditionally (it is a
+// requiredstores catalog entry) and, only when features.coordinator is
+// enabled, the service that sits on top of it
+// (coordinators.md#flag-and-wiring, Build decision 15).
+func initCoordinatorWiring(
+	ctx context.Context,
+	dbPool *db.Pool,
+	storeTracker *requiredstores.Tracker,
+	taskSvc *taskservice.Service,
+	agentProfiles settingsstore.Repository,
+	enabled bool,
+	log *logger.Logger,
+) (*coordinator.Service, error) {
+	store, storeErr := coordinator.NewStore(dbPool.Writer(), dbPool.Reader())
+	if recordErr := recordRequiredStore(ctx, storeTracker, "coordinator", storeErr); recordErr != nil {
+		return nil, fmt.Errorf("initialize coordinator: %w", recordErr)
+	}
+	if !enabled {
+		return nil, nil
+	}
+
+	validator := coordinator.NewValidator(agentProfiles, taskSvc)
+	return coordinator.NewService(store, validator, taskSvc, log), nil
+}
+
+// registerCoordinatorRoutes registers the coordinator CRUD, proposals-read and
+// stalls-read HTTP routes, the coordinator.updated WS forwarder, and starts
+// the background startup pass. Callers must only invoke it when
+// features.coordinator is enabled.
+func registerCoordinatorRoutes(p routeParams) {
+	if p.router == nil || p.services == nil || p.services.Coordinator == nil {
+		return
+	}
+	svc := p.services.Coordinator
+	coordinator.RegisterRoutes(p.router, svc, p.log)
+	if p.gateway != nil {
+		gateways.RegisterCoordinatorNotifications(p.ctx, p.eventBus, p.gateway.Hub, p.log)
+	}
+	startCoordinatorBackgroundPass(p.ctx, p.router, p.eventBus, svc, p.log)
+}
+
+// startCoordinatorBackgroundPass records T0 and runs each later work
+// package's named registration hook, in the fixed order the spec describes
+// (Build decision 14): conversation (task 03), subscribers (task 04),
+// decisions (task 07). All three are no-ops in WP-1; later work orders fill
+// in their bodies without changing this call site or ordering.
+func startCoordinatorBackgroundPass(ctx context.Context, router *gin.Engine, eventBus bus.EventBus, svc *coordinator.Service, log *logger.Logger) {
+	t0 := time.Now().UTC()
+	hooks := []func(context.Context, time.Time){
+		registerCoordinatorConversation(router, eventBus, svc, log),
+		registerCoordinatorSubscribers(router, eventBus, svc, log),
+		registerCoordinatorDecisions(router, eventBus, svc, log),
+	}
+	go func() {
+		for _, hook := range hooks {
+			hook(ctx, t0)
+		}
+	}()
+}
+
+// registerCoordinatorConversation is task 03's named registration function
+// (Build decision 14). No-op until that work package lands.
+func registerCoordinatorConversation(_ *gin.Engine, _ bus.EventBus, _ *coordinator.Service, _ *logger.Logger) func(context.Context, time.Time) {
+	return func(context.Context, time.Time) {}
+}
+
+// registerCoordinatorSubscribers is task 04's named registration function
+// (Build decision 14). No-op until that work package lands.
+func registerCoordinatorSubscribers(_ *gin.Engine, _ bus.EventBus, _ *coordinator.Service, _ *logger.Logger) func(context.Context, time.Time) {
+	return func(context.Context, time.Time) {}
+}
+
+// registerCoordinatorDecisions is task 07's named registration function
+// (Build decision 14). No-op until that work package lands.
+func registerCoordinatorDecisions(_ *gin.Engine, _ bus.EventBus, _ *coordinator.Service, _ *logger.Logger) func(context.Context, time.Time) {
+	return func(context.Context, time.Time) {}
+}
