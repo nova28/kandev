@@ -17,6 +17,9 @@ const (
 	SurfaceConfiguration Surface = "configuration"
 	SurfaceExternal      Surface = "external"
 	SurfaceAutomation    Surface = "automation"
+	// SurfaceCoordinator is the copilot's conversation MCP surface. Wiring it
+	// into Legacy()/normalizeSurface is owned by a later work package.
+	SurfaceCoordinator Surface = "coordinator"
 )
 
 type Capability string
