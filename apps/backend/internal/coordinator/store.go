@@ -28,6 +28,13 @@ type Store struct {
 	// now is the injectable clock. Overridden only by tests (decision 7's
 	// deterministic-order test needs a strictly increasing fake clock).
 	now func() time.Time
+
+	// afterLock is a test-only hook invoked once inside PatchCoordinator,
+	// immediately after the per-coordinator write lock is acquired (right
+	// after SQLite's BEGIN IMMEDIATE, right after PostgreSQL's SELECT ...
+	// FOR UPDATE) and before the merge/validate/update steps. nil in
+	// production; only tests in this package set it.
+	afterLock func(ctx context.Context)
 }
 
 // NewStore creates the coordinator store and initializes its schema.
@@ -214,6 +221,195 @@ func (s *Store) DeleteCoordinator(ctx context.Context, workspaceID, id string) e
 		return fmt.Errorf("commit delete coordinator: %w", err)
 	}
 	return nil
+}
+
+// coordinatorExec is the minimal transaction-bound executor used by the PATCH
+// body: both *sql.Conn (SQLite BEGIN IMMEDIATE path) and *sqlx.Tx (PostgreSQL
+// SELECT...FOR UPDATE path) satisfy it, so every PATCH statement runs on the
+// same transaction and never on the store's reader handle.
+type coordinatorExec interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+// CoordinatorPatch carries the fields a PATCH may change. A nil field is left
+// unchanged (docs/specs/coordinator/system-design/coordinators.md#routes,
+// Build decision 7).
+type CoordinatorPatch struct {
+	Name              *string
+	AgentProfileID    *string
+	ExecutorProfileID *string
+	Context           *string
+}
+
+// PatchValidator is invoked once inside the PATCH transaction with the
+// coordinator merged from the sent fields, before it is persisted (decision
+// 7). It may perform its own reads, through other stores' reader pools, but
+// never through the coordinator store's writer pool the lock holds. A
+// returned error aborts the PATCH without writing.
+type PatchValidator func(ctx context.Context, merged *Coordinator) error
+
+// PatchCoordinator applies patch to the coordinator with the given id, scoped
+// to workspaceID, under the per-coordinator write lock (decision 7): SQLite
+// BEGIN IMMEDIATE (the single writer lock) or PostgreSQL SELECT ... FOR
+// UPDATE. Returns ErrNotFound if no row matches. If validate is non-nil it
+// runs against the merged row before the write; a returned error aborts the
+// PATCH and is returned unwrapped. If the merged context or either profile id
+// differs from the row read under the lock, conversation_task_id is cleared;
+// its previous value is returned only when it was non-nil.
+func (s *Store) PatchCoordinator(ctx context.Context, workspaceID, id string, patch CoordinatorPatch, validate PatchValidator) (*Coordinator, *string, error) {
+	if dialect.IsPostgres(s.db.DriverName()) {
+		return s.patchCoordinatorPostgres(ctx, workspaceID, id, patch, validate)
+	}
+	return s.patchCoordinatorSQLite(ctx, workspaceID, id, patch, validate)
+}
+
+// patchCoordinatorSQLite takes the single writer lock up front with BEGIN
+// IMMEDIATE, before any read, so a competing PATCH serializes rather than
+// racing the read.
+func (s *Store) patchCoordinatorSQLite(ctx context.Context, workspaceID, id string, patch CoordinatorPatch, validate PatchValidator) (*Coordinator, *string, error) {
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return nil, nil, fmt.Errorf("acquire writer connection: %w", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		return nil, nil, fmt.Errorf("begin immediate: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			// The rollback must reach SQLite even when the caller canceled
+			// ctx: a canceled ROLLBACK would leave the BEGIN IMMEDIATE
+			// transaction and its write lock open on the pooled connection.
+			_, _ = conn.ExecContext(context.WithoutCancel(ctx), "ROLLBACK")
+		}
+	}()
+
+	if s.afterLock != nil {
+		s.afterLock(ctx)
+	}
+
+	updated, cleared, err := s.patchCoordinatorBody(ctx, conn, func(q string) string { return q }, workspaceID, id, patch, validate, false, nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
+		return nil, nil, fmt.Errorf("commit patch coordinator: %w", err)
+	}
+	committed = true
+	return updated, cleared, nil
+}
+
+// patchCoordinatorPostgres acquires the lock via SELECT ... FOR UPDATE inside
+// patchCoordinatorBody: on PostgreSQL that statement is what acquires the
+// row lock, so afterLock fires right after it returns (see the passed hook).
+func (s *Store) patchCoordinatorPostgres(ctx context.Context, workspaceID, id string, patch CoordinatorPatch, validate PatchValidator) (*Coordinator, *string, error) {
+	tx, err := s.db.BeginTxx(ctx, nil)
+	if err != nil {
+		return nil, nil, fmt.Errorf("begin patch coordinator: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	hook := func() {
+		if s.afterLock != nil {
+			s.afterLock(ctx)
+		}
+	}
+	updated, cleared, err := s.patchCoordinatorBody(ctx, tx, s.db.Rebind, workspaceID, id, patch, validate, true, hook)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, nil, fmt.Errorf("commit patch coordinator: %w", err)
+	}
+	return updated, cleared, nil
+}
+
+// patchCoordinatorBody reads the row under lock, merges the patch, validates,
+// stamps updated_at with the store's clock, and writes the update. hookAfterRead
+// is called right after the row read succeeds (used only by the PostgreSQL
+// path, where that read is what acquires the lock); pass nil otherwise.
+func (s *Store) patchCoordinatorBody(ctx context.Context, exec coordinatorExec, rebind func(string) string, workspaceID, id string, patch CoordinatorPatch, validate PatchValidator, forUpdate bool, hookAfterRead func()) (*Coordinator, *string, error) {
+	row, err := lockedCoordinatorRow(ctx, exec, rebind, workspaceID, id, forUpdate)
+	if err != nil {
+		return nil, nil, err
+	}
+	if hookAfterRead != nil {
+		hookAfterRead()
+	}
+
+	merged := mergeCoordinatorPatch(row, patch)
+	if validate != nil {
+		if err := validate(ctx, merged); err != nil {
+			return nil, nil, err
+		}
+	}
+
+	var clearedConversationTaskID *string
+	newConversationTaskID := merged.ConversationTaskID
+	if merged.Context != row.Context || merged.AgentProfileID != row.AgentProfileID || merged.ExecutorProfileID != row.ExecutorProfileID {
+		if row.ConversationTaskID.Valid {
+			old := row.ConversationTaskID.String
+			clearedConversationTaskID = &old
+		}
+		newConversationTaskID = nil
+	}
+
+	now := s.now()
+	_, err = exec.ExecContext(ctx, rebind(`
+		UPDATE coordinators SET name = ?, agent_profile_id = ?, executor_profile_id = ?, context = ?, conversation_task_id = ?, updated_at = ?
+		WHERE id = ? AND workspace_id = ?`),
+		merged.Name, merged.AgentProfileID, merged.ExecutorProfileID, merged.Context,
+		nullableString(newConversationTaskID), now, row.ID, row.WorkspaceID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("update coordinator: %w", err)
+	}
+
+	merged.ConversationTaskID = newConversationTaskID
+	merged.CreatedAt = row.CreatedAt
+	merged.UpdatedAt = now
+	return merged, clearedConversationTaskID, nil
+}
+
+// lockedCoordinatorRow reads a coordinator row by (id, workspace_id) on the
+// transaction-bound executor, optionally appending FOR UPDATE.
+func lockedCoordinatorRow(ctx context.Context, exec coordinatorExec, rebind func(string) string, workspaceID, id string, forUpdate bool) (*coordinatorRow, error) {
+	query := `SELECT ` + coordinatorColumns + ` FROM coordinators WHERE id = ? AND workspace_id = ?`
+	if forUpdate {
+		query += " FOR UPDATE"
+	}
+	var row coordinatorRow
+	err := exec.QueryRowContext(ctx, rebind(query), id, workspaceID).Scan(
+		&row.ID, &row.WorkspaceID, &row.Name, &row.AgentProfileID, &row.ExecutorProfileID,
+		&row.Context, &row.ConversationTaskID, &row.CreatedAt, &row.UpdatedAt)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("lock coordinator: %w", err)
+	}
+	return &row, nil
+}
+
+// mergeCoordinatorPatch returns a Coordinator built from row with patch's
+// non-nil fields applied on top.
+func mergeCoordinatorPatch(row *coordinatorRow, patch CoordinatorPatch) *Coordinator {
+	merged := row.toCoordinator()
+	if patch.Name != nil {
+		merged.Name = *patch.Name
+	}
+	if patch.AgentProfileID != nil {
+		merged.AgentProfileID = *patch.AgentProfileID
+	}
+	if patch.ExecutorProfileID != nil {
+		merged.ExecutorProfileID = *patch.ExecutorProfileID
+	}
+	if patch.Context != nil {
+		merged.Context = *patch.Context
+	}
+	return merged
 }
 
 func nullableString(v *string) sql.NullString {
