@@ -47,6 +47,12 @@ const (
 	CanvasRemoved                   = "canvas.removed"
 )
 
+// CoordinatorUpdated fires after a coordinator is created, patched or
+// deleted. Payload: {workspace_id, coordinator_id, open_proposals}
+// (docs/specs/coordinator/system-design/coordinators.md#routes, Build
+// decision 13). Publishing sites land with tasks 03, 04 and 07.
+const CoordinatorUpdated = "coordinator.updated"
+
 // Event types for office task tree controls.
 const (
 	OfficeTaskTreeHoldCreated  = "task.tree_hold_created"
