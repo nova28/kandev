@@ -1,0 +1,521 @@
+package coordinator
+
+import (
+	"context"
+	"errors"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+)
+
+func newTestCoordinator(t *testing.T, store *Store, workspaceID string) *Coordinator {
+	t.Helper()
+	c := &Coordinator{WorkspaceID: workspaceID, Name: "Ops", AgentProfileID: "a", ExecutorProfileID: "e"}
+	if err := store.CreateCoordinator(context.Background(), c); err != nil {
+		t.Fatalf("CreateCoordinator: %v", err)
+	}
+	return c
+}
+
+func sampleSpec() ProposalSpec {
+	return ProposalSpec{
+		Title:        "Do the thing",
+		Description:  "A description",
+		Rationale:    "Because",
+		WorkflowID:   "wf-1",
+		StepID:       "step-1",
+		RepositoryID: "repo-1",
+		SourceTaskID: "task-0",
+	}
+}
+
+func TestInsertProposal_AssignsIDAndPendingStatus(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	c := newTestCoordinator(t, store, "ws-1")
+
+	p := &Proposal{CoordinatorID: c.ID, WorkspaceID: "ws-1", Spec: sampleSpec()}
+	if err := store.InsertProposal(ctx, p); err != nil {
+		t.Fatalf("InsertProposal: %v", err)
+	}
+	if p.ID == "" {
+		t.Fatal("InsertProposal did not assign an id")
+	}
+	if p.Status != ProposalStatusPending {
+		t.Fatalf("p.Status = %q, want %q", p.Status, ProposalStatusPending)
+	}
+	if p.CreatedAt.IsZero() || p.UpdatedAt.IsZero() {
+		t.Fatal("InsertProposal did not stamp timestamps")
+	}
+
+	got, err := store.GetProposal(ctx, "ws-1", c.ID, p.ID)
+	if err != nil {
+		t.Fatalf("GetProposal: %v", err)
+	}
+	if got.Spec != sampleSpec() {
+		t.Fatalf("GetProposal.Spec = %+v, want %+v", got.Spec, sampleSpec())
+	}
+	if got.FinalSpec != nil {
+		t.Fatalf("GetProposal.FinalSpec = %+v, want nil", got.FinalSpec)
+	}
+}
+
+func TestInsertProposal_UnknownCoordinatorIsNotFound(t *testing.T) {
+	store := newTestStore(t)
+	p := &Proposal{CoordinatorID: "missing", WorkspaceID: "ws-1", Spec: sampleSpec()}
+	if err := store.InsertProposal(context.Background(), p); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("InsertProposal(missing coordinator): err = %v, want ErrNotFound", err)
+	}
+}
+
+func TestInsertProposal_WrongWorkspaceIsNotFound(t *testing.T) {
+	store := newTestStore(t)
+	c := newTestCoordinator(t, store, "ws-1")
+	p := &Proposal{CoordinatorID: c.ID, WorkspaceID: "ws-2", Spec: sampleSpec()}
+	if err := store.InsertProposal(context.Background(), p); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("InsertProposal(wrong workspace): err = %v, want ErrNotFound", err)
+	}
+}
+
+func TestInsertProposal_CapReachedAt25(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	c := newTestCoordinator(t, store, "ws-1")
+
+	for i := 0; i < maxOpenProposals; i++ {
+		p := &Proposal{CoordinatorID: c.ID, WorkspaceID: "ws-1", Spec: sampleSpec()}
+		if err := store.InsertProposal(ctx, p); err != nil {
+			t.Fatalf("InsertProposal #%d: %v", i, err)
+		}
+	}
+
+	overflow := &Proposal{CoordinatorID: c.ID, WorkspaceID: "ws-1", Spec: sampleSpec()}
+	if err := store.InsertProposal(ctx, overflow); !errors.Is(err, ErrCoordinatorProposalCapReached) {
+		t.Fatalf("InsertProposal #%d: err = %v, want ErrCoordinatorProposalCapReached", maxOpenProposals, err)
+	}
+
+	count, err := store.CountOpenProposals(ctx, c.ID)
+	if err != nil {
+		t.Fatalf("CountOpenProposals: %v", err)
+	}
+	if count != maxOpenProposals {
+		t.Fatalf("CountOpenProposals = %d, want %d", count, maxOpenProposals)
+	}
+}
+
+// TestInsertProposal_ConcurrentCapEnforcement is Build decision 11's mandated
+// test: 30 concurrent proposes against a coordinator with 0 open proposals
+// must produce exactly 25 rows and 5 refusals.
+func TestInsertProposal_ConcurrentCapEnforcement(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	c := newTestCoordinator(t, store, "ws-1")
+
+	const attempts = 30
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	var succeeded, capped, other int64
+	wg.Add(attempts)
+	for i := 0; i < attempts; i++ {
+		go func() {
+			defer wg.Done()
+			<-start
+			p := &Proposal{CoordinatorID: c.ID, WorkspaceID: "ws-1", Spec: sampleSpec()}
+			err := store.InsertProposal(ctx, p)
+			switch {
+			case err == nil:
+				atomic.AddInt64(&succeeded, 1)
+			case errors.Is(err, ErrCoordinatorProposalCapReached):
+				atomic.AddInt64(&capped, 1)
+			default:
+				atomic.AddInt64(&other, 1)
+				t.Errorf("InsertProposal: unexpected error %v", err)
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	if other != 0 {
+		t.Fatalf("unexpected errors: %d", other)
+	}
+	if succeeded != maxOpenProposals {
+		t.Fatalf("succeeded = %d, want %d", succeeded, maxOpenProposals)
+	}
+	if capped != attempts-maxOpenProposals {
+		t.Fatalf("capped = %d, want %d", capped, attempts-maxOpenProposals)
+	}
+
+	count, err := store.CountOpenProposals(ctx, c.ID)
+	if err != nil {
+		t.Fatalf("CountOpenProposals: %v", err)
+	}
+	if count != maxOpenProposals {
+		t.Fatalf("CountOpenProposals = %d, want %d", count, maxOpenProposals)
+	}
+}
+
+func TestClaimProposal_ClaimsPendingNotOthers(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	c := newTestCoordinator(t, store, "ws-1")
+	p := &Proposal{CoordinatorID: c.ID, WorkspaceID: "ws-1", Spec: sampleSpec()}
+	if err := store.InsertProposal(ctx, p); err != nil {
+		t.Fatalf("InsertProposal: %v", err)
+	}
+
+	now := time.Now().UTC()
+	final := sampleSpec()
+	final.Title = "Edited title"
+	matched, err := store.ClaimProposal(ctx, p.ID, "token-1", final, "user-1", now)
+	if err != nil {
+		t.Fatalf("ClaimProposal: %v", err)
+	}
+	if !matched {
+		t.Fatal("ClaimProposal did not match the pending row")
+	}
+
+	got, err := store.GetProposal(ctx, "ws-1", c.ID, p.ID)
+	if err != nil {
+		t.Fatalf("GetProposal: %v", err)
+	}
+	if got.Status != ProposalStatusApproving {
+		t.Fatalf("Status = %q, want %q", got.Status, ProposalStatusApproving)
+	}
+	if got.ClaimToken == nil || *got.ClaimToken != "token-1" {
+		t.Fatalf("ClaimToken = %v, want %q", got.ClaimToken, "token-1")
+	}
+	if got.FinalSpec == nil || *got.FinalSpec != final {
+		t.Fatalf("FinalSpec = %+v, want %+v", got.FinalSpec, final)
+	}
+	if got.DecidedBy == nil || *got.DecidedBy != "user-1" {
+		t.Fatalf("DecidedBy = %v, want %q", got.DecidedBy, "user-1")
+	}
+
+	// Claiming again (now approving) must not match.
+	matched, err = store.ClaimProposal(ctx, p.ID, "token-2", final, "user-2", now)
+	if err != nil {
+		t.Fatalf("ClaimProposal (already approving): %v", err)
+	}
+	if matched {
+		t.Fatal("ClaimProposal matched an already-approving row")
+	}
+}
+
+func TestClaimProposal_NoMatchReturnsFalseNotError(t *testing.T) {
+	store := newTestStore(t)
+	matched, err := store.ClaimProposal(context.Background(), "missing", "token", sampleSpec(), "user-1", time.Now().UTC())
+	if err != nil {
+		t.Fatalf("ClaimProposal(missing): %v", err)
+	}
+	if matched {
+		t.Fatal("ClaimProposal matched a nonexistent row")
+	}
+}
+
+func TestReclaimStale_OnlyWhenClaimedBeforeThreshold(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	c := newTestCoordinator(t, store, "ws-1")
+	p := &Proposal{CoordinatorID: c.ID, WorkspaceID: "ws-1", Spec: sampleSpec()}
+	if err := store.InsertProposal(ctx, p); err != nil {
+		t.Fatalf("InsertProposal: %v", err)
+	}
+	claimedAt := time.Now().UTC().Add(-3 * time.Minute)
+	if _, err := store.ClaimProposal(ctx, p.ID, "token-1", sampleSpec(), "user-1", claimedAt); err != nil {
+		t.Fatalf("ClaimProposal: %v", err)
+	}
+
+	staleBefore := time.Now().UTC().Add(-2 * time.Minute)
+	now := time.Now().UTC()
+
+	// Not yet stale relative to a threshold before the original claim.
+	tooRecentThreshold := claimedAt.Add(-time.Minute)
+	matched, err := store.ReclaimStale(ctx, p.ID, "token-2", now, tooRecentThreshold)
+	if err != nil {
+		t.Fatalf("ReclaimStale (not stale): %v", err)
+	}
+	if matched {
+		t.Fatal("ReclaimStale matched a claim that is not stale relative to the threshold")
+	}
+
+	matched, err = store.ReclaimStale(ctx, p.ID, "token-2", now, staleBefore)
+	if err != nil {
+		t.Fatalf("ReclaimStale (stale): %v", err)
+	}
+	if !matched {
+		t.Fatal("ReclaimStale did not match a stale claim")
+	}
+
+	got, err := store.GetProposal(ctx, "ws-1", c.ID, p.ID)
+	if err != nil {
+		t.Fatalf("GetProposal: %v", err)
+	}
+	if got.ClaimToken == nil || *got.ClaimToken != "token-2" {
+		t.Fatalf("ClaimToken = %v, want %q", got.ClaimToken, "token-2")
+	}
+	if got.ClaimedAt == nil || !got.ClaimedAt.Equal(now) {
+		t.Fatalf("ClaimedAt = %v, want %v", got.ClaimedAt, now)
+	}
+	if got.DecidedBy == nil || *got.DecidedBy != "user-1" {
+		t.Fatalf("DecidedBy = %v, want unchanged %q (stale re-claim never rewrites it)", got.DecidedBy, "user-1")
+	}
+}
+
+func TestCompleteProposal_FencedByToken(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	c := newTestCoordinator(t, store, "ws-1")
+	p := &Proposal{CoordinatorID: c.ID, WorkspaceID: "ws-1", Spec: sampleSpec()}
+	if err := store.InsertProposal(ctx, p); err != nil {
+		t.Fatalf("InsertProposal: %v", err)
+	}
+	now := time.Now().UTC()
+	if _, err := store.ClaimProposal(ctx, p.ID, "token-1", sampleSpec(), "user-1", now); err != nil {
+		t.Fatalf("ClaimProposal: %v", err)
+	}
+
+	matched, err := store.CompleteProposal(ctx, p.ID, "wrong-token", "task-1", now)
+	if err != nil {
+		t.Fatalf("CompleteProposal (wrong token): %v", err)
+	}
+	if matched {
+		t.Fatal("CompleteProposal matched with the wrong claim token")
+	}
+
+	matched, err = store.CompleteProposal(ctx, p.ID, "token-1", "task-1", now)
+	if err != nil {
+		t.Fatalf("CompleteProposal: %v", err)
+	}
+	if !matched {
+		t.Fatal("CompleteProposal did not match the claimed row")
+	}
+
+	got, err := store.GetProposal(ctx, "ws-1", c.ID, p.ID)
+	if err != nil {
+		t.Fatalf("GetProposal: %v", err)
+	}
+	if got.Status != ProposalStatusApproved {
+		t.Fatalf("Status = %q, want %q", got.Status, ProposalStatusApproved)
+	}
+	if got.TaskID == nil || *got.TaskID != "task-1" {
+		t.Fatalf("TaskID = %v, want %q", got.TaskID, "task-1")
+	}
+	if got.ClaimToken != nil {
+		t.Fatalf("ClaimToken = %v, want nil", got.ClaimToken)
+	}
+}
+
+func TestFailProposal_TruncatesErrorAndFences(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	c := newTestCoordinator(t, store, "ws-1")
+	p := &Proposal{CoordinatorID: c.ID, WorkspaceID: "ws-1", Spec: sampleSpec()}
+	if err := store.InsertProposal(ctx, p); err != nil {
+		t.Fatalf("InsertProposal: %v", err)
+	}
+	now := time.Now().UTC()
+	if _, err := store.ClaimProposal(ctx, p.ID, "token-1", sampleSpec(), "user-1", now); err != nil {
+		t.Fatalf("ClaimProposal: %v", err)
+	}
+
+	longMsg := make([]rune, 1500)
+	for i := range longMsg {
+		longMsg[i] = 'x'
+	}
+	matched, err := store.FailProposal(ctx, p.ID, "token-1", string(longMsg), now)
+	if err != nil {
+		t.Fatalf("FailProposal: %v", err)
+	}
+	if !matched {
+		t.Fatal("FailProposal did not match the claimed row")
+	}
+
+	got, err := store.GetProposal(ctx, "ws-1", c.ID, p.ID)
+	if err != nil {
+		t.Fatalf("GetProposal: %v", err)
+	}
+	if got.Status != ProposalStatusFailed {
+		t.Fatalf("Status = %q, want %q", got.Status, ProposalStatusFailed)
+	}
+	if got.Error == nil || len([]rune(*got.Error)) != 1000 {
+		t.Fatalf("Error length = %d, want 1000", len([]rune(*got.Error)))
+	}
+	if got.ClaimToken != nil {
+		t.Fatalf("ClaimToken = %v, want nil", got.ClaimToken)
+	}
+
+	// A failed proposal can be re-claimed (approve retries from failed).
+	matched, err = store.ClaimProposal(ctx, p.ID, "token-2", sampleSpec(), "user-1", now)
+	if err != nil {
+		t.Fatalf("ClaimProposal (from failed): %v", err)
+	}
+	if !matched {
+		t.Fatal("ClaimProposal did not match a failed row")
+	}
+}
+
+func TestRejectProposal_TrimsAndNullsEmptyReason(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	c := newTestCoordinator(t, store, "ws-1")
+	p := &Proposal{CoordinatorID: c.ID, WorkspaceID: "ws-1", Spec: sampleSpec()}
+	if err := store.InsertProposal(ctx, p); err != nil {
+		t.Fatalf("InsertProposal: %v", err)
+	}
+
+	now := time.Now().UTC()
+	matched, err := store.RejectProposal(ctx, p.ID, "   ", "user-1", now)
+	if err != nil {
+		t.Fatalf("RejectProposal: %v", err)
+	}
+	if !matched {
+		t.Fatal("RejectProposal did not match the pending row")
+	}
+
+	got, err := store.GetProposal(ctx, "ws-1", c.ID, p.ID)
+	if err != nil {
+		t.Fatalf("GetProposal: %v", err)
+	}
+	if got.Status != ProposalStatusRejected {
+		t.Fatalf("Status = %q, want %q", got.Status, ProposalStatusRejected)
+	}
+	if got.RejectReason != nil {
+		t.Fatalf("RejectReason = %v, want nil for a whitespace-only reason", got.RejectReason)
+	}
+	if got.DecidedBy == nil || *got.DecidedBy != "user-1" {
+		t.Fatalf("DecidedBy = %v, want %q", got.DecidedBy, "user-1")
+	}
+}
+
+func TestRejectProposal_TruncatesLongReason(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	c := newTestCoordinator(t, store, "ws-1")
+	p := &Proposal{CoordinatorID: c.ID, WorkspaceID: "ws-1", Spec: sampleSpec()}
+	if err := store.InsertProposal(ctx, p); err != nil {
+		t.Fatalf("InsertProposal: %v", err)
+	}
+
+	longReason := make([]rune, 800)
+	for i := range longReason {
+		longReason[i] = 'r'
+	}
+	if _, err := store.RejectProposal(ctx, p.ID, string(longReason), "user-1", time.Now().UTC()); err != nil {
+		t.Fatalf("RejectProposal: %v", err)
+	}
+
+	got, err := store.GetProposal(ctx, "ws-1", c.ID, p.ID)
+	if err != nil {
+		t.Fatalf("GetProposal: %v", err)
+	}
+	if got.RejectReason == nil || len([]rune(*got.RejectReason)) != 500 {
+		t.Fatalf("RejectReason length = %v, want 500", got.RejectReason)
+	}
+}
+
+func TestRejectProposal_OnlyFromPendingOrFailed(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	c := newTestCoordinator(t, store, "ws-1")
+	p := &Proposal{CoordinatorID: c.ID, WorkspaceID: "ws-1", Spec: sampleSpec()}
+	if err := store.InsertProposal(ctx, p); err != nil {
+		t.Fatalf("InsertProposal: %v", err)
+	}
+	now := time.Now().UTC()
+	if _, err := store.ClaimProposal(ctx, p.ID, "token-1", sampleSpec(), "user-1", now); err != nil {
+		t.Fatalf("ClaimProposal: %v", err)
+	}
+
+	matched, err := store.RejectProposal(ctx, p.ID, "no thanks", "user-2", now)
+	if err != nil {
+		t.Fatalf("RejectProposal: %v", err)
+	}
+	if matched {
+		t.Fatal("RejectProposal matched an approving row")
+	}
+}
+
+func TestListProposals_PendingOrderedAscending(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	c := newTestCoordinator(t, store, "ws-1")
+
+	var ids []string
+	for i := 0; i < 3; i++ {
+		p := &Proposal{CoordinatorID: c.ID, WorkspaceID: "ws-1", Spec: sampleSpec()}
+		if err := store.InsertProposal(ctx, p); err != nil {
+			t.Fatalf("InsertProposal: %v", err)
+		}
+		ids = append(ids, p.ID)
+	}
+	// A rejected proposal must not appear in the pending list.
+	rejected := &Proposal{CoordinatorID: c.ID, WorkspaceID: "ws-1", Spec: sampleSpec()}
+	if err := store.InsertProposal(ctx, rejected); err != nil {
+		t.Fatalf("InsertProposal: %v", err)
+	}
+	if _, err := store.RejectProposal(ctx, rejected.ID, "", "user-1", time.Now().UTC()); err != nil {
+		t.Fatalf("RejectProposal: %v", err)
+	}
+
+	list, err := store.ListProposals(ctx, "ws-1", c.ID, ListProposalsPending)
+	if err != nil {
+		t.Fatalf("ListProposals: %v", err)
+	}
+	if len(list) != 3 {
+		t.Fatalf("ListProposals returned %d rows, want 3", len(list))
+	}
+	for i, p := range list {
+		if p.ID != ids[i] {
+			t.Fatalf("ListProposals[%d].ID = %q, want %q (order mismatch)", i, p.ID, ids[i])
+		}
+	}
+}
+
+func TestListProposals_AllOrderedDescendingLimited(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	c := newTestCoordinator(t, store, "ws-1")
+
+	var ids []string
+	for i := 0; i < 3; i++ {
+		p := &Proposal{CoordinatorID: c.ID, WorkspaceID: "ws-1", Spec: sampleSpec()}
+		if err := store.InsertProposal(ctx, p); err != nil {
+			t.Fatalf("InsertProposal: %v", err)
+		}
+		ids = append(ids, p.ID)
+	}
+
+	list, err := store.ListProposals(ctx, "ws-1", c.ID, ListProposalsAll)
+	if err != nil {
+		t.Fatalf("ListProposals: %v", err)
+	}
+	if len(list) != 3 {
+		t.Fatalf("ListProposals returned %d rows, want 3", len(list))
+	}
+	for i, p := range list {
+		want := ids[len(ids)-1-i]
+		if p.ID != want {
+			t.Fatalf("ListProposals[%d].ID = %q, want %q (descending order mismatch)", i, p.ID, want)
+		}
+	}
+}
+
+func TestGetProposal_WrongCoordinatorOrWorkspaceIsNotFound(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	c1 := newTestCoordinator(t, store, "ws-1")
+	c2 := newTestCoordinator(t, store, "ws-1")
+	p := &Proposal{CoordinatorID: c1.ID, WorkspaceID: "ws-1", Spec: sampleSpec()}
+	if err := store.InsertProposal(ctx, p); err != nil {
+		t.Fatalf("InsertProposal: %v", err)
+	}
+
+	if _, err := store.GetProposal(ctx, "ws-1", c2.ID, p.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("GetProposal(wrong coordinator): err = %v, want ErrNotFound", err)
+	}
+	if _, err := store.GetProposal(ctx, "ws-2", c1.ID, p.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("GetProposal(wrong workspace): err = %v, want ErrNotFound", err)
+	}
+}
