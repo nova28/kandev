@@ -135,7 +135,15 @@ const (
 // other JSON type, returns a *FieldError naming field, per Build decision
 // 7's 400.
 func (r PatchCoordinatorRequest) StringField(field string) (*string, bool, error) {
-	raw, present := r[field]
+	return rawStringField(r, field)
+}
+
+// rawStringField implements the absent/null/string decoding shared by
+// PatchCoordinatorRequest (Build decision 7) and ApproveProposalRequest
+// (Build decision 16): both tell an absent field apart from an explicit
+// JSON null using the same json.RawMessage map technique.
+func rawStringField(values map[string]json.RawMessage, field string) (*string, bool, error) {
+	raw, present := values[field]
 	if !present {
 		return nil, false, nil
 	}
@@ -297,4 +305,41 @@ func NewStallListResponse(items []*StallDTO) *StallListResponse {
 		items = []*StallDTO{}
 	}
 	return &StallListResponse{Stalls: items}
+}
+
+// ApproveProposalRequest is the raw POST .../proposals/:pid/approve request
+// body: an optional set of edits to the proposal's spec, applied before
+// approving (Build decision 16, proposals.md#edits). Like
+// PatchCoordinatorRequest, it decodes into a map of json.RawMessage so an
+// absent field (unchanged) can be told apart from an explicit JSON null
+// (400 naming the field); rationale and source_task_id are not editable and,
+// like any unknown field, are ignored. The handler that applies these edits
+// lands in task 07.
+type ApproveProposalRequest map[string]json.RawMessage
+
+// ApproveProposalRequest field names, matching their JSON keys
+// (proposals.md#edits).
+const (
+	ApproveFieldTitle        = "title"
+	ApproveFieldDescription  = "description"
+	ApproveFieldWorkflowID   = "workflow_id"
+	ApproveFieldStepID       = "step_id"
+	ApproveFieldRepositoryID = "repository_id"
+)
+
+// StringField reports field's presence and value, identically to
+// PatchCoordinatorRequest.StringField.
+func (r ApproveProposalRequest) StringField(field string) (*string, bool, error) {
+	return rawStringField(r, field)
+}
+
+// RejectProposalRequest is the POST .../proposals/:pid/reject request body
+// (Build decision 16, proposals.md#reject). Unlike the approve edits,
+// absent, JSON null, an empty string and a whitespace-only string are all
+// handled identically by the caller (as "no reason"), so a plain optional
+// string field is enough: encoding/json already treats an absent key and an
+// explicit null the same way for a pointer field. The handler that applies
+// this lands in task 07.
+type RejectProposalRequest struct {
+	Reason *string `json:"reason"`
 }
