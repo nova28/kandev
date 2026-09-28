@@ -267,15 +267,23 @@ func (r *StandaloneExecutor) CreateInstance(ctx context.Context, req *ExecutorCr
 		zap.String("req_protocol", req.Protocol),
 		zap.String("createReq_protocol", createReq.Protocol))
 
-	resp, err := r.ctl.CreateInstance(ctx, createReq)
+	// Capture the endpoint identity once, before dispatching, and pin the
+	// request to it explicitly instead of letting r.ctl (built from the same
+	// endpoint) re-resolve Current() internally at request time. r.ctl's own
+	// resolution and a second, later read of r.endpoint.Current() are two
+	// independent reads; a relaunch landing between them would attribute
+	// resp.Port (from whichever server actually served this request) to a
+	// newer generation than the one that served it, so ExecutionStore's
+	// stale-generation retirement would never flag it.
+	id := r.endpoint.Current()
+	pinnedCtl := agentctl.NewControlClient(id.Host, id.Port, r.logger, agentctl.WithControlAuthToken(id.Token))
+	resp, err := pinnedCtl.CreateInstance(ctx, createReq)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create standalone instance: %w", err)
 	}
 
-	// Create agentctl client pointing to the instance port, using the
-	// endpoint's current host and token so a relaunch between requests is
-	// picked up by the next instance created.
-	id := r.endpoint.Current()
+	// Create agentctl client pointing to the instance port, using the same
+	// identity the request above was pinned to.
 	client := agentctl.NewClient(id.Host, resp.Port, r.logger,
 		agentctl.WithExecutionID(req.InstanceID),
 		agentctl.WithSessionID(req.SessionID),
