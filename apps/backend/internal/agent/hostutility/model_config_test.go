@@ -122,7 +122,7 @@ func TestResolveModelConfigSendsSelectedModel(t *testing.T) {
 	defer server.Close()
 	host, port := serverHostPort(t, server)
 
-	mgr := NewManager(reg, host, port, nil, log)
+	mgr := NewManager(reg, testEndpoint(host, port), nil, log)
 	mgr.instances[agentType] = &instance{
 		agentType: agentType,
 		workDir:   t.TempDir(),
@@ -177,7 +177,7 @@ func TestResolveModelConfigDeduplicatesConcurrentProbes(t *testing.T) {
 	defer server.Close()
 	host, port := serverHostPort(t, server)
 
-	mgr := NewManager(reg, host, port, nil, log)
+	mgr := NewManager(reg, testEndpoint(host, port), nil, log)
 	mgr.instances[agentType] = &instance{
 		agentType: agentType,
 		workDir:   t.TempDir(),
@@ -259,7 +259,7 @@ func TestResolveModelConfigRefreshStartsNewGenerationAndWinsOverOlderProbe(t *te
 	defer server.Close()
 	host, port := serverHostPort(t, server)
 
-	mgr := NewManager(reg, host, port, nil, log)
+	mgr := NewManager(reg, testEndpoint(host, port), nil, log)
 	mgr.instances[agentType] = &instance{
 		agentType: agentType,
 		workDir:   t.TempDir(),
@@ -340,7 +340,7 @@ func TestResolveModelConfigDoesNotCacheFailures(t *testing.T) {
 	defer server.Close()
 	host, port := serverHostPort(t, server)
 
-	mgr := NewManager(reg, host, port, nil, log)
+	mgr := NewManager(reg, testEndpoint(host, port), nil, log)
 	mgr.instances[agentType] = &instance{
 		agentType: agentType,
 		workDir:   t.TempDir(),

@@ -49,15 +49,16 @@ func provideAgentctlLauncher(
 	cfg *config.Config,
 	log *logger.Logger,
 	availability *agentctlclient.Availability,
+	endpoint *agentctlclient.Endpoint,
 	store agentruntime.AdoptionRecordStore,
 	secretStore secrets.SecretStore,
 ) (*agentctlLauncherResult, error) {
-	result, scope := resolveSurvivingAgentctl(ctx, cfg, log, store, secretStore)
+	result, scope := resolveSurvivingAgentctl(ctx, cfg, log, endpoint, store, secretStore)
 	if result != nil {
 		availability.MarkAvailable()
 		return result, nil
 	}
-	fresh, err := spawnFreshAgentctl(ctx, cfg, log, availability, store, secretStore)
+	fresh, err := spawnFreshAgentctl(ctx, cfg, log, availability, endpoint, store, secretStore)
 	if fresh != nil {
 		// The server this launch just started never launched the instances a
 		// prior launch recorded, so recovery needs to know what was found at
@@ -78,6 +79,7 @@ func resolveSurvivingAgentctl(
 	ctx context.Context,
 	cfg *config.Config,
 	log *logger.Logger,
+	endpoint *agentctlclient.Endpoint,
 	store agentruntime.AdoptionRecordStore,
 	secretStore secrets.SecretStore,
 ) (*agentctlLauncherResult, agentruntime.InheritedRecordScope) {
@@ -86,7 +88,7 @@ func resolveSurvivingAgentctl(
 			cfg.Agentctl.RecoveryReadTimeout, cfg.Agentctl.RecoveryReadRetries, log)
 		return nil, agentruntime.InheritedRecordScopeNoServer
 	}
-	return adoptSurvivingAgentctl(ctx, cfg, log, store, secretStore)
+	return adoptSurvivingAgentctl(ctx, cfg, log, endpoint, store, secretStore)
 }
 
 // refusedAdoptionScope maps a refused adoption to what recovery may conclude
@@ -111,6 +113,7 @@ func adoptSurvivingAgentctl(
 	ctx context.Context,
 	cfg *config.Config,
 	log *logger.Logger,
+	endpoint *agentctlclient.Endpoint,
 	store agentruntime.AdoptionRecordStore,
 	secretStore secrets.SecretStore,
 ) (*agentctlLauncherResult, agentruntime.InheritedRecordScope) {
@@ -138,6 +141,7 @@ func adoptSurvivingAgentctl(
 	// enumeration against the adopted server (design 02, "Persistence"),
 	// not by a stale PID probe -- a later layer of this feature.
 	cfg.Agent.StandalonePID = 0
+	endpoint.Publish(host, port, outcome.Credential, 0)
 
 	// AC-EXECUTORS-CONTROL-OWNERSHIP-003.8: the rotation AttemptAdoptControlServer
 	// just performed already counted as the first renewal, but nothing renews
@@ -180,6 +184,7 @@ func spawnFreshAgentctl(
 	cfg *config.Config,
 	log *logger.Logger,
 	availability *agentctlclient.Availability,
+	endpoint *agentctlclient.Endpoint,
 	store agentruntime.AdoptionRecordStore,
 	secretStore secrets.SecretStore,
 ) (*agentctlLauncherResult, error) {
@@ -205,6 +210,7 @@ func spawnFreshAgentctl(
 	// Store the agentctl control-server PID so local/standalone executor rows can
 	// carry a real host-local liveness handle (executors_running.local_pid).
 	cfg.Agent.StandalonePID = l.Pid()
+	endpoint.Publish(cfg.Agent.StandaloneHost, cfg.Agent.StandalonePort, l.AuthToken(), l.Pid())
 
 	var renewer *agentruntime.OwnershipRenewer
 	if cfg.Features.AgentSurvival {

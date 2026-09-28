@@ -29,6 +29,14 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// testEndpoint builds an EndpointSource with one published identity, for
+// tests that only need a fixed host and port (no relaunch, no token).
+func testEndpoint(host string, port int) agentctlclient.EndpointSource {
+	ep := agentctlclient.NewEndpoint()
+	ep.Publish(host, port, "", 0)
+	return ep
+}
+
 func TestManagerExposesRefreshWithCommand(t *testing.T) {
 	_, ok := reflect.TypeOf((*Manager)(nil)).MethodByName("RefreshWithCommand")
 	require.True(t, ok, "managed runtime updates need a command-override refresh")
@@ -108,7 +116,7 @@ func TestExecutePromptWithMCPIncludesRuntimeEnv(t *testing.T) {
 	t.Cleanup(server.Close)
 	host, port := serverHostPort(t, server)
 
-	mgr := NewManager(reg, host, port, nil, log)
+	mgr := NewManager(reg, testEndpoint(host, port), nil, log)
 	mgr.instances[ia.id] = &instance{
 		agentType: ia.id,
 		workDir:   t.TempDir(),
@@ -155,7 +163,7 @@ func TestExecuteProfilePromptForwardsProviderGatewayAuth(t *testing.T) {
 	workDir := filepath.Join(parentTmpDir, agentType)
 	require.NoError(t, os.MkdirAll(workDir, 0o755))
 
-	mgr := NewManager(reg, host, port, nil, log)
+	mgr := NewManager(reg, testEndpoint(host, port), nil, log)
 	mgr.SetProfileResolver(profilePromptResolver{profile: &settingsmodels.AgentProfile{
 		ID: "profile-1", AgentID: agentType, ProviderKind: settingsmodels.ProviderKindOpenAICompatible,
 		Model: "gateway-model",
@@ -206,7 +214,7 @@ func TestRefreshWithCommandUsesOverrideAndPreservesCacheOnAuthFailure(t *testing
 	defer server.Close()
 	host, port := serverHostPort(t, server)
 
-	mgr := NewManager(reg, host, port, nil, log)
+	mgr := NewManager(reg, testEndpoint(host, port), nil, log)
 	mgr.cache.set(AgentCapabilities{
 		AgentType:    agentType,
 		AgentVersion: "1.0.0",
@@ -262,7 +270,7 @@ func TestRefreshWithCommandReplacesCacheAfterSuccessfulProbe(t *testing.T) {
 	}))
 	defer server.Close()
 	host, port := serverHostPort(t, server)
-	mgr := NewManager(reg, host, port, nil, log)
+	mgr := NewManager(reg, testEndpoint(host, port), nil, log)
 	mgr.cache.set(AgentCapabilities{AgentType: agentType, AgentVersion: "1.0.0", Status: StatusOK})
 	mgr.instances[agentType] = &instance{
 		agentType: agentType,
@@ -293,7 +301,7 @@ func TestStopCancelsInFlightBootstrap(t *testing.T) {
 		canceled: canceled,
 	}))
 
-	mgr := NewManager(reg, "127.0.0.1", 1, nil, log)
+	mgr := NewManager(reg, testEndpoint("127.0.0.1", 1), nil, log)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -345,7 +353,7 @@ func TestStartLimitsConcurrentBootstraps(t *testing.T) {
 		require.NoError(t, reg.Register(ag))
 	}
 
-	mgr := NewManager(reg, "127.0.0.1", 1, nil, log)
+	mgr := NewManager(reg, testEndpoint("127.0.0.1", 1), nil, log)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan error, 1)
@@ -387,7 +395,7 @@ func TestStopCancelsQueuedBootstrap(t *testing.T) {
 		require.NoError(t, reg.Register(ag))
 	}
 
-	mgr := NewManager(reg, "127.0.0.1", 1, nil, log)
+	mgr := NewManager(reg, testEndpoint("127.0.0.1", 1), nil, log)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- mgr.Start(ctx) }()
@@ -457,7 +465,7 @@ func TestProbePreservesConfigOptionDescriptions(t *testing.T) {
 	}))
 	defer server.Close()
 	host, port := serverHostPort(t, server)
-	mgr := NewManager(registry.NewRegistry(log), host, port, nil, log)
+	mgr := NewManager(registry.NewRegistry(log), testEndpoint(host, port), nil, log)
 
 	caps := mgr.probe(context.Background(), &instance{
 		agentType: "codex-acp",
@@ -476,7 +484,7 @@ func TestProbePreservesConfigOptionDescriptions(t *testing.T) {
 
 func TestDeleteInstanceRemovesWorkDirWithoutControlClient(t *testing.T) {
 	log := newTestLogger(t)
-	mgr := NewManager(registry.NewRegistry(log), "127.0.0.1", 1, nil, log)
+	mgr := NewManager(registry.NewRegistry(log), testEndpoint("127.0.0.1", 1), nil, log)
 	workDir := filepath.Join(t.TempDir(), "codex-acp")
 	require.NoError(t, os.MkdirAll(workDir, 0o755))
 
@@ -565,7 +573,7 @@ func TestExecutePromptRecreatesStaleCachedInstance(t *testing.T) {
 	defer controlServer.Close()
 	controlHost, controlPort := serverHostPort(t, controlServer)
 
-	mgr := NewManager(reg, controlHost, controlPort, agentctlclient.NewControlClient(controlHost, controlPort, log), log)
+	mgr := NewManager(reg, testEndpoint(controlHost, controlPort), agentctlclient.NewControlClient(controlHost, controlPort, log), log)
 	mgr.parentTmpDir = t.TempDir()
 
 	staleWorkDir := filepath.Join(mgr.parentTmpDir, agentType)
@@ -669,7 +677,7 @@ func TestRefreshRecreatesStaleCachedInstance(t *testing.T) {
 	defer controlServer.Close()
 	controlHost, controlPort := serverHostPort(t, controlServer)
 
-	mgr := NewManager(reg, controlHost, controlPort, agentctlclient.NewControlClient(controlHost, controlPort, log), log)
+	mgr := NewManager(reg, testEndpoint(controlHost, controlPort), agentctlclient.NewControlClient(controlHost, controlPort, log), log)
 	mgr.parentTmpDir = t.TempDir()
 
 	staleWorkDir := filepath.Join(mgr.parentTmpDir, agentType)
@@ -730,7 +738,7 @@ func TestExecutePromptDoesNotRecreateWhenParentContextCanceled(t *testing.T) {
 	defer controlServer.Close()
 	controlHost, controlPort := serverHostPort(t, controlServer)
 
-	mgr := NewManager(reg, controlHost, controlPort, agentctlclient.NewControlClient(controlHost, controlPort, log), log)
+	mgr := NewManager(reg, testEndpoint(controlHost, controlPort), agentctlclient.NewControlClient(controlHost, controlPort, log), log)
 	mgr.parentTmpDir = t.TempDir()
 	cached := &instance{
 		agentType:  agentType,

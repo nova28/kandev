@@ -264,7 +264,7 @@ func TestResolveModelConfigRecoversManagedRuntimeETarget(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 	host, port := serverHostPort(t, server)
-	manager := NewManager(reg, host, port, nil, log)
+	manager := NewManager(reg, testEndpoint(host, port), nil, log)
 	manager.managedRuntimeSelections = managedRuntimeSelectionReader{
 		selection: managedruntime.Selection{Package: agent.ManagedNPMRuntime().Package, Version: version},
 		found:     true,

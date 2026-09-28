@@ -49,6 +49,9 @@ type standaloneControlServer struct {
 	// simulates a stop that never succeeds.
 	deleteFailures map[string]int
 	deleteAttempts map[string]int
+	// endpoint is the executor's EndpointSource, populated by executor(t); see
+	// setAuthToken.
+	endpoint *agentctlclient.Endpoint
 	// deleteDelay, keyed by instance ID, makes that instance's DELETE
 	// response take at least this long -- used to prove a recovery deadline
 	// (AC-EXECUTORS-SURVIVAL-003.7) can elapse while a stop is genuinely
@@ -182,7 +185,17 @@ func (s *standaloneControlServer) executor(t *testing.T) *StandaloneExecutor {
 	}
 	port, _ := strconv.Atoi(parsed.Port())
 	ctl := agentctlclient.NewControlClient(parsed.Hostname(), port, newTestLogger())
-	return NewStandaloneExecutor(ctl, parsed.Hostname(), port, newTestLogger())
+	s.endpoint = agentctlclient.NewEndpoint()
+	s.endpoint.Publish(parsed.Hostname(), port, "", 0)
+	return NewStandaloneExecutor(ctl, s.endpoint, newTestLogger())
+}
+
+// setAuthToken republishes the executor's endpoint identity with token,
+// standing in for the removed StandaloneExecutor.SetAuthToken: per-instance
+// clients now read the token from the endpoint at creation time.
+func (s *standaloneControlServer) setAuthToken(token string) {
+	current := s.endpoint.Current()
+	s.endpoint.Publish(current.Host, current.Port, token, current.PID)
 }
 
 func (s *standaloneControlServer) lastCreateRequest(t *testing.T) agentctlclient.CreateInstanceRequest {
@@ -236,7 +249,7 @@ func TestStandaloneExecutorHealthCheck(t *testing.T) {
 func TestStandaloneExecutorCreateInstance(t *testing.T) {
 	control := newStandaloneControlServer(t, true)
 	exec := control.executor(t)
-	exec.SetAuthToken("launch-token")
+	control.setAuthToken("launch-token")
 
 	agent := &fakeRuntimeAgent{
 		MockAgent:    agents.NewMockAgent(),
@@ -411,7 +424,7 @@ func TestStandaloneExecutorRecoverInstancesReTracksWinnerAndStopsOrphan(t *testi
 		{ID: "orphan-instance", Port: 5002, SessionID: "session-orphan"},
 	}
 	exec := control.executor(t)
-	exec.SetAuthToken("survival-token")
+	control.setAuthToken("survival-token")
 
 	records := []*models.ExecutorRunning{
 		{SessionID: "session-1", TaskID: "task-1", AgentExecutionID: "instance-1", WorktreePath: "/ws/1-from-record", Metadata: map[string]interface{}{"k": "v"}},

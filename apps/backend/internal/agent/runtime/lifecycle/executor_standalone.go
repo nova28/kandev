@@ -49,9 +49,7 @@ type UnstoppableSessionRecorder interface {
 // In this mode, a single agentctl control server manages multiple agent instances.
 type StandaloneExecutor struct {
 	ctl                 *agentctl.ControlClient
-	host                string
-	port                int
-	authToken           string // per-launch auth token from launcher
+	endpoint            agentctl.EndpointSource
 	logger              *logger.Logger
 	interactiveRunner   *process.InteractiveRunner
 	recoveryReadTimeout time.Duration
@@ -59,23 +57,19 @@ type StandaloneExecutor struct {
 	unstoppableRecorder UnstoppableSessionRecorder
 }
 
-// NewStandaloneExecutor creates a new standalone runtime.
-func NewStandaloneExecutor(ctl *agentctl.ControlClient, host string, port int, log *logger.Logger) *StandaloneExecutor {
+// NewStandaloneExecutor creates a new standalone runtime. Per-instance clients
+// read host and token from endpoint at creation time, so a relaunch's new
+// identity applies to the next instance without reconstructing the executor.
+func NewStandaloneExecutor(ctl *agentctl.ControlClient, endpoint agentctl.EndpointSource, log *logger.Logger) *StandaloneExecutor {
 	return &StandaloneExecutor{
-		ctl:    ctl,
-		host:   host,
-		port:   port,
-		logger: log.WithFields(zap.String("runtime", "standalone")),
+		ctl:      ctl,
+		endpoint: endpoint,
+		logger:   log.WithFields(zap.String("runtime", "standalone")),
 		// -1 is the "unset" sentinel: zero is itself a valid configured
 		// retry count (AC-EXECUTORS-SURVIVAL-002.13 allows zero retries), so
 		// the zero value of an unset int field can't be used to mean unset.
 		recoveryReadRetries: -1,
 	}
-}
-
-// SetAuthToken sets the per-launch auth token for authenticating instance clients.
-func (r *StandaloneExecutor) SetAuthToken(token string) {
-	r.authToken = token
 }
 
 // SetRecoveryRetryConfig installs the bounded per-attempt timeout and retry
@@ -278,11 +272,14 @@ func (r *StandaloneExecutor) CreateInstance(ctx context.Context, req *ExecutorCr
 		return nil, fmt.Errorf("failed to create standalone instance: %w", err)
 	}
 
-	// Create agentctl client pointing to the instance port
-	client := agentctl.NewClient(r.host, resp.Port, r.logger,
+	// Create agentctl client pointing to the instance port, using the
+	// endpoint's current host and token so a relaunch between requests is
+	// picked up by the next instance created.
+	id := r.endpoint.Current()
+	client := agentctl.NewClient(id.Host, resp.Port, r.logger,
 		agentctl.WithExecutionID(req.InstanceID),
 		agentctl.WithSessionID(req.SessionID),
-		agentctl.WithAuthToken(r.authToken))
+		agentctl.WithAuthToken(id.Token))
 
 	// Extract runtime-specific values from metadata
 	worktreeID := getMetadataString(req.Metadata, MetadataKeyWorktreeID)
@@ -597,10 +594,11 @@ func (r *StandaloneExecutor) buildRecoveredInstances(
 	for sessionID, inst := range winners {
 		record := recordBySession[sessionID]
 
-		client := agentctl.NewClient(r.host, inst.Port, r.logger,
+		id := r.endpoint.Current()
+		client := agentctl.NewClient(id.Host, inst.Port, r.logger,
 			agentctl.WithExecutionID(inst.ID),
 			agentctl.WithSessionID(sessionID),
-			agentctl.WithAuthToken(r.authToken))
+			agentctl.WithAuthToken(id.Token))
 
 		// AC-EXECUTORS-SURVIVAL-002.14: task identity and workspace path's
 		// declared source is the recovery-inventory record, never the

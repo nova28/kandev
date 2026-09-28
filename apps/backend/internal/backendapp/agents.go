@@ -30,6 +30,7 @@ func provideLifecycleManager(
 	eventBus bus.EventBus,
 	agentSettingsRepo settingsstore.Repository,
 	agentRegistry *registry.Registry,
+	agentRuntimeEndpoint *agentctl.Endpoint,
 	rawSecretStore secrets.SecretStore,
 	baseBranchProvider lifecycle.BaseBranchProvider,
 	comparisonTargetProvider lifecycle.ComparisonTargetProvider,
@@ -49,22 +50,16 @@ func provideLifecycleManager(
 	// Create runtime registry to manage multiple runtimes
 	executorRegistry := lifecycle.NewExecutorRegistry(log)
 
-	// Standalone runtime is always available (agentctl is a core service)
-	controlClient := agentctl.NewControlClient(
-		cfg.Agent.StandaloneHost,
-		cfg.Agent.StandalonePort,
-		log,
-		agentctl.WithControlAuthToken(cfg.Agent.StandaloneAuthToken),
-	)
+	// Standalone runtime is always available (agentctl is a core service).
+	// Both the control client and the per-instance-client source read host,
+	// port, and token from agentRuntimeEndpoint per request/creation, so a
+	// relaunch's new identity applies without reconstructing either.
+	controlClient := agentctl.NewControlClientFromEndpoint(agentRuntimeEndpoint, log)
 	standaloneExec := lifecycle.NewStandaloneExecutor(
 		controlClient,
-		cfg.Agent.StandaloneHost,
-		cfg.Agent.StandalonePort,
+		agentRuntimeEndpoint,
 		log,
 	)
-	// Per-instance servers enforce the same single rotating credential as
-	// the control server -- see the field doc on config.AgentConfig.
-	standaloneExec.SetAuthToken(cfg.Agent.StandaloneAuthToken)
 
 	// Create InteractiveRunner for passthrough mode (no WorkspaceTracker, uses callbacks)
 	interactiveRunner := process.NewInteractiveRunner(nil, log, 2*1024*1024) // 2MB buffer
@@ -171,10 +166,14 @@ func provideLifecycleManager(
 	if err := lifecycleMgr.SetAgentctlStartupConfig(cfg.ManagedAgentctlStartupConfig()); err != nil {
 		return nil, fmt.Errorf("configure managed agentctl startup: %w", err)
 	}
-	// Record the standalone agentctl control-server PID (populated by
-	// provideAgentctlLauncher, which runs before this) so local/standalone
-	// executor rows carry a real host-local liveness handle.
-	lifecycleMgr.SetStandaloneHostPID(cfg.Agent.StandalonePID)
+	// Record the standalone agentctl control-server PID so local/standalone
+	// executor rows carry a real host-local liveness handle. Subscribing
+	// (rather than reading cfg.Agent.StandalonePID once) both applies the
+	// generation provideAgentctlLauncher already published and keeps this
+	// current across a future relaunch's new PID.
+	agentRuntimeEndpoint.Subscribe(func(id agentctl.EndpointIdentity) {
+		lifecycleMgr.SetStandaloneHostPID(id.PID)
+	})
 	// Wire the agent_profiles reader so the launch-prep skill deploy hook
 	// (ADR 0005 Wave A) can resolve full profile rows including the office
 	// enrichment fields. Without a wired SkillDeployer this is a no-op,

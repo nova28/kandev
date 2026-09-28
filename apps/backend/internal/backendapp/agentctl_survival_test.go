@@ -141,7 +141,7 @@ func TestAdoptSurvivingAgentctlReturnsNilWhenNoRecord(t *testing.T) {
 	cfg := &config.Config{}
 	store := &fakeControlServerStore{}
 
-	result, _ := adoptSurvivingAgentctl(context.Background(), cfg, newSurvivalTestLogger(t), store, nil)
+	result, _ := adoptSurvivingAgentctl(context.Background(), cfg, newSurvivalTestLogger(t), agentctlclient.NewEndpoint(), store, nil)
 
 	if result != nil {
 		t.Fatalf("result = %+v, want nil", result)
@@ -208,7 +208,8 @@ func TestAdoptSurvivingAgentctlAdoptsAndUpdatesConfig(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.HomeDir = homeDir
 
-	result, _ := adoptSurvivingAgentctl(context.Background(), cfg, newSurvivalTestLogger(t), store, secretStore)
+	runtimeEndpoint := agentctlclient.NewEndpoint()
+	result, _ := adoptSurvivingAgentctl(context.Background(), cfg, newSurvivalTestLogger(t), runtimeEndpoint, store, secretStore)
 
 	if result == nil {
 		t.Fatal("result = nil, want a non-nil adopted result")
@@ -231,6 +232,9 @@ func TestAdoptSurvivingAgentctlAdoptsAndUpdatesConfig(t *testing.T) {
 	}
 	if len(store.upserts) != 1 {
 		t.Fatalf("upserts = %d, want 1", len(store.upserts))
+	}
+	if got := runtimeEndpoint.Current(); got.Host != wantHost || got.Port != wantPort || got.Token != "rotated-credential" {
+		t.Fatalf("endpoint.Current() = %+v, want host %s port %d token rotated-credential", got, wantHost, wantPort)
 	}
 }
 

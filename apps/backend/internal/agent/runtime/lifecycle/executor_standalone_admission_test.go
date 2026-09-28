@@ -32,7 +32,9 @@ func TestStandaloneExecutorSubprocessAdmission(t *testing.T) {
 		t.Fatalf("parse server port: %v", err)
 	}
 	client := agentctl.NewControlClient(host, portNumber, logger.Default())
-	executor := NewStandaloneExecutor(client, host, portNumber, logger.Default())
+	endpoint := agentctl.NewEndpoint()
+	endpoint.Publish(host, portNumber, "", 0)
+	executor := NewStandaloneExecutor(client, endpoint, logger.Default())
 
 	snapshot, err := executor.SubprocessAdmission(context.Background())
 	if err != nil {

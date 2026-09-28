@@ -10,6 +10,7 @@ import (
 	"github.com/kandev/kandev/internal/agent/agents"
 	"github.com/kandev/kandev/internal/agent/hostutility"
 	"github.com/kandev/kandev/internal/agent/registry"
+	agentctlclient "github.com/kandev/kandev/internal/agent/runtime/agentctl"
 	"github.com/kandev/kandev/internal/agent/settings/controller"
 	"github.com/kandev/kandev/internal/common/logger"
 )
@@ -23,7 +24,9 @@ func newModelConfigRouter(t *testing.T) (*gin.Engine, *registry.Registry) {
 	}
 	reg := registry.NewRegistry(log)
 	ctrl := controller.NewController(nil, nil, reg, nil, log)
-	ctrl.SetHostUtility(hostutility.NewManager(reg, "127.0.0.1", 0, nil, log))
+	endpoint := agentctlclient.NewEndpoint()
+	endpoint.Publish("127.0.0.1", 0, "", 0)
+	ctrl.SetHostUtility(hostutility.NewManager(reg, endpoint, nil, log))
 	router := gin.New()
 	useSyntheticSettingsIdentity(router)
 	RegisterRoutes(router, ctrl, nil, log, "test-interlock")

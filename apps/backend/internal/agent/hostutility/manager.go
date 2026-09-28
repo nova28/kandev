@@ -43,10 +43,8 @@ import (
 //   - Stop(ctx): deletes each instance from agentctl and removes the tmp parent.
 type Manager struct {
 	registry        *registry.Registry
-	controlHost     string
-	controlPort     int
+	endpoint        agentctlclient.EndpointSource
 	controlClient   *agentctlclient.ControlClient
-	authToken       string // per-launch auth token for instance clients
 	log             *logger.Logger
 	profileResolver interface {
 		Resolve(context.Context, string) (*settingsmodels.AgentProfile, error)
@@ -119,18 +117,18 @@ func (i *instance) acquireOperation(ctx context.Context, exclusive bool) (func()
 	return func() { i.operationGate.Release(weight) }, nil
 }
 
-// NewManager constructs a HostUtilityManager.
+// NewManager constructs a HostUtilityManager. Per-instance clients read host
+// and token from endpoint at creation time, so a relaunch's new identity
+// applies to the next instance created without reconstructing the manager.
 func NewManager(
 	reg *registry.Registry,
-	controlHost string,
-	controlPort int,
+	endpoint agentctlclient.EndpointSource,
 	controlClient *agentctlclient.ControlClient,
 	log *logger.Logger,
 ) *Manager {
 	return &Manager{
 		registry:         reg,
-		controlHost:      controlHost,
-		controlPort:      controlPort,
+		endpoint:         endpoint,
 		controlClient:    controlClient,
 		log:              log.WithFields(zap.String("component", "host-utility")),
 		cache:            newCache(),
@@ -138,11 +136,6 @@ func NewManager(
 		instances:        make(map[string]*instance),
 		modelGenerations: make(map[string]uint64),
 	}
-}
-
-// SetAuthToken sets the per-launch auth token for authenticating instance clients.
-func (m *Manager) SetAuthToken(token string) {
-	m.authToken = token
 }
 
 // SetManagedRuntimeSelectionStore wires the install-wide exact-version
@@ -444,9 +437,10 @@ func (m *Manager) createInstance(ctx context.Context, agentType string) (*instan
 		return nil, fmt.Errorf("create instance: %w", err)
 	}
 
-	client := agentctlclient.NewClient(m.controlHost, resp.Port, m.log,
+	id := m.endpoint.Current()
+	client := agentctlclient.NewClient(id.Host, resp.Port, m.log,
 		agentctlclient.WithExecutionID(resp.ID),
-		agentctlclient.WithAuthToken(m.authToken))
+		agentctlclient.WithAuthToken(id.Token))
 
 	// Wait a moment for the instance HTTP server to come up.
 	healthCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
