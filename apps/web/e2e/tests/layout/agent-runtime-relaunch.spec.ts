@@ -1,7 +1,9 @@
 import { expect, test } from "../../fixtures/test-base";
 import { findAgentctlPid, killAgentctl } from "../../helpers/agent-runtime-availability";
+import { watchWs } from "../../helpers/causal-waits";
 import { waitForSessionDone } from "../../helpers/session";
 import { KanbanPage } from "../../pages/kanban-page";
+import { SYSTEM_AGENT_RUNTIME_STATUS_CHANGED } from "@/lib/types/backend";
 
 test.describe("Agent runtime relaunch after a real crash", () => {
   // pgrep-based process-tree discovery in findAgentctlPid is POSIX-only.
@@ -26,14 +28,25 @@ test.describe("Agent runtime relaunch after a real crash", () => {
     expect(backendPid).toBeTruthy();
     const agentctlPid = findAgentctlPid(backendPid!, backend.logPath);
 
+    const ws = watchWs(testPage);
     const kanban = new KanbanPage(testPage);
     await kanban.goto();
 
+    const recovering = ws.waitForEvent(SYSTEM_AGENT_RUNTIME_STATUS_CHANGED, {
+      where: (payload) => payload.status === "recovering",
+    });
+    const available = ws.waitForEvent(SYSTEM_AGENT_RUNTIME_STATUS_CHANGED, {
+      where: (payload) => payload.status === "available",
+    });
+
     killAgentctl(agentctlPid);
 
+    await recovering;
     const alert = testPage.getByTestId("agent-runtime-alert");
-    await expect(alert).toHaveAttribute("data-status", "recovering", { timeout: 15_000 });
-    await expect(alert).toHaveCount(0, { timeout: 20_000 });
+    await expect(alert).toHaveAttribute("data-status", "recovering");
+
+    await available;
+    await expect(alert).toHaveCount(0);
 
     const task = await apiClient.createTaskWithAgent(
       seedData.workspaceId,
