@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -156,13 +157,14 @@ func newTestSupervisorWithEvents(
 }
 
 // bindInitialGeneration1 publishes the initial control server as generation
-// 1 and binds it to the supervisor, mirroring what spawnFreshAgentctl does
-// before any relaunch has ever happened.
+// 1 and binds it to the supervisor, mirroring what spawnFreshAgentctl's
+// PublishInitialLaunch does before any relaunch has ever happened.
 func bindInitialGeneration1(s *agentctlSupervisor, endpoint *agentctlclient.Endpoint, availability *agentctlclient.Availability, renewer ownershipStopper) *fakeRelaunchLauncher {
 	initial := &fakeRelaunchLauncher{port: 39429, pid: 1, token: "initial"}
-	endpoint.Publish("127.0.0.1", 39429, "initial", 1)
-	availability.MarkAvailable()
-	s.BindInitialLauncher(initial, renewer)
+	var exited atomic.Bool
+	if !s.PublishInitialLaunch(initial, renewer, &exited, "127.0.0.1", 39429, "initial", 1) {
+		panic("bindInitialGeneration1: PublishInitialLaunch unexpectedly reported the launcher as exited")
+	}
 	return initial
 }
 

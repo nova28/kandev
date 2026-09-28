@@ -198,12 +198,21 @@ func spawnFreshAgentctl(
 	secretStore secrets.SecretStore,
 ) (*agentctlLauncherResult, error) {
 	var supervisor *agentctlSupervisor
+	var exited atomic.Bool
 	onUnexpectedExit := func() {
 		availability.MarkUnavailable(agentctlclient.AvailabilityReasonAgentctlExited, time.Now())
 	}
 	if cfg.Features.AgentctlRelaunch {
 		supervisor = buildAgentctlSupervisor(ctx, cfg, log, availability, endpoint, store, secretStore)
-		onUnexpectedExit = supervisor.NextExitCallback()
+		notify := supervisor.NextExitCallback()
+		// The relaunch-enabled callback also flips exited so the publish
+		// step below can tell a premature exit apart from a clean launch --
+		// NotifyExit's own generation match cannot, since nothing is
+		// published yet for it to compare against. See PublishInitialLaunch.
+		onUnexpectedExit = func() {
+			exited.Store(true)
+			notify()
+		}
 	}
 
 	l, cleanup, err := launcher.Provide(ctx, launcher.Config{
@@ -215,7 +224,6 @@ func spawnFreshAgentctl(
 	if err != nil {
 		return nil, err
 	}
-	availability.MarkAvailable()
 	// Update config with the actual port (may differ if fallback was used)
 	if actualPort := l.Port(); actualPort != cfg.Agent.StandalonePort {
 		log.Info("agentctl port changed from configured value",
@@ -228,7 +236,6 @@ func spawnFreshAgentctl(
 	// Store the agentctl control-server PID so local/standalone executor rows can
 	// carry a real host-local liveness handle (executors_running.local_pid).
 	cfg.Agent.StandalonePID = l.Pid()
-	endpoint.Publish(cfg.Agent.StandaloneHost, cfg.Agent.StandalonePort, l.AuthToken(), l.Pid())
 
 	var renewer *agentruntime.OwnershipRenewer
 	if cfg.Features.AgentSurvival {
@@ -254,7 +261,12 @@ func spawnFreshAgentctl(
 		if renewer != nil {
 			stopper = renewer
 		}
-		supervisor.BindInitialLauncher(l, stopper)
+		if err := publishInitialLaunchOrFail(supervisor, l, stopper, &exited, cleanup, cfg); err != nil {
+			return nil, err
+		}
+	} else {
+		availability.MarkAvailable()
+		endpoint.Publish(cfg.Agent.StandaloneHost, cfg.Agent.StandalonePort, l.AuthToken(), l.Pid())
 	}
 
 	return &agentctlLauncherResult{
@@ -270,6 +282,30 @@ func spawnFreshAgentctl(
 		},
 		binaryPath: l.BinaryPath(),
 	}, nil
+}
+
+// publishInitialLaunchOrFail publishes l as the supervisor's initial launch,
+// or -- if l already exited before this ran (RV1-1) -- stops the renewer,
+// cleans up the launcher, and returns an error so the caller aborts startup
+// the same way any other launcher.Provide failure does, instead of
+// publishing a dead generation as the current, healthy one.
+func publishInitialLaunchOrFail(
+	supervisor *agentctlSupervisor,
+	l relaunchLauncher,
+	stopper ownershipStopper,
+	exited *atomic.Bool,
+	cleanup func() error,
+	cfg *config.Config,
+) error {
+	if supervisor.PublishInitialLaunch(l, stopper, exited,
+		cfg.Agent.StandaloneHost, cfg.Agent.StandalonePort, l.AuthToken(), l.Pid()) {
+		return nil
+	}
+	if stopper != nil {
+		stopper.Stop()
+	}
+	_ = cleanup()
+	return fmt.Errorf("agentctl exited before its initial launch was published")
 }
 
 // buildAgentctlSupervisor constructs the relaunch supervisor for a fresh
@@ -537,15 +573,37 @@ func newAgentctlSupervisor(
 	}
 }
 
-// BindInitialLauncher registers the launcher the caller already started and
-// published as the supervisor's current launcher, so a later unexpected
-// exit of that same process reaches NotifyExit as a match. Call this after
-// Endpoint.Publish, once the generation this launcher owns is current.
-func (s *agentctlSupervisor) BindInitialLauncher(l relaunchLauncher, renewer ownershipStopper) {
+// PublishInitialLaunch publishes the endpoint identity for the backend's
+// initial agentctl spawn, marks the runtime available, and binds the
+// launcher/renewer as the supervisor's current pair -- unless the process
+// already exited. It is the initial-boot analog of publishAttempt's steps
+// 3-5: NextExitCallback's generation-1 callback has nothing published yet to
+// match, so a process that exits between launcher.Provide returning and this
+// call would otherwise reach NotifyExit as a silent no-op, and
+// spawnFreshAgentctl would go on to publish a dead generation as available.
+// Running the exited check and the publish under the same mutex NotifyExit
+// acquires closes that window: either exited is already true here, or a
+// concurrent exit blocks on s.mu until this call finishes publishing, after
+// which NotifyExit's own generation match succeeds normally.
+func (s *agentctlSupervisor) PublishInitialLaunch(
+	l relaunchLauncher,
+	renewer ownershipStopper,
+	exited *atomic.Bool,
+	host string,
+	port int,
+	token string,
+	pid int,
+) bool {
 	s.mu.Lock()
+	defer s.mu.Unlock()
+	if exited.Load() {
+		return false
+	}
 	s.current = l
 	s.renewer = renewer
-	s.mu.Unlock()
+	s.endpoint.Publish(host, port, token, pid)
+	s.availability.MarkAvailable()
+	return true
 }
 
 // NextExitCallback returns the generation-capturing OnUnexpectedExit closure
