@@ -555,6 +555,11 @@ type FeaturesConfig struct {
 	// Windows (survival trades the platform's kill-on-job-close safeguard for
 	// an adoption handshake, which is untested there).
 	AgentSurvival bool `mapstructure:"agent_survival" json:"agentSurvival"`
+
+	// AgentctlRelaunch lets the backend restart its own standalone agentctl
+	// process after an unexpected exit instead of latching the runtime
+	// unavailable for the rest of the boot. Off in prod, on in dev/e2e.
+	AgentctlRelaunch bool `mapstructure:"agentctl_relaunch" json:"agentctlRelaunch"`
 }
 
 // LoggingConfig holds logging configuration.

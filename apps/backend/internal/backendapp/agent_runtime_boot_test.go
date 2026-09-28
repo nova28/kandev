@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	client "github.com/kandev/kandev/internal/agent/runtime/agentctl"
 	"github.com/kandev/kandev/internal/webapp"
@@ -32,7 +33,7 @@ func TestBootInitialStateHydratesAgentRuntimeAvailability(t *testing.T) {
 func TestBootInitialStateDoesNotExposeRuntimeToUnauthenticatedVisitors(t *testing.T) {
 	availability := client.NewAvailability(nil, testLogger(t))
 	availability.MarkAvailable()
-	availability.MarkUnavailable()
+	availability.MarkUnavailable(client.AvailabilityReasonAgentctlExited, time.Now())
 	request := httptest.NewRequest("GET", "/", nil)
 
 	state := bootInitialState(

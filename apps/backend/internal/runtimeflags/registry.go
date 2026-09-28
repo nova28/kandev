@@ -235,6 +235,24 @@ var registrations = []runtimeFlagRegistration{
 	},
 	{
 		definition: RuntimeFlagDefinition{
+			Key:         "features.agentctlRelaunch",
+			EnvVar:      "KANDEV_FEATURES_AGENTCTL_RELAUNCH",
+			Kind:        KindFeature,
+			Label:       "Automatic local agent runtime recovery",
+			Description: "Restarts the standalone agentctl process automatically after an unexpected exit, instead of leaving the local agent runtime unavailable for the rest of the backend boot.",
+			Stability:   StabilityExperimental,
+			RiskLevel:   RiskMedium,
+			RiskDescription: "Relaunching agentctl replaces the exited process's identity (host, port, and token) and retires " +
+				"executions bound to the old one. Review the recovery and session-interruption behavior before relying " +
+				"on it for unattended work.",
+			RestartRequired: true,
+			Mutable:         true,
+		},
+		read:  func(cfg *config.Config) bool { return cfg.Features.AgentctlRelaunch },
+		apply: func(cfg *config.Config, value bool) { cfg.Features.AgentctlRelaunch = value },
+	},
+	{
+		definition: RuntimeFlagDefinition{
 			Key:         "debug.devMode",
 			EnvVar:      "KANDEV_DEBUG_DEV_MODE",
 			Kind:        KindDebug,

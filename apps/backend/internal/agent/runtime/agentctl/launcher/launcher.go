@@ -411,6 +411,39 @@ func (l *Launcher) Stop(ctx context.Context) error {
 	}
 }
 
+// ForceStop unconditionally terminates the agentctl subprocess, ignoring the
+// agent-survival capability. Stop is a no-op under survival, so an unpublished
+// relaunch attempt -- one that never became the current endpoint -- would
+// otherwise leak a running process; the relaunch supervisor calls ForceStop
+// on every failed or abandoned attempt instead. Every step is idempotent, so
+// a second call, or a call after Start's own failure cleanup already ran
+// (forceKill, closeParentPipe, releaseChildLifecycle), is a no-op apart from
+// the final wait.
+func (l *Launcher) ForceStop() {
+	l.mu.Lock()
+	l.stopping = true
+	cmd := l.cmd
+	l.mu.Unlock()
+
+	if cmd == nil || cmd.Process == nil {
+		l.closeParentPipe()
+		l.releaseChildLifecycle()
+		return
+	}
+
+	select {
+	case <-l.exited:
+		// Already reaped: the PID may have been reused by the OS, so no
+		// signal is sent.
+	default:
+		l.forceKill(cmd.Process.Pid)
+	}
+
+	l.closeParentPipe()
+	l.releaseChildLifecycle()
+	<-l.exited
+}
+
 // closeParentPipe closes and nils the parent liveness pipe if open.
 // Safe for concurrent use.
 func (l *Launcher) closeParentPipe() {

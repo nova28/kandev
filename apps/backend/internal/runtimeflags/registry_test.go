@@ -566,3 +566,38 @@ func TestAgentSurvivalAvailabilityMatchesPlatformScope(t *testing.T) {
 		t.Fatalf("reasonCode = %q, want empty when available", reasonCode)
 	}
 }
+
+// TestDefinitionsIncludeAgentctlRelaunchMetadata pins the registration for
+// REQ-PLATFORM-AGENT-RUNTIME-AVAILABILITY-002: off in prod, on in dev/e2e,
+// restart-required, no platform gate.
+func TestDefinitionsIncludeAgentctlRelaunchMetadata(t *testing.T) {
+	def, ok := DefinitionByKey("features.agentctlRelaunch")
+	if !ok {
+		t.Fatal("features.agentctlRelaunch definition missing")
+	}
+	if def.EnvVar != "KANDEV_FEATURES_AGENTCTL_RELAUNCH" {
+		t.Fatalf("EnvVar = %q, want KANDEV_FEATURES_AGENTCTL_RELAUNCH", def.EnvVar)
+	}
+	if def.Stability != StabilityExperimental {
+		t.Fatalf("Stability = %q, want experimental", def.Stability)
+	}
+	if def.RiskLevel != RiskMedium {
+		t.Fatalf("RiskLevel = %q, want medium", def.RiskLevel)
+	}
+	if def.RiskDescription == "" {
+		t.Fatal("RiskDescription empty")
+	}
+	if !def.RestartRequired {
+		t.Fatal("RestartRequired = false, want true")
+	}
+	if !def.Mutable {
+		t.Fatal("Mutable = false, want true")
+	}
+	defaults, err := profiles.FeatureFlagDefaults()
+	if err != nil {
+		t.Fatalf("profiles.FeatureFlagDefaults: %v", err)
+	}
+	if got := defaults["agentctl_relaunch"]; got != "false" {
+		t.Fatalf("profiles.yaml agentctl_relaunch default = %q, want %q (off in prod)", got, "false")
+	}
+}

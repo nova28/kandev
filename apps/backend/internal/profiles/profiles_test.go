@@ -162,6 +162,48 @@ func TestLSPBrowserContinuityIsEnabledInEveryProfile(t *testing.T) {
 	}
 }
 
+// TestAgentctlRelaunchIsOffInProdOnElsewhere pins REQ-PLATFORM-AGENT-RUNTIME-AVAILABILITY-002's
+// profile rollout: off in prod so an unattended install keeps today's latch
+// behavior, on in dev/e2e so contributors and tests exercise recovery.
+func TestAgentctlRelaunchIsOffInProdOnElsewhere(t *testing.T) {
+	for _, profile := range []struct {
+		name     string
+		selector map[string]string
+		want     string
+	}{{
+		name: "prod",
+		want: "false",
+	}, {
+		name: "dev",
+		selector: map[string]string{
+			"KANDEV_DEBUG_DEV_MODE": "true",
+		},
+		want: "true",
+	}, {
+		name: "e2e",
+		selector: map[string]string{
+			"KANDEV_E2E_MOCK": "true",
+		},
+		want: "true",
+	}} {
+		t.Run(profile.name, func(t *testing.T) {
+			clearProfileSelectors(t)
+			clearProfilesYAMLVars(t)
+			for key, value := range profile.selector {
+				t.Setenv(key, value)
+			}
+
+			defaults, err := EnvironmentDefaults()
+			if err != nil {
+				t.Fatalf("EnvironmentDefaults: %v", err)
+			}
+			if got := defaults["KANDEV_FEATURES_AGENTCTL_RELAUNCH"]; got != profile.want {
+				t.Fatalf("KANDEV_FEATURES_AGENTCTL_RELAUNCH = %q in %s, want %q", got, profile.name, profile.want)
+			}
+		})
+	}
+}
+
 func TestEnvironmentDefaultsSelectsProfileWithoutMutatingEnvironment(t *testing.T) {
 	clearProfileSelectors(t)
 	clearProfilesYAMLVars(t)

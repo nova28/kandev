@@ -118,6 +118,14 @@ features:
     dev:  "false"
     e2e:  "false"
 
+  # Restarts the standalone agentctl process automatically after an unexpected
+  # exit instead of latching the local agent runtime unavailable for the rest
+  # of the boot. On in dev/e2e so contributors and tests exercise recovery.
+  KANDEV_FEATURES_AGENTCTL_RELAUNCH:
+    prod: "false"
+    dev:  "true"
+    e2e:  "true"
+
 # ── Mock providers ────────────────────────────────────────────────
 # Swap real third-party services for in-memory fakes. Production
 # leaves all of these unset (real APIs). Dev opts into the mock agent

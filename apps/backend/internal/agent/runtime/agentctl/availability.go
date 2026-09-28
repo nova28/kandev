@@ -12,9 +12,11 @@ import (
 )
 
 const (
-	AvailabilityStatusAvailable      = "available"
-	AvailabilityStatusUnavailable    = "unavailable"
-	AvailabilityReasonAgentctlExited = "agentctl_exited"
+	AvailabilityStatusAvailable         = "available"
+	AvailabilityStatusRecovering        = "recovering"
+	AvailabilityStatusUnavailable       = "unavailable"
+	AvailabilityReasonAgentctlExited    = "agentctl_exited"
+	AvailabilityReasonRelaunchExhausted = "relaunch_exhausted"
 )
 
 // AvailabilitySnapshot is the sanitized, install-wide agent runtime state
@@ -26,10 +28,14 @@ type AvailabilitySnapshot struct {
 	OccurredAt *time.Time `json:"occurred_at,omitempty"`
 }
 
-// Availability owns the monotonic runtime availability state. A runtime is
-// unpublished until its health check and authentication handshake succeed;
-// after that point, an unexpected launcher exit is a terminal unavailable
-// state for the lifetime of the backend process.
+// Availability owns the runtime availability state machine. From no
+// snapshot, MarkAvailable() publishes the available status. MarkRecovering(at)
+// moves it from available to recovering, and a later MarkAvailable() returns
+// it to available. MarkUnavailable(reason, at) moves either of those two to
+// unavailable, which is terminal: every method is a no-op once reached, and
+// no transition is republished when the call does not match the state it
+// applies from (for example MarkRecovering before the first MarkAvailable,
+// or a repeated MarkRecovering call while already recovering).
 type Availability struct {
 	mu        sync.RWMutex
 	publishMu sync.Mutex
@@ -60,13 +66,16 @@ func (a *Availability) Snapshot() (AvailabilitySnapshot, bool) {
 	return snapshot, true
 }
 
-// MarkAvailable publishes the first healthy-and-authenticated state.
+// MarkAvailable publishes the healthy-and-authenticated state. It applies
+// from the unpublished "none" state (first boot) and from "recovering" (a
+// successful relaunch); called from "available" or "unavailable" it is a
+// no-op, since neither is a source state for this transition.
 func (a *Availability) MarkAvailable() {
 	a.publishMu.Lock()
 	defer a.publishMu.Unlock()
 
 	a.mu.Lock()
-	if a.published {
+	if a.published && a.snapshot.Status != AvailabilityStatusRecovering {
 		a.mu.Unlock()
 		return
 	}
@@ -78,9 +87,37 @@ func (a *Availability) MarkAvailable() {
 	a.publish(snapshot)
 }
 
-// MarkUnavailable records an unexpected agentctl exit. The transition is
-// intentionally fail-closed and cannot be reversed until the backend restarts.
-func (a *Availability) MarkUnavailable() {
+// MarkRecovering records that agentctl exited unexpectedly and a relaunch is
+// underway. It applies only from "available"; called before the first
+// MarkAvailable, or while already recovering or unavailable, it is a no-op.
+func (a *Availability) MarkRecovering(at time.Time) {
+	a.publishMu.Lock()
+	defer a.publishMu.Unlock()
+
+	a.mu.Lock()
+	if !a.published || a.snapshot.Status != AvailabilityStatusAvailable {
+		a.mu.Unlock()
+		return
+	}
+	occurredAt := at.UTC()
+	a.snapshot = AvailabilitySnapshot{
+		Status:     AvailabilityStatusRecovering,
+		Reason:     AvailabilityReasonAgentctlExited,
+		OccurredAt: &occurredAt,
+	}
+	snapshot := a.snapshot
+	a.mu.Unlock()
+
+	a.publish(snapshot)
+}
+
+// MarkUnavailable records that the runtime is unavailable, either because
+// relaunching is disabled (reason agentctl_exited) or every relaunch attempt
+// was exhausted (reason relaunch_exhausted). It applies from "available" or
+// "recovering". Unavailable is terminal: called before the first
+// MarkAvailable, or while already unavailable, it is a no-op and never
+// republishes or overwrites the first occurrence.
+func (a *Availability) MarkUnavailable(reason string, at time.Time) {
 	a.publishMu.Lock()
 	defer a.publishMu.Unlock()
 
@@ -89,11 +126,11 @@ func (a *Availability) MarkUnavailable() {
 		a.mu.Unlock()
 		return
 	}
-	now := time.Now().UTC()
+	occurredAt := at.UTC()
 	a.snapshot = AvailabilitySnapshot{
 		Status:     AvailabilityStatusUnavailable,
-		Reason:     AvailabilityReasonAgentctlExited,
-		OccurredAt: &now,
+		Reason:     reason,
+		OccurredAt: &occurredAt,
 	}
 	snapshot := a.snapshot
 	a.mu.Unlock()
