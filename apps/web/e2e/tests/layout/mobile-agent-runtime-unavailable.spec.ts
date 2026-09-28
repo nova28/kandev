@@ -68,4 +68,59 @@ test.describe("Mobile agent runtime availability", () => {
     await expect(bottomNav).toBeVisible();
     await assertNoDocumentHorizontalOverflow(testPage, "mobile agent runtime recovery");
   });
+
+  test("keeps the recovering notice above the bottom navigation with no action", async ({
+    testPage,
+    apiClient,
+    seedData,
+  }) => {
+    const taskTitle = "Mobile runtime recovering task";
+    const task = await apiClient.createTaskWithAgent(
+      seedData.workspaceId,
+      taskTitle,
+      seedData.agentProfileId,
+      {
+        description: 'e2e:message("mobile runtime recovering")',
+        workflow_id: seedData.workflowId,
+        workflow_step_id: seedData.startStepId,
+        repository_ids: [seedData.repositoryId],
+      },
+    );
+    if (!task.session_id) throw new Error("mobile runtime recovering task has no session");
+
+    const mobile = new MobileKanbanPage(testPage);
+    await mobile.goto();
+    await expect(mobile.taskCard(task.id)).toBeVisible();
+    await mobile.taskCard(task.id).tap();
+    await expect(testPage).toHaveURL(new RegExp(`/t/${task.id}$`));
+    await expect(testPage.getByTestId("mobile-task-layout")).toBeVisible();
+
+    await setAgentRuntimeAvailability(testPage, {
+      status: "recovering",
+      reason: "agentctl_exited",
+      occurred_at: "2026-08-08T14:22:52Z",
+    });
+
+    const alert = testPage.getByTestId("agent-runtime-alert");
+    await expect(alert).toBeVisible();
+    await expect(alert).toHaveAttribute("data-status", "recovering");
+    await expect(alert.getByRole("button")).toHaveCount(0);
+    await expect(testPage.getByTestId("mobile-task-layout")).toBeVisible();
+
+    const bottomNav = testPage.getByTestId("mobile-task-layout").locator("nav");
+    await expect(bottomNav).toBeVisible();
+    const alertBox = await alert.boundingBox();
+    const bottomNavBox = await bottomNav.boundingBox();
+    expect(alertBox).not.toBeNull();
+    expect(bottomNavBox).not.toBeNull();
+    if (alertBox && bottomNavBox) {
+      expect(alertBox.y + alertBox.height).toBeLessThanOrEqual(bottomNavBox.y + 1);
+    }
+
+    await assertNoDocumentHorizontalOverflow(testPage, "mobile agent runtime recovering");
+
+    await setAgentRuntimeAvailability(testPage, { status: "available" });
+    await expect(alert).toHaveCount(0);
+    await expect(bottomNav).toBeVisible();
+  });
 });

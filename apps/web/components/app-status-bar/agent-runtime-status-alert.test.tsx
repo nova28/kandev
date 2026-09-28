@@ -1,11 +1,13 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { StateProvider, useAppStoreApi } from "@/components/state-provider";
 import type { RestartCapabilityState } from "@/hooks/domains/system/use-restart-capability";
 import type { KandevRestartController } from "@/hooks/domains/system/use-kandev-restart";
-import { AgentRuntimeUnavailableAlert } from "./agent-runtime-unavailable-alert";
+import type { AgentRuntimeAvailability } from "@/lib/types/agent-runtime";
+import { AgentRuntimeStatusAlert } from "./agent-runtime-status-alert";
 
 const RESTART_BUTTON_LABEL = "Restart Kandev";
+const ALERT_TEST_ID = "agent-runtime-alert";
 
 const restartCapability = vi.hoisted(() => ({
   value: {
@@ -57,25 +59,35 @@ function RuntimeStateControls() {
   );
 }
 
-function renderAlert() {
+function renderAlert(agentRuntime: AgentRuntimeAvailability | null) {
   return render(
-    <StateProvider
-      initialState={{
-        agentRuntime: {
-          status: "unavailable",
-          reason: "agentctl_exited",
-          occurred_at: "2026-08-08T14:22:52Z",
-        },
-      }}
-    >
-      <AgentRuntimeUnavailableAlert />
+    <StateProvider initialState={{ agentRuntime }}>
+      <AgentRuntimeStatusAlert />
       <div data-testid="retained-route-content">Last known task</div>
       <RuntimeStateControls />
     </StateProvider>,
   );
 }
 
-describe("AgentRuntimeUnavailableAlert", () => {
+const unavailableAgentctlExited: AgentRuntimeAvailability = {
+  status: "unavailable",
+  reason: "agentctl_exited",
+  occurred_at: "2026-08-08T14:22:52Z",
+};
+
+const unavailableRelaunchExhausted: AgentRuntimeAvailability = {
+  status: "unavailable",
+  reason: "relaunch_exhausted",
+  occurred_at: "2026-08-08T14:22:52Z",
+};
+
+const recovering: AgentRuntimeAvailability = {
+  status: "recovering",
+  reason: "agentctl_exited",
+  occurred_at: "2026-08-08T14:22:52Z",
+};
+
+describe("AgentRuntimeStatusAlert", () => {
   beforeEach(() => {
     restartCapability.value = {
       status: "resolved",
@@ -93,13 +105,14 @@ describe("AgentRuntimeUnavailableAlert", () => {
   afterEach(cleanup);
 
   it("renders one persistent alert with the supported restart flow", () => {
-    renderAlert();
+    renderAlert(unavailableAgentctlExited);
 
     expect(screen.getAllByRole("alert")).toHaveLength(1);
     expect(screen.getByText("Local agent runtime stopped")).toBeTruthy();
     expect(screen.getByText(/saved data remains safe/i)).toBeTruthy();
     expect(screen.getByRole("button", { name: RESTART_BUTTON_LABEL })).toBeTruthy();
     expect(screen.getByTestId("retained-route-content")).toBeTruthy();
+    expect(screen.getByTestId(ALERT_TEST_ID).dataset.status).toBe("unavailable");
 
     fireEvent.click(screen.getByRole("button", { name: RESTART_BUTTON_LABEL }));
 
@@ -108,7 +121,7 @@ describe("AgentRuntimeUnavailableAlert", () => {
 
   it("uses manual guidance when capability lookup is unavailable", () => {
     restartCapability.value = { status: "unavailable", capability: null };
-    renderAlert();
+    renderAlert(unavailableAgentctlExited);
 
     expect(screen.queryByRole("button", { name: RESTART_BUTTON_LABEL })).toBeNull();
     expect(screen.getByText(/terminal or service manager/i)).toBeTruthy();
@@ -122,7 +135,7 @@ describe("AgentRuntimeUnavailableAlert", () => {
       start: vi.fn(),
       dismiss: vi.fn(),
     };
-    renderAlert();
+    renderAlert(unavailableAgentctlExited);
 
     fireEvent.click(screen.getByTestId("connection-recover"));
     expect(screen.getByRole("alert")).toBeTruthy();
@@ -132,7 +145,7 @@ describe("AgentRuntimeUnavailableAlert", () => {
   });
 
   it("keeps the phone action at the touch-target size and stacks the content", () => {
-    renderAlert();
+    renderAlert(unavailableAgentctlExited);
 
     const alert = screen.getByRole("alert");
     const action = screen.getByRole("button", { name: RESTART_BUTTON_LABEL });
@@ -140,5 +153,59 @@ describe("AgentRuntimeUnavailableAlert", () => {
     expect(action.className).toContain("h-11");
     expect(action.className).toContain("w-full");
     expect(action.className).toContain("sm:w-auto");
+  });
+
+  it("states that automatic recovery did not succeed for relaunch_exhausted, and still offers restart", () => {
+    renderAlert(unavailableRelaunchExhausted);
+
+    expect(screen.getByText("Automatic recovery did not succeed.")).toBeTruthy();
+    expect(screen.getByRole("button", { name: RESTART_BUTTON_LABEL })).toBeTruthy();
+  });
+
+  it("does not state relaunch failure for a plain agentctl_exited outage", () => {
+    renderAlert(unavailableAgentctlExited);
+
+    expect(screen.queryByText("Automatic recovery did not succeed.")).toBeNull();
+  });
+
+  it("renders a neutral, non-dismissible, actionless notice while recovering", () => {
+    renderAlert(recovering);
+
+    expect(screen.getByRole("status")).toBeTruthy();
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getByText("Restarting local agent runtime")).toBeTruthy();
+    expect(screen.getByText(/paused while Kandev restarts/i)).toBeTruthy();
+    const alertContainer = screen.getByTestId(ALERT_TEST_ID);
+    expect(alertContainer.dataset.status).toBe("recovering");
+    expect(within(alertContainer).queryByRole("button")).toBeNull();
+    expect(screen.getByTestId("retained-route-content")).toBeTruthy();
+  });
+
+  it("clears the recovering notice without a reload once available", () => {
+    renderAlert(recovering);
+    expect(screen.getByRole("status")).toBeTruthy();
+
+    fireEvent.click(screen.getByTestId("runtime-recover"));
+
+    expect(screen.queryByRole("status")).toBeNull();
+    expect(screen.queryByTestId(ALERT_TEST_ID)).toBeNull();
+  });
+
+  it("renders nothing when available", () => {
+    renderAlert({ status: "available" });
+
+    expect(screen.queryByTestId(ALERT_TEST_ID)).toBeNull();
+  });
+
+  it("renders nothing when there is no snapshot yet", () => {
+    renderAlert(null);
+
+    expect(screen.queryByTestId(ALERT_TEST_ID)).toBeNull();
+  });
+
+  it("renders nothing for an unrecognized status", () => {
+    renderAlert({ status: "degraded" } as unknown as AgentRuntimeAvailability);
+
+    expect(screen.queryByTestId(ALERT_TEST_ID)).toBeNull();
   });
 });

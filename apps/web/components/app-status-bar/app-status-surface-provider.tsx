@@ -21,7 +21,7 @@ import { AppStatusBar } from "./app-status-bar";
 import { AppStatusDrawer } from "./app-status-drawer";
 import { connectionIssueDetails } from "./connection-status-item";
 import type { ConnectionIssueSeverity } from "@/lib/types/connection";
-import { AgentRuntimeUnavailableAlert } from "./agent-runtime-unavailable-alert";
+import { AgentRuntimeStatusAlert } from "./agent-runtime-status-alert";
 import { BackendReloadRequiredAlert } from "./backend-reload-required-alert";
 import { useBackendGenerationGuard } from "@/hooks/domains/system/use-backend-generation-guard";
 
@@ -164,7 +164,7 @@ export function AppStatusSurfaceProvider({ children }: { children: ReactNode }) 
   return (
     <AppStatusDrawerContext.Provider value={drawer}>
       <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-        <AgentRuntimeUnavailableAlert />
+        <AgentRuntimeStatusAlert />
         <BackendReloadRequiredAlert />
         {children}
         {(useDrawerSurface ? drawerEnabled : inlineStatusBarVisible) &&

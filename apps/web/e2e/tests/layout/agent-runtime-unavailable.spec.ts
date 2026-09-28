@@ -71,4 +71,66 @@ test.describe("Agent runtime availability", () => {
     await expect(alert).toHaveCount(0);
     await expect(taskCard).toBeVisible();
   });
+
+  test("shows a neutral recovering notice over retained data and clears without reload", async ({
+    testPage,
+    apiClient,
+    seedData,
+  }) => {
+    const taskTitle = "Runtime recovering retained board task";
+    const task = await apiClient.createTask(seedData.workspaceId, taskTitle, {
+      workflow_id: seedData.workflowId,
+      workflow_step_id: seedData.startStepId,
+    });
+    const kanban = new KanbanPage(testPage);
+    await kanban.goto();
+    const taskCard = kanban.taskCard(task.id);
+    await expect(taskCard).toBeVisible();
+
+    await setAgentRuntimeAvailability(testPage, {
+      status: "recovering",
+      reason: "agentctl_exited",
+      occurred_at: "2026-08-08T14:22:52Z",
+    });
+
+    const alert = testPage.getByTestId("agent-runtime-alert");
+    await expect(alert).toBeVisible();
+    await expect(alert).toHaveAttribute("data-status", "recovering");
+    await expect(alert).toContainText("Restarting local agent runtime");
+    await expect(alert).toContainText("saved data remains safe");
+    await expect(alert.getByRole("button")).toHaveCount(0);
+    await expect(taskCard).toBeVisible();
+
+    await setAgentRuntimeAvailability(testPage, { status: "available" });
+    await expect(alert).toHaveCount(0);
+    await expect(taskCard).toBeVisible();
+  });
+
+  test("states that automatic recovery did not succeed when relaunch is exhausted", async ({
+    testPage,
+    apiClient,
+    seedData,
+  }) => {
+    const taskTitle = "Runtime relaunch exhausted board task";
+    const task = await apiClient.createTask(seedData.workspaceId, taskTitle, {
+      workflow_id: seedData.workflowId,
+      workflow_step_id: seedData.startStepId,
+    });
+    await stubAgentRuntimeRestart(testPage);
+    const kanban = new KanbanPage(testPage);
+    await kanban.goto();
+    await expect(kanban.taskCard(task.id)).toBeVisible();
+
+    await setAgentRuntimeAvailability(testPage, {
+      status: "unavailable",
+      reason: "relaunch_exhausted",
+      occurred_at: "2026-08-08T14:22:52Z",
+    });
+
+    const alert = testPage.getByTestId("agent-runtime-alert");
+    await expect(alert).toBeVisible();
+    await expect(alert).toHaveAttribute("data-status", "unavailable");
+    await expect(alert).toContainText("Automatic recovery did not succeed.");
+    await expect(alert.getByRole("button", { name: "Restart Kandev" })).toBeVisible();
+  });
 });

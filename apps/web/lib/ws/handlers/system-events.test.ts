@@ -57,4 +57,35 @@ describe("registerSystemEventsHandlers", () => {
 
     expect(store.getState().agentRuntime).toEqual(unavailable);
   });
+
+  it("ignores a snapshot with an unknown status and keeps the previous value", () => {
+    const store = createAppStore({ agentRuntime: unavailable });
+    const handlers = registerSystemEventsHandlers(store);
+
+    handlers[SYSTEM_AGENT_RUNTIME_STATUS_CHANGED]?.({
+      type: "notification",
+      action: SYSTEM_AGENT_RUNTIME_STATUS_CHANGED,
+      payload: { status: "degraded" } as unknown as AgentRuntimeAvailability,
+    });
+
+    expect(store.getState().agentRuntime).toEqual(unavailable);
+  });
+
+  it("stores a recovering snapshot", () => {
+    const recovering: AgentRuntimeAvailability = {
+      status: "recovering",
+      reason: "agentctl_exited",
+      occurred_at: "2026-09-29T00:00:00Z",
+    };
+    const store = createAppStore({ agentRuntime: available });
+    const handlers = registerSystemEventsHandlers(store);
+
+    handlers[SYSTEM_AGENT_RUNTIME_STATUS_CHANGED]?.({
+      type: "notification",
+      action: SYSTEM_AGENT_RUNTIME_STATUS_CHANGED,
+      payload: recovering,
+    });
+
+    expect(store.getState().agentRuntime).toEqual(recovering);
+  });
 });

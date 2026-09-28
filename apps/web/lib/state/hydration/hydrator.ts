@@ -28,6 +28,7 @@ import {
   shouldReplaceMcpAttachmentHistory,
 } from "@/lib/state/slices/session-runtime/mcp-attachment-reconciliation";
 import { normalizeAgentProfiles } from "@/lib/api/domains/agent-profile-normalize";
+import { isAgentRuntimeAvailability } from "@/lib/types/agent-runtime";
 import { preserveOmittedExecutorFields } from "@/lib/kanban/map-task";
 import { mergeStepOrderRevisions } from "@/lib/kanban/workflow-step-order";
 import { deepMerge, mergeSessionMap, mergeLoadingState } from "./merge-strategies";
@@ -850,7 +851,9 @@ export function hydrateState(
   // subset they fetched, so use the same leaf-level deepMerge as the other
   // multi-field slices above rather than overwriting the whole object.
   if (state.system) deepMerge(draft.system, state.system);
-  if (state.agentRuntime !== undefined) draft.agentRuntime = state.agentRuntime;
+  if (state.agentRuntime !== undefined && isAgentRuntimeAvailability(state.agentRuntime)) {
+    draft.agentRuntime = state.agentRuntime;
+  }
 }
 
 /** Hydrate GitHub slices, preserving loading states. */

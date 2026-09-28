@@ -1,7 +1,7 @@
 "use client";
 
 import { useTranslation } from "react-i18next";
-import { IconAlertTriangle } from "@tabler/icons-react";
+import { IconAlertTriangle, IconLoader2 } from "@tabler/icons-react";
 import { Alert, AlertDescription, AlertTitle } from "@kandev/ui/alert";
 import { Button } from "@kandev/ui/button";
 import { useAppStore } from "@/components/state-provider";
@@ -9,15 +9,45 @@ import { useKandevRestart } from "@/hooks/domains/system/use-kandev-restart";
 import { useRestartCapability } from "@/hooks/domains/system/use-restart-capability";
 import { RestartProgressDialog } from "@/components/settings/system/restart-progress-dialog";
 import { controlSizingClassName } from "@kandev/ui/control-sizing";
+import type { AgentRuntimeAvailability } from "@/lib/types/agent-runtime";
 
-export function AgentRuntimeUnavailableAlert() {
+type RecoveringSnapshot = Extract<AgentRuntimeAvailability, { status: "recovering" }>;
+type UnavailableSnapshot = Extract<AgentRuntimeAvailability, { status: "unavailable" }>;
+
+export function AgentRuntimeStatusAlert() {
   const agentRuntime = useAppStore((state) => state.agentRuntime);
-  if (agentRuntime?.status !== "unavailable") return null;
-
-  return <UnavailableAgentRuntimeContent />;
+  if (agentRuntime?.status === "recovering") {
+    return <RecoveringAgentRuntimeContent snapshot={agentRuntime} />;
+  }
+  if (agentRuntime?.status === "unavailable") {
+    return <UnavailableAgentRuntimeContent snapshot={agentRuntime} />;
+  }
+  return null;
 }
 
-function UnavailableAgentRuntimeContent() {
+function RecoveringAgentRuntimeContent({ snapshot }: { snapshot: RecoveringSnapshot }) {
+  const { t } = useTranslation();
+
+  return (
+    <div
+      className="min-w-0 w-full shrink-0 px-3 pt-3 sm:px-4"
+      data-testid="agent-runtime-alert"
+      data-status={snapshot.status}
+    >
+      <Alert role="status" className="min-w-0 gap-x-2 px-3 py-3 sm:px-4">
+        <IconLoader2 className="mt-0.5 size-4 animate-spin" aria-hidden="true" />
+        <AlertTitle className="min-w-0 break-words text-sm">
+          {t("system:agentRuntimeRecoveringTitle")}
+        </AlertTitle>
+        <AlertDescription className="col-start-2 min-w-0 break-words text-sm">
+          <p>{t("system:agentRuntimeRecoveringBody")}</p>
+        </AlertDescription>
+      </Alert>
+    </div>
+  );
+}
+
+function UnavailableAgentRuntimeContent({ snapshot }: { snapshot: UnavailableSnapshot }) {
   const { t } = useTranslation();
   const restartCapability = useRestartCapability();
   const restart = useKandevRestart();
@@ -28,7 +58,11 @@ function UnavailableAgentRuntimeContent() {
 
   return (
     <>
-      <div className="min-w-0 w-full shrink-0 px-3 pt-3 sm:px-4" data-testid="agent-runtime-alert">
+      <div
+        className="min-w-0 w-full shrink-0 px-3 pt-3 sm:px-4"
+        data-testid="agent-runtime-alert"
+        data-status={snapshot.status}
+      >
         <Alert variant="destructive" className="min-w-0 gap-x-2 px-3 py-3 sm:px-4">
           <IconAlertTriangle className="mt-0.5 size-4" aria-hidden="true" />
           <AlertTitle className="min-w-0 break-words text-sm">
@@ -37,6 +71,9 @@ function UnavailableAgentRuntimeContent() {
           <AlertDescription className="col-start-2 flex min-w-0 flex-col gap-3 text-sm sm:flex-row sm:items-start sm:justify-between">
             <div className="min-w-0 space-y-1 break-words">
               <p>{t("system:agentRuntimeUnavailableBody")}</p>
+              {snapshot.reason === "relaunch_exhausted" ? (
+                <p>{t("system:agentRuntimeRelaunchExhausted")}</p>
+              ) : null}
               <p>{t("system:agentRuntimeUnavailableRestartRequired")}</p>
             </div>
             {restartSupported ? (
