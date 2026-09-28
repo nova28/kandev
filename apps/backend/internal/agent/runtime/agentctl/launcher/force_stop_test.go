@@ -114,3 +114,63 @@ func TestForceStopIsIdempotentAndSendsNoSignalAfterExit(t *testing.T) {
 		}
 	}
 }
+
+// TestForceStopBlocksUntilOnUnexpectedExitCallbackReleases pins the hazard
+// behind RV1-4: monitorExit calls onUnexpectedExit before closing exited, and
+// ForceStop waits on exited. If the process exits on its own (stopping still
+// false) and onUnexpectedExit blocks -- e.g. the relaunch supervisor's exit
+// closure waiting on its own mutex -- a concurrent ForceStop call (the
+// supervisor cleaning up an abandoned attempt) must block for exactly as
+// long as that callback does, not longer and not less; it must not return
+// early and leave the process unreaped, and it must not deadlock forever once
+// the callback finishes.
+func TestForceStopBlocksUntilOnUnexpectedExitCallbackReleases(t *testing.T) {
+	binary, err := exec.LookPath("true")
+	if err != nil {
+		t.Skipf("no 'true' binary on PATH: %v", err)
+	}
+	cmd := exec.Command(binary)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start short-lived test process: %v", err)
+	}
+
+	callbackStarted := make(chan struct{})
+	release := make(chan struct{})
+	l := &Launcher{
+		cmd:    cmd,
+		exited: make(chan struct{}),
+		logger: newLauncherTestLogger(t),
+		onUnexpectedExit: func() {
+			close(callbackStarted)
+			<-release
+		},
+	}
+	go l.monitorExit()
+
+	select {
+	case <-callbackStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("OnUnexpectedExit never started; the process may not have exited on its own")
+	}
+
+	done := make(chan struct{})
+	go func() {
+		l.ForceStop()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		t.Fatal("ForceStop returned while OnUnexpectedExit was still blocked on the outside mutex")
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	close(release)
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("ForceStop did not return after OnUnexpectedExit was released")
+	}
+}
