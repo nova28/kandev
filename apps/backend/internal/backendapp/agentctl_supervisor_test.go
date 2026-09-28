@@ -12,6 +12,7 @@ import (
 	agentctlclient "github.com/kandev/kandev/internal/agent/runtime/agentctl"
 	"github.com/kandev/kandev/internal/events"
 	"github.com/kandev/kandev/internal/events/bus"
+	"go.uber.org/goleak"
 )
 
 // fakeRelaunchLauncher is a minimal relaunchLauncher double. startFunc
@@ -661,6 +662,8 @@ func TestAgentctlSupervisor_ShutdownRacingFinalAttemptFailurePublishesNoTransiti
 // Shutdown racing each other must never double-stop a renewer or data-race
 // on the shared renewer/launcher fields.
 func TestAgentctlSupervisor_RenewerStoppedExactlyOnceUnderShutdownRace(t *testing.T) {
+	defer goleak.VerifyNone(t)
+
 	oldRenewer := &fakeOwnershipRenewer{}
 	newRenewer := &fakeOwnershipRenewer{}
 	factory, _ := scriptedLauncherFactory(t, alwaysSucceeds)
