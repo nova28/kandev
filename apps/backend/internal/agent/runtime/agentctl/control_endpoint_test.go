@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"sync"
 	"testing"
+	"time"
 )
 
 // TestControlClient_FromEndpoint_UsesCurrentHostPortToken verifies a client
@@ -133,4 +134,77 @@ func TestControlClient_FromEndpoint_CurrentNeverMixesGenerationsUnderRace(t *tes
 	}
 
 	wg.Wait()
+}
+
+// TestControlClient_FromEndpoint_RequestDuringRecoveringFailsFastNotQueued
+// covers the first half of AC-PLATFORM-AGENT-RUNTIME-AVAILABILITY-002.11: a
+// request sent while the endpoint still points at the exited process --
+// during `recovering`, before any replacement has been published as current
+// -- fails with its existing error surface instead of hanging, silently
+// retrying, or queuing until a replacement appears.
+func TestControlClient_FromEndpoint_RequestDuringRecoveringFailsFastNotQueued(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	host, port := splitTestServerHostPort(t, srv)
+	srv.Close() // simulate the process having already exited
+
+	ep := NewEndpoint()
+	ep.Publish(host, port, "token-1", 111)
+
+	c := NewControlClientFromEndpoint(ep, newTestLogger())
+
+	start := time.Now()
+	err := c.Health(context.Background())
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("Health = nil error, want a connection failure while the endpoint points at the exited process")
+	}
+	// The client's own http.Client.Timeout is 30s; a failure that took anywhere
+	// near that would indicate an added retry loop rather than the single
+	// dial-and-fail this AC requires.
+	if elapsed > 5*time.Second {
+		t.Fatalf("Health took %v to fail, want a fast single-attempt failure (no automatic retry/queueing)", elapsed)
+	}
+}
+
+// TestControlClient_FromEndpoint_RequestAfterReplacementPublishedReachesNewServer
+// covers the second half of AC-PLATFORM-AGENT-RUNTIME-AVAILABILITY-002.11: a
+// request sent after the replacement becomes current reaches the
+// replacement, even though nothing here clears any `recovering` UI state --
+// the client has no notion of that notice, only of the endpoint's current
+// identity.
+func TestControlClient_FromEndpoint_RequestAfterReplacementPublishedReachesNewServer(t *testing.T) {
+	dead := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	deadHost, deadPort := splitTestServerHostPort(t, dead)
+	dead.Close()
+
+	var replacementHits int
+	replacement := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		replacementHits++
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(replacement.Close)
+	replacementHost, replacementPort := splitTestServerHostPort(t, replacement)
+
+	ep := NewEndpoint()
+	ep.Publish(deadHost, deadPort, "token-1", 111)
+
+	c := NewControlClientFromEndpoint(ep, newTestLogger())
+
+	if err := c.Health(context.Background()); err == nil {
+		t.Fatal("Health against the exited process = nil error, want a connection failure")
+	}
+
+	ep.Publish(replacementHost, replacementPort, "token-2", 222)
+
+	if err := c.Health(context.Background()); err != nil {
+		t.Fatalf("Health after the replacement was published: %v", err)
+	}
+	if replacementHits != 1 {
+		t.Fatalf("replacement server saw %d requests, want exactly 1", replacementHits)
+	}
 }
