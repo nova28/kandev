@@ -39,7 +39,7 @@ func processTestClient(t *testing.T, handler http.Handler) *agentctl.Client {
 }
 
 func TestProcessRunnerStartErrors(t *testing.T) {
-	manager := &Manager{executionStore: NewExecutionStore()}
+	manager := &Manager{executionStore: NewExecutionStore(nil, nil)}
 
 	if _, err := manager.StartProcess(context.Background(), StartProcessRequest{
 		SessionID: "missing",
@@ -61,7 +61,7 @@ func TestProcessRunnerStartErrors(t *testing.T) {
 }
 
 func TestProcessRunnerListErrors(t *testing.T) {
-	manager := &Manager{executionStore: NewExecutionStore()}
+	manager := &Manager{executionStore: NewExecutionStore(nil, nil)}
 	if _, err := manager.ListProcesses(context.Background(), "missing"); err == nil {
 		t.Fatal("expected error when no execution exists for session")
 	}
@@ -74,14 +74,14 @@ func TestProcessRunnerListErrors(t *testing.T) {
 }
 
 func TestProcessRunnerStopErrors(t *testing.T) {
-	manager := &Manager{executionStore: NewExecutionStore()}
+	manager := &Manager{executionStore: NewExecutionStore(nil, nil)}
 	if err := manager.StopProcess(context.Background(), "process-1"); err == nil {
 		t.Fatal("expected error when process not found")
 	}
 }
 
 func TestProcessRunnerGetErrors(t *testing.T) {
-	manager := &Manager{executionStore: NewExecutionStore()}
+	manager := &Manager{executionStore: NewExecutionStore(nil, nil)}
 	if _, err := manager.GetProcess(context.Background(), "process-1", false); err == nil {
 		t.Fatal("expected error when process not found")
 	}
@@ -97,7 +97,7 @@ func TestStartProcessMergesManagedGoCacheAndReleasesTerminalLease(t *testing.T) 
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"process":{"id":"process-1","session_id":"session-1","status":"exited"}}`))
 	}))
-	manager := &Manager{executionStore: NewExecutionStore()}
+	manager := &Manager{executionStore: NewExecutionStore(nil, nil)}
 	manager.SetActivityCoordinator(coordinator)
 	execution := &AgentExecution{
 		ID: "exec-1", SessionID: "session-1", agentctl: client,
@@ -148,7 +148,7 @@ func TestStopProcessVerifiesExecutionOwnershipBeforeReleasingLease(t *testing.T)
 		_, _ = w.Write([]byte(`{"id":"process-owned","session_id":"session-owner","status":"running"}`))
 	}))
 	coordinator := activity.NewCoordinator(activity.Options{})
-	manager := &Manager{executionStore: NewExecutionStore()}
+	manager := &Manager{executionStore: NewExecutionStore(nil, nil)}
 	manager.SetActivityCoordinator(coordinator)
 	for _, execution := range []*AgentExecution{
 		{ID: "exec-non-owner", SessionID: "session-other", agentctl: nonOwner},
@@ -187,7 +187,7 @@ func TestStopProcessReturnsOwnerStopErrorAndRetainsLease(t *testing.T) {
 		_, _ = w.Write([]byte(`{"id":"process-owned","session_id":"session-owner","status":"running"}`))
 	}))
 	coordinator := activity.NewCoordinator(activity.Options{})
-	manager := &Manager{executionStore: NewExecutionStore()}
+	manager := &Manager{executionStore: NewExecutionStore(nil, nil)}
 	manager.SetActivityCoordinator(coordinator)
 	if err := manager.executionStore.Add(&AgentExecution{
 		ID: "exec-owner", SessionID: "session-owner", agentctl: client,
@@ -226,7 +226,7 @@ func TestStartProcessClientCancellationDoesNotDropIndeterminateLease(t *testing.
 		_, _ = w.Write([]byte(`{"process":{"id":"process-late","session_id":"session-1","status":"running"}}`))
 	}))
 	coordinator := activity.NewCoordinator(activity.Options{})
-	manager := &Manager{executionStore: NewExecutionStore()}
+	manager := &Manager{executionStore: NewExecutionStore(nil, nil)}
 	manager.SetActivityCoordinator(coordinator)
 	if err := manager.executionStore.Add(&AgentExecution{
 		ID: "exec-1", SessionID: "session-1", agentctl: client,

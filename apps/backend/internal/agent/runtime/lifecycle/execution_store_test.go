@@ -15,7 +15,7 @@ func TestActiveRuntimeGaugePublished(t *testing.T) {
 }
 
 func TestActiveRuntimeGaugeTracksExecutionOwnership(t *testing.T) {
-	store := NewExecutionStore()
+	store := NewExecutionStore(nil, nil)
 	if err := store.Add(&AgentExecution{ID: "runtime-metric-1"}); err != nil {
 		t.Fatalf("Add(first): %v", err)
 	}
@@ -36,7 +36,7 @@ func TestActiveRuntimeGaugeTracksExecutionOwnership(t *testing.T) {
 // concurrently and Add silently overwrote the bySession index, orphaning the
 // first execution's agent subprocess.
 func TestExecutionStore_AddRejectsDuplicateSession(t *testing.T) {
-	store := NewExecutionStore()
+	store := NewExecutionStore(nil, nil)
 
 	first := &AgentExecution{ID: "exec-1", SessionID: "session-1"}
 	if err := store.Add(first); err != nil {
@@ -68,7 +68,7 @@ func TestExecutionStore_AddRejectsDuplicateSession(t *testing.T) {
 // still in flight — never merely admitted (buffers mid-reset), completed, or
 // superseded by a newer prompt.
 func TestExecutionStore_ActivePromptGenerationGating(t *testing.T) {
-	store := NewExecutionStore()
+	store := NewExecutionStore(nil, nil)
 	exec := &AgentExecution{ID: "exec-1", SessionID: "session-1"}
 	if err := store.Add(exec); err != nil {
 		t.Fatalf("Add: %v", err)
@@ -118,7 +118,7 @@ func TestExecutionStore_ActivePromptGenerationGating(t *testing.T) {
 }
 
 func TestExecutionStore_AddSameExecutionTwiceIsIdempotent(t *testing.T) {
-	store := NewExecutionStore()
+	store := NewExecutionStore(nil, nil)
 
 	exec := &AgentExecution{ID: "exec-1", SessionID: "session-1"}
 	if err := store.Add(exec); err != nil {
@@ -130,7 +130,7 @@ func TestExecutionStore_AddSameExecutionTwiceIsIdempotent(t *testing.T) {
 }
 
 func TestExecutionStore_AddReplaceAfterRemove(t *testing.T) {
-	store := NewExecutionStore()
+	store := NewExecutionStore(nil, nil)
 
 	first := &AgentExecution{ID: "exec-1", SessionID: "session-1"}
 	if err := store.Add(first); err != nil {
@@ -149,7 +149,7 @@ func TestExecutionStore_AddReplaceAfterRemove(t *testing.T) {
 }
 
 func TestExecutionStore_RemoveClearsRuntimeEnvironment(t *testing.T) {
-	store := NewExecutionStore()
+	store := NewExecutionStore(nil, nil)
 	execution := &AgentExecution{ID: "exec-1"}
 	execution.setRuntimeEnvironment(map[string]string{"BROKER": "runtime-only"})
 	if err := store.Add(execution); err != nil {
@@ -163,7 +163,7 @@ func TestExecutionStore_RemoveClearsRuntimeEnvironment(t *testing.T) {
 }
 
 func TestExecutionStore_AddNoSessionIDAlwaysSucceeds(t *testing.T) {
-	store := NewExecutionStore()
+	store := NewExecutionStore(nil, nil)
 
 	if err := store.Add(&AgentExecution{ID: "exec-a"}); err != nil {
 		t.Errorf("Add without SessionID: %v", err)
@@ -174,7 +174,7 @@ func TestExecutionStore_AddNoSessionIDAlwaysSucceeds(t *testing.T) {
 }
 
 func TestExecutionStore_BeginPromptAlwaysAdvancesGeneration(t *testing.T) {
-	store := NewExecutionStore()
+	store := NewExecutionStore(nil, nil)
 	exec := &AgentExecution{
 		ID:        "exec-1",
 		SessionID: "session-1",
@@ -199,7 +199,7 @@ func TestExecutionStore_BeginPromptAlwaysAdvancesGeneration(t *testing.T) {
 }
 
 func TestExecutionStore_BeginPromptClearsActiveTopLevelTool(t *testing.T) {
-	store := NewExecutionStore()
+	store := NewExecutionStore(nil, nil)
 	exec := &AgentExecution{ID: "exec-1", SessionID: "session-1"}
 	if err := store.Add(exec); err != nil {
 		t.Fatalf("Add: %v", err)
@@ -215,7 +215,7 @@ func TestExecutionStore_BeginPromptClearsActiveTopLevelTool(t *testing.T) {
 }
 
 func TestExecutionStore_OwnsPromptActivityRejectsChangedEpoch(t *testing.T) {
-	store := NewExecutionStore()
+	store := NewExecutionStore(nil, nil)
 	exec := &AgentExecution{
 		ID:               "exec-1",
 		SessionID:        "session-1",
@@ -236,7 +236,7 @@ func TestExecutionStore_OwnsPromptActivityRejectsChangedEpoch(t *testing.T) {
 }
 
 func TestExecutionStore_ClaimPromptActivityRequiresCurrentIdentity(t *testing.T) {
-	store := NewExecutionStore()
+	store := NewExecutionStore(nil, nil)
 	exec := &AgentExecution{ID: "exec-1", SessionID: "session-1", promptGeneration: 4}
 	if err := store.Add(exec); err != nil {
 		t.Fatalf("Add: %v", err)
@@ -267,7 +267,7 @@ func TestExecutionStore_ClaimPromptActivityRequiresCurrentIdentity(t *testing.T)
 // task-scoped stop uses to recover a session whose database row is terminal
 // but whose execution is still registered.
 func TestExecutionStore_ListsExecutionsForTask(t *testing.T) {
-	store := NewExecutionStore()
+	store := NewExecutionStore(nil, nil)
 	if err := store.Add(&AgentExecution{ID: "exec-1", SessionID: "session-1", TaskID: "task-a"}); err != nil {
 		t.Fatalf("Add exec-1: %v", err)
 	}

@@ -177,6 +177,12 @@ type AgentExecution struct {
 	standaloneInstanceID string // Instance ID in standalone agentctl
 	standalonePort       int    // Port of the standalone execution
 
+	// generation is the agentctl endpoint generation (see agentctl.Endpoint)
+	// current when this execution was created or recovered. Zero for a
+	// non-standalone executor, which has no such generation and is therefore
+	// never subject to ExecutionStore's stale-generation retirement.
+	generation uint64
+
 	// IsPassthrough captures the session's mode as decided at session-creation
 	// time (TaskSession.IsPassthrough snapshot). StartAgentProcess uses this
 	// instead of re-resolving the live profile so a profile that toggles

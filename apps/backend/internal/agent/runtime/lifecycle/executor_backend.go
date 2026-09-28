@@ -683,6 +683,11 @@ type ExecutorInstance struct {
 	StandaloneInstanceID string // Standalone
 	StandalonePort       int    // Standalone
 
+	// Generation is the standalone agentctl endpoint generation (see
+	// agentctl.Endpoint) current when this instance was created or recovered.
+	// Zero for non-standalone executors.
+	Generation uint64
+
 	// Common fields
 	WorkspacePath   string
 	Metadata        map[string]interface{}
@@ -787,6 +792,7 @@ func (ri *ExecutorInstance) ToAgentExecution(req *ExecutorCreateRequest) *AgentE
 		agentctl:             ri.Client,
 		standaloneInstanceID: ri.StandaloneInstanceID,
 		standalonePort:       ri.StandalonePort,
+		generation:           ri.Generation,
 		historyEnabled:       historyEnabled,
 		promptDoneCh:         make(chan PromptCompletionSignal, 1),
 	}

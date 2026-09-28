@@ -474,7 +474,7 @@ func TestEnsureExecutionAllowsWorkspaceRestoreForTerminalSession(t *testing.T) {
 
 func TestResolveTaskEnvironmentID(t *testing.T) {
 	t.Run("returns TaskEnvironmentID when execution carries it", func(t *testing.T) {
-		store := NewExecutionStore()
+		store := NewExecutionStore(nil, nil)
 		store.Add(&AgentExecution{
 			ID:                "exec-1",
 			SessionID:         "session-A",
@@ -499,7 +499,7 @@ func TestResolveTaskEnvironmentID(t *testing.T) {
 				"session-X": {SessionID: "session-X", TaskEnvironmentID: "env-X"},
 			},
 		}
-		mgr := &Manager{executionStore: NewExecutionStore(), logger: newTestLogger()}
+		mgr := &Manager{executionStore: NewExecutionStore(nil, nil), logger: newTestLogger()}
 		mgr.workspaceInfoProvider = provider
 
 		got, err := mgr.ResolveTaskEnvironmentID(context.Background(), "session-X")
@@ -512,7 +512,7 @@ func TestResolveTaskEnvironmentID(t *testing.T) {
 	})
 
 	t.Run("errors when no execution and no provider", func(t *testing.T) {
-		mgr := &Manager{executionStore: NewExecutionStore(), logger: newTestLogger()}
+		mgr := &Manager{executionStore: NewExecutionStore(nil, nil), logger: newTestLogger()}
 
 		_, err := mgr.ResolveTaskEnvironmentID(context.Background(), "session-X")
 		if err == nil {
@@ -524,7 +524,7 @@ func TestResolveTaskEnvironmentID(t *testing.T) {
 	})
 
 	t.Run("errors when execution has empty env", func(t *testing.T) {
-		store := NewExecutionStore()
+		store := NewExecutionStore(nil, nil)
 		store.Add(&AgentExecution{
 			ID:        "exec-2",
 			SessionID: "session-B",
@@ -549,7 +549,7 @@ func TestResolveTaskEnvironmentID(t *testing.T) {
 			},
 		}
 		mgr := &Manager{
-			executionStore:        NewExecutionStore(),
+			executionStore:        NewExecutionStore(nil, nil),
 			workspaceInfoProvider: provider,
 			logger:                newTestLogger(),
 		}
@@ -564,7 +564,7 @@ func TestResolveTaskEnvironmentID(t *testing.T) {
 	})
 
 	t.Run("two sessions sharing env resolve to the same scope", func(t *testing.T) {
-		store := NewExecutionStore()
+		store := NewExecutionStore(nil, nil)
 		store.Add(&AgentExecution{
 			ID: "exec-A", SessionID: "sess-A", TaskID: "task-1",
 			TaskEnvironmentID: "env-shared", Status: v1.AgentStatusRunning,
@@ -591,7 +591,7 @@ func TestResolveTaskEnvironmentID(t *testing.T) {
 
 func TestGetOrEnsureExecution(t *testing.T) {
 	t.Run("returns existing execution from store", func(t *testing.T) {
-		store := NewExecutionStore()
+		store := NewExecutionStore(nil, nil)
 		execution := &AgentExecution{
 			ID:        "exec-1",
 			SessionID: "session-1",
@@ -631,7 +631,7 @@ func TestGetOrEnsureExecution(t *testing.T) {
 
 	t.Run("empty session ID returns error", func(t *testing.T) {
 		mgr := &Manager{
-			executionStore: NewExecutionStore(),
+			executionStore: NewExecutionStore(nil, nil),
 			logger:         newTestLogger(),
 		}
 
@@ -646,7 +646,7 @@ func TestGetOrEnsureExecution(t *testing.T) {
 
 	t.Run("no provider returns error", func(t *testing.T) {
 		mgr := &Manager{
-			executionStore:        NewExecutionStore(),
+			executionStore:        NewExecutionStore(nil, nil),
 			workspaceInfoProvider: nil,
 			logger:                newTestLogger(),
 		}
@@ -662,7 +662,7 @@ func TestGetOrEnsureExecution(t *testing.T) {
 			err: fmt.Errorf("database connection failed"),
 		}
 		mgr := &Manager{
-			executionStore:        NewExecutionStore(),
+			executionStore:        NewExecutionStore(nil, nil),
 			workspaceInfoProvider: provider,
 			logger:                newTestLogger(),
 		}
@@ -677,7 +677,7 @@ func TestGetOrEnsureExecution(t *testing.T) {
 	})
 
 	t.Run("concurrent calls use singleflight", func(t *testing.T) {
-		store := NewExecutionStore()
+		store := NewExecutionStore(nil, nil)
 		var callCount atomic.Int32
 
 		// Slow provider to create a race window
@@ -718,7 +718,7 @@ func TestGetOrEnsureExecution(t *testing.T) {
 
 func TestGetOrEnsureExecutionForEnvironment(t *testing.T) {
 	t.Run("returns existing execution by environment", func(t *testing.T) {
-		store := NewExecutionStore()
+		store := NewExecutionStore(nil, nil)
 		execution := &AgentExecution{
 			ID:                "exec-1",
 			SessionID:         "session-1",
@@ -831,7 +831,7 @@ func TestGetOrEnsureExecutionForEnvironment(t *testing.T) {
 	})
 
 	t.Run("empty environment ID returns error", func(t *testing.T) {
-		mgr := &Manager{executionStore: NewExecutionStore(), logger: newTestLogger()}
+		mgr := &Manager{executionStore: NewExecutionStore(nil, nil), logger: newTestLogger()}
 
 		_, err := mgr.GetOrEnsureExecutionForEnvironment(context.Background(), "")
 		if err == nil {
@@ -843,7 +843,7 @@ func TestGetOrEnsureExecutionForEnvironment(t *testing.T) {
 	})
 
 	t.Run("missing provider returns error instead of session fallback", func(t *testing.T) {
-		mgr := &Manager{executionStore: NewExecutionStore(), logger: newTestLogger()}
+		mgr := &Manager{executionStore: NewExecutionStore(nil, nil), logger: newTestLogger()}
 
 		_, err := mgr.GetOrEnsureExecutionForEnvironment(context.Background(), "env-missing")
 		if err == nil {
@@ -866,7 +866,7 @@ func TestGetOrEnsureExecutionForEnvironment(t *testing.T) {
 			},
 		}
 		mgr := &Manager{
-			executionStore:        NewExecutionStore(),
+			executionStore:        NewExecutionStore(nil, nil),
 			workspaceInfoProvider: provider,
 			logger:                newTestLogger(),
 		}
@@ -891,7 +891,7 @@ func TestGetOrEnsureExecutionForEnvironment(t *testing.T) {
 			},
 		}
 		mgr := &Manager{
-			executionStore:        NewExecutionStore(),
+			executionStore:        NewExecutionStore(nil, nil),
 			workspaceInfoProvider: provider,
 			logger:                newTestLogger(),
 		}
@@ -920,7 +920,7 @@ func TestEnsureWorkspaceExecutionForSession_EmptyTaskID(t *testing.T) {
 		}
 
 		mgr := &Manager{
-			executionStore:        NewExecutionStore(),
+			executionStore:        NewExecutionStore(nil, nil),
 			workspaceInfoProvider: provider,
 			logger:                newTestLogger(),
 		}
@@ -951,7 +951,7 @@ func TestEnsureWorkspaceExecutionForSession_EmptyTaskID(t *testing.T) {
 		}
 
 		mgr := &Manager{
-			executionStore:        NewExecutionStore(),
+			executionStore:        NewExecutionStore(nil, nil),
 			workspaceInfoProvider: provider,
 			logger:                newTestLogger(),
 		}

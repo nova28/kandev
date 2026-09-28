@@ -86,7 +86,7 @@ func restartDefaultModelState() *streams.SessionModelState {
 }
 
 func TestStopAgentWithReason_MissingExecutionIsClassified(t *testing.T) {
-	mgr := &Manager{executionStore: NewExecutionStore(), logger: newTestLogger().WithFields()}
+	mgr := &Manager{executionStore: NewExecutionStore(nil, nil), logger: newTestLogger().WithFields()}
 
 	err := mgr.StopAgentWithReason(context.Background(), "missing", "cleanup", true)
 
@@ -1347,13 +1347,13 @@ func (m *mockExecutorWithRunner) GetInteractiveRunner() *process.InteractiveRunn
 
 func TestIsAgentRunningForSession(t *testing.T) {
 	t.Run("no execution returns false", func(t *testing.T) {
-		store := NewExecutionStore()
+		store := NewExecutionStore(nil, nil)
 		mgr := &Manager{executionStore: store, logger: newTestLogger().WithFields()}
 		require.False(t, mgr.IsAgentRunningForSession(context.Background(), "nonexistent"))
 	})
 
 	t.Run("fresh starting execution is live before agentctl responds", func(t *testing.T) {
-		store := NewExecutionStore()
+		store := NewExecutionStore(nil, nil)
 		require.NoError(t, store.Add(&AgentExecution{
 			ID:        "exec-acp-starting",
 			SessionID: "session-acp-starting",
@@ -1366,7 +1366,7 @@ func TestIsAgentRunningForSession(t *testing.T) {
 	})
 
 	t.Run("expired starting execution without agentctl is stale", func(t *testing.T) {
-		store := NewExecutionStore()
+		store := NewExecutionStore(nil, nil)
 		require.NoError(t, store.Add(&AgentExecution{
 			ID:        "exec-acp-starting-stale",
 			SessionID: "session-acp-starting-stale",
@@ -1389,7 +1389,7 @@ func TestIsAgentRunningForSession(t *testing.T) {
 		})
 		require.NoError(t, err)
 
-		store := NewExecutionStore()
+		store := NewExecutionStore(nil, nil)
 		store.Add(&AgentExecution{
 			ID:                   "exec-pt",
 			SessionID:            "session-pt",
@@ -1415,7 +1415,7 @@ func TestIsAgentRunningForSession(t *testing.T) {
 		log := newTestLogger()
 		runner := process.NewInteractiveRunner(nil, log, 2*1024*1024)
 
-		store := NewExecutionStore()
+		store := NewExecutionStore(nil, nil)
 		store.Add(&AgentExecution{
 			ID:                   "exec-dead",
 			SessionID:            "session-dead",
@@ -1438,7 +1438,7 @@ func TestIsAgentRunningForSession(t *testing.T) {
 	})
 
 	t.Run("passthrough with nil executor registry returns false", func(t *testing.T) {
-		store := NewExecutionStore()
+		store := NewExecutionStore(nil, nil)
 		store.Add(&AgentExecution{
 			ID:                   "exec-noreg",
 			SessionID:            "session-noreg",
@@ -1454,7 +1454,7 @@ func TestIsAgentRunningForSession(t *testing.T) {
 	})
 
 	t.Run("ACP execution with nil agentctl returns false", func(t *testing.T) {
-		store := NewExecutionStore()
+		store := NewExecutionStore(nil, nil)
 		store.Add(&AgentExecution{
 			ID:        "exec-acp-nil",
 			SessionID: "session-acp-nil",
@@ -1485,7 +1485,7 @@ func TestIsAgentRunningForSession(t *testing.T) {
 		client := createTestClient(t, statusServer.URL)
 		t.Cleanup(client.Close)
 
-		store := NewExecutionStore()
+		store := NewExecutionStore(nil, nil)
 		store.Add(&AgentExecution{
 			ID:        "exec-acp-running",
 			SessionID: "session-acp-running",
@@ -1514,7 +1514,7 @@ func TestIsAgentRunningForSession(t *testing.T) {
 		client := createTestClient(t, statusServer.URL)
 		t.Cleanup(client.Close)
 
-		store := NewExecutionStore()
+		store := NewExecutionStore(nil, nil)
 		store.Add(&AgentExecution{
 			ID:        "exec-acp-stopped",
 			SessionID: "session-acp-stopped",
@@ -1541,7 +1541,7 @@ func TestIsAgentReadyForPrompt(t *testing.T) {
 		client := createTestClient(t, mock.server.URL)
 		t.Cleanup(client.Close)
 
-		store := NewExecutionStore()
+		store := NewExecutionStore(nil, nil)
 		execution := &AgentExecution{
 			ID:           "exec-acp-ready",
 			SessionID:    "session-acp-ready",
@@ -1591,7 +1591,7 @@ func TestIsAgentReadyForPrompt(t *testing.T) {
 	})
 
 	t.Run("missing execution returns false", func(t *testing.T) {
-		mgr := &Manager{executionStore: NewExecutionStore(), logger: newTestLogger().WithFields()}
+		mgr := &Manager{executionStore: NewExecutionStore(nil, nil), logger: newTestLogger().WithFields()}
 		require.False(t, mgr.IsAgentReadyForPrompt(context.Background(), "missing"))
 	})
 }
@@ -1617,7 +1617,7 @@ func TestRecoverAgentPromptStream(t *testing.T) {
 
 	t.Run("session initialization owns the initial stream connection", func(t *testing.T) {
 		mgr := &Manager{
-			executionStore: NewExecutionStore(),
+			executionStore: NewExecutionStore(nil, nil),
 			logger:         newTestLogger().WithFields(),
 		}
 		client := createTestClient(t, "http://127.0.0.1:1")
@@ -1634,7 +1634,7 @@ func TestRecoverAgentPromptStream(t *testing.T) {
 
 	t.Run("missing stream manager errors when stream is absent", func(t *testing.T) {
 		mgr := &Manager{
-			executionStore: NewExecutionStore(),
+			executionStore: NewExecutionStore(nil, nil),
 			logger:         newTestLogger().WithFields(),
 		}
 		client := createTestClient(t, "http://127.0.0.1:1")
@@ -1917,7 +1917,7 @@ func (m *mockWorkspaceInfoProvider) GetWorkspaceInfoForEnvironment(_ context.Con
 
 func TestIsRemoteSession(t *testing.T) {
 	t.Run("in-memory execution with sprites runtime", func(t *testing.T) {
-		store := NewExecutionStore()
+		store := NewExecutionStore(nil, nil)
 		store.Add(&AgentExecution{
 			ID:          "exec-1",
 			SessionID:   "session-1",
@@ -1929,7 +1929,7 @@ func TestIsRemoteSession(t *testing.T) {
 	})
 
 	t.Run("in-memory execution with is_remote metadata", func(t *testing.T) {
-		store := NewExecutionStore()
+		store := NewExecutionStore(nil, nil)
 		store.Add(&AgentExecution{
 			ID:          "exec-2",
 			SessionID:   "session-2",
@@ -1942,7 +1942,7 @@ func TestIsRemoteSession(t *testing.T) {
 	})
 
 	t.Run("in-memory execution with local runtime", func(t *testing.T) {
-		store := NewExecutionStore()
+		store := NewExecutionStore(nil, nil)
 		store.Add(&AgentExecution{
 			ID:          "exec-3",
 			SessionID:   "session-3",
@@ -1954,7 +1954,7 @@ func TestIsRemoteSession(t *testing.T) {
 	})
 
 	t.Run("not in memory, DB returns sprites executor type", func(t *testing.T) {
-		store := NewExecutionStore()
+		store := NewExecutionStore(nil, nil)
 		provider := &mockWorkspaceInfoProvider{
 			infos: map[string]*WorkspaceInfo{
 				"session-4": {ExecutorType: string(models.ExecutorTypeSprites)},
@@ -1965,7 +1965,7 @@ func TestIsRemoteSession(t *testing.T) {
 	})
 
 	t.Run("not in memory, DB returns remote_docker executor type", func(t *testing.T) {
-		store := NewExecutionStore()
+		store := NewExecutionStore(nil, nil)
 		provider := &mockWorkspaceInfoProvider{
 			infos: map[string]*WorkspaceInfo{
 				"session-5": {ExecutorType: string(models.ExecutorTypeRemoteDocker)},
@@ -1976,7 +1976,7 @@ func TestIsRemoteSession(t *testing.T) {
 	})
 
 	t.Run("not in memory, DB returns sprites runtime name", func(t *testing.T) {
-		store := NewExecutionStore()
+		store := NewExecutionStore(nil, nil)
 		provider := &mockWorkspaceInfoProvider{
 			infos: map[string]*WorkspaceInfo{
 				"session-6": {RuntimeName: executor.NameSprites},
@@ -1987,7 +1987,7 @@ func TestIsRemoteSession(t *testing.T) {
 	})
 
 	t.Run("not in memory, DB returns local type", func(t *testing.T) {
-		store := NewExecutionStore()
+		store := NewExecutionStore(nil, nil)
 		provider := &mockWorkspaceInfoProvider{
 			infos: map[string]*WorkspaceInfo{
 				"session-7": {ExecutorType: string(models.ExecutorTypeLocal)},
@@ -1998,14 +1998,14 @@ func TestIsRemoteSession(t *testing.T) {
 	})
 
 	t.Run("not in memory, DB error returns false", func(t *testing.T) {
-		store := NewExecutionStore()
+		store := NewExecutionStore(nil, nil)
 		provider := &mockWorkspaceInfoProvider{err: fmt.Errorf("db error")}
 		mgr := &Manager{executionStore: store, workspaceInfoProvider: provider}
 		require.False(t, mgr.IsRemoteSession(context.Background(), "session-8"))
 	})
 
 	t.Run("nil workspaceInfoProvider returns false", func(t *testing.T) {
-		store := NewExecutionStore()
+		store := NewExecutionStore(nil, nil)
 		mgr := &Manager{executionStore: store}
 		require.False(t, mgr.IsRemoteSession(context.Background(), "nonexistent"))
 	})
@@ -2013,7 +2013,7 @@ func TestIsRemoteSession(t *testing.T) {
 
 func TestShouldUseContainerShell(t *testing.T) {
 	t.Run("in-memory execution with docker runtime", func(t *testing.T) {
-		store := NewExecutionStore()
+		store := NewExecutionStore(nil, nil)
 		store.Add(&AgentExecution{
 			ID:          "exec-1",
 			SessionID:   "session-1",
@@ -2025,7 +2025,7 @@ func TestShouldUseContainerShell(t *testing.T) {
 	})
 
 	t.Run("in-memory execution with sprites runtime", func(t *testing.T) {
-		store := NewExecutionStore()
+		store := NewExecutionStore(nil, nil)
 		store.Add(&AgentExecution{
 			ID:          "exec-2",
 			SessionID:   "session-2",
@@ -2037,7 +2037,7 @@ func TestShouldUseContainerShell(t *testing.T) {
 	})
 
 	t.Run("in-memory execution with is_remote metadata", func(t *testing.T) {
-		store := NewExecutionStore()
+		store := NewExecutionStore(nil, nil)
 		store.Add(&AgentExecution{
 			ID:          "exec-3",
 			SessionID:   "session-3",
@@ -2050,7 +2050,7 @@ func TestShouldUseContainerShell(t *testing.T) {
 	})
 
 	t.Run("in-memory execution with standalone runtime", func(t *testing.T) {
-		store := NewExecutionStore()
+		store := NewExecutionStore(nil, nil)
 		store.Add(&AgentExecution{
 			ID:          "exec-4",
 			SessionID:   "session-4",
@@ -2062,7 +2062,7 @@ func TestShouldUseContainerShell(t *testing.T) {
 	})
 
 	t.Run("not in memory, DB returns local_docker executor type", func(t *testing.T) {
-		store := NewExecutionStore()
+		store := NewExecutionStore(nil, nil)
 		provider := &mockWorkspaceInfoProvider{
 			infos: map[string]*WorkspaceInfo{
 				"session-5": {ExecutorType: string(models.ExecutorTypeLocalDocker)},
@@ -2073,7 +2073,7 @@ func TestShouldUseContainerShell(t *testing.T) {
 	})
 
 	t.Run("not in memory, DB returns sprites executor type", func(t *testing.T) {
-		store := NewExecutionStore()
+		store := NewExecutionStore(nil, nil)
 		provider := &mockWorkspaceInfoProvider{
 			infos: map[string]*WorkspaceInfo{
 				"session-6": {ExecutorType: string(models.ExecutorTypeSprites)},
@@ -2084,7 +2084,7 @@ func TestShouldUseContainerShell(t *testing.T) {
 	})
 
 	t.Run("not in memory, DB returns docker runtime name", func(t *testing.T) {
-		store := NewExecutionStore()
+		store := NewExecutionStore(nil, nil)
 		provider := &mockWorkspaceInfoProvider{
 			infos: map[string]*WorkspaceInfo{
 				"session-7": {RuntimeName: executor.NameDocker},
@@ -2095,7 +2095,7 @@ func TestShouldUseContainerShell(t *testing.T) {
 	})
 
 	t.Run("not in memory, DB returns local type", func(t *testing.T) {
-		store := NewExecutionStore()
+		store := NewExecutionStore(nil, nil)
 		provider := &mockWorkspaceInfoProvider{
 			infos: map[string]*WorkspaceInfo{
 				"session-8": {ExecutorType: string(models.ExecutorTypeLocal)},
@@ -2106,14 +2106,14 @@ func TestShouldUseContainerShell(t *testing.T) {
 	})
 
 	t.Run("not in memory, DB error returns false", func(t *testing.T) {
-		store := NewExecutionStore()
+		store := NewExecutionStore(nil, nil)
 		provider := &mockWorkspaceInfoProvider{err: fmt.Errorf("db error")}
 		mgr := &Manager{executionStore: store, workspaceInfoProvider: provider}
 		require.False(t, mgr.ShouldUseContainerShell(context.Background(), "session-9"))
 	})
 
 	t.Run("nil workspaceInfoProvider returns false", func(t *testing.T) {
-		store := NewExecutionStore()
+		store := NewExecutionStore(nil, nil)
 		mgr := &Manager{executionStore: store}
 		require.False(t, mgr.ShouldUseContainerShell(context.Background(), "nonexistent"))
 	})
@@ -2151,7 +2151,7 @@ func TestFallbackAuthMethods(t *testing.T) {
 
 func TestGetSessionAuthMethodsFallback(t *testing.T) {
 	t.Run("returns cached methods when available", func(t *testing.T) {
-		store := NewExecutionStore()
+		store := NewExecutionStore(nil, nil)
 		exec := &AgentExecution{
 			ID:        "exec-1",
 			SessionID: "session-1",
@@ -2169,7 +2169,7 @@ func TestGetSessionAuthMethodsFallback(t *testing.T) {
 	})
 
 	t.Run("falls back to static methods when cache is empty", func(t *testing.T) {
-		store := NewExecutionStore()
+		store := NewExecutionStore(nil, nil)
 		store.Add(&AgentExecution{
 			ID:        "exec-2",
 			SessionID: "session-2",
@@ -2183,7 +2183,7 @@ func TestGetSessionAuthMethodsFallback(t *testing.T) {
 	})
 
 	t.Run("returns nil for unknown session", func(t *testing.T) {
-		store := NewExecutionStore()
+		store := NewExecutionStore(nil, nil)
 		mgr := &Manager{executionStore: store}
 		require.Nil(t, mgr.GetSessionAuthMethods("nonexistent"))
 	})

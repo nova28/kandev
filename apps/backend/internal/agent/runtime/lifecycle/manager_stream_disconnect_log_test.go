@@ -24,7 +24,7 @@ func disconnectTestManager(t *testing.T) (*Manager, *observer.ObservedLogs) {
 	}
 	mgr := &Manager{
 		logger:         log,
-		executionStore: NewExecutionStore(),
+		executionStore: NewExecutionStore(nil, nil),
 		eventPublisher: NewEventPublisher(&MockEventBusWithTracking{}, log),
 	}
 	return mgr, logs

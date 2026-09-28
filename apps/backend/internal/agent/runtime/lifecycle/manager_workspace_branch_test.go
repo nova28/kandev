@@ -71,7 +71,7 @@ func TestRenameBranchForSessionUsesRepositoryScopedAgentctlOperation(t *testing.
 		metadata:  map[string]interface{}{MetadataKeyWorktreeBranch: "feature/provisional-abc"},
 		agentctl:  agentctlclient.NewClient(parsed.Hostname(), port, newTestLogger()),
 	}
-	store := NewExecutionStore()
+	store := NewExecutionStore(nil, nil)
 	if err := store.Add(execution); err != nil {
 		t.Fatalf("add execution: %v", err)
 	}
@@ -111,7 +111,7 @@ func TestRenameBranchForSessionUpdatesPrimaryExecutionMetadata(t *testing.T) {
 		metadata:  map[string]interface{}{MetadataKeyWorktreeBranch: "feature/provisional-abc"},
 		agentctl:  agentctlclient.NewClient(parsed.Hostname(), port, newTestLogger()),
 	}
-	store := NewExecutionStore()
+	store := NewExecutionStore(nil, nil)
 	if err := store.Add(execution); err != nil {
 		t.Fatalf("add execution: %v", err)
 	}
@@ -153,7 +153,7 @@ func TestRenameBranchForSessionReportsPrimarySnapshotFailure(t *testing.T) {
 		metadata:  map[string]interface{}{MetadataKeyWorktreeBranch: "feature/provisional-abc"},
 		agentctl:  agentctlclient.NewClient(parsed.Hostname(), port, newTestLogger()),
 	}
-	store := NewExecutionStore()
+	store := NewExecutionStore(nil, nil)
 	if err := store.Add(execution); err != nil {
 		t.Fatalf("add execution: %v", err)
 	}

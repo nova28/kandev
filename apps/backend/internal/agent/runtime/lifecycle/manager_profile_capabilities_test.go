@@ -357,7 +357,7 @@ func TestGetRecoveredExecutionsProjectsOfficeIdentity(t *testing.T) {
 }
 
 func TestExecutionStoreGetByContainerID(t *testing.T) {
-	store := NewExecutionStore()
+	store := NewExecutionStore(nil, nil)
 	require.NoError(t, store.Add(&AgentExecution{
 		ID: "exec-1", SessionID: "session-1", ContainerID: "container-1",
 	}))

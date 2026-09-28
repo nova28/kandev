@@ -1885,7 +1885,7 @@ func TestSendPrompt_AdvancesGenerationForEveryDispatch(t *testing.T) {
 
 	log := newSessionTestLogger()
 	sm := NewSessionManager(log, make(chan struct{}))
-	store := NewExecutionStore()
+	store := NewExecutionStore(nil, nil)
 	sm.SetDependencies(nil, nil, store, nil)
 
 	client := createTestClient(t, mock.server.URL)
@@ -2271,7 +2271,7 @@ func TestWaitForPromptDone_PublishesSingleStall(t *testing.T) {
 }
 
 func TestMarkPromptDispatchedArmsActivityAfterDispatch(t *testing.T) {
-	store := NewExecutionStore()
+	store := NewExecutionStore(nil, nil)
 	execution := &AgentExecution{
 		ID:                         "test-exec",
 		SessionID:                  "test-session",

@@ -29,7 +29,7 @@ func newTestManagerForAggregator(t *testing.T) *Manager {
 	}
 	mgr := &Manager{
 		logger:         log,
-		executionStore: NewExecutionStore(),
+		executionStore: NewExecutionStore(nil, nil),
 	}
 	mgr.pollAggregator = newWorkspacePollAggregator(mgr)
 	return mgr

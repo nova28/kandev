@@ -373,7 +373,7 @@ func TestKubernetesLiveExecutionUsesRemoteContainerShellRouting(t *testing.T) {
 	instance, err := executor.CreateInstance(context.Background(), req)
 	require.NoError(t, err)
 
-	store := NewExecutionStore()
+	store := NewExecutionStore(nil, nil)
 	require.NoError(t, store.Add(instance.ToAgentExecution(req)))
 	manager := &Manager{executionStore: store}
 

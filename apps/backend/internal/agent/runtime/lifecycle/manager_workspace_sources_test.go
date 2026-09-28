@@ -389,7 +389,7 @@ func workspaceSourceTestManager(t *testing.T, rawURL string, roots []string) (*M
 		t.Fatal(err)
 	}
 	execution := &AgentExecution{ID: "execution", SessionID: "session", WorkspaceSourceRoots: roots, agentctl: agentctl.NewClient(parsed.Hostname(), port, newTestLogger())}
-	store := NewExecutionStore()
+	store := NewExecutionStore(nil, nil)
 	if err := store.Add(execution); err != nil {
 		t.Fatal(err)
 	}

@@ -14,7 +14,7 @@ func TestExecutionAccessChecksGateBeforeCache(t *testing.T) {
 	denied := errors.New("denied")
 
 	t.Run("EnsurePassthroughExecution honors sessionAccessCheck", func(t *testing.T) {
-		mgr := &Manager{logger: newTestLogger(), executionStore: NewExecutionStore()}
+		mgr := &Manager{logger: newTestLogger(), executionStore: NewExecutionStore(nil, nil)}
 		// Seed a cached execution so a missing check would short-circuit to it.
 		if err := mgr.executionStore.Add(&AgentExecution{ID: "ex-1", SessionID: "sess-1", PassthroughProcessID: "p1"}); err != nil {
 			t.Fatal(err)
@@ -31,7 +31,7 @@ func TestExecutionAccessChecksGateBeforeCache(t *testing.T) {
 	})
 
 	t.Run("GetOrEnsureExecutionForEnvironment honors environmentAccessCheck", func(t *testing.T) {
-		mgr := &Manager{logger: newTestLogger(), executionStore: NewExecutionStore()}
+		mgr := &Manager{logger: newTestLogger(), executionStore: NewExecutionStore(nil, nil)}
 		if err := mgr.executionStore.Add(&AgentExecution{ID: "ex-2", SessionID: "sess-2", TaskEnvironmentID: "env-1"}); err != nil {
 			t.Fatal(err)
 		}
@@ -47,14 +47,14 @@ func TestExecutionAccessChecksGateBeforeCache(t *testing.T) {
 	})
 
 	t.Run("CheckSessionAccess is a no-op without a checker", func(t *testing.T) {
-		mgr := &Manager{logger: newTestLogger(), executionStore: NewExecutionStore()}
+		mgr := &Manager{logger: newTestLogger(), executionStore: NewExecutionStore(nil, nil)}
 		if err := mgr.CheckSessionAccess(context.Background(), "sess-x"); err != nil {
 			t.Fatalf("nil checker must pass: %v", err)
 		}
 	})
 
 	t.Run("CheckTaskAccess delegates to the installed checker", func(t *testing.T) {
-		mgr := &Manager{logger: newTestLogger(), executionStore: NewExecutionStore()}
+		mgr := &Manager{logger: newTestLogger(), executionStore: NewExecutionStore(nil, nil)}
 		if err := mgr.CheckTaskAccess(context.Background(), "task-x"); err != nil {
 			t.Fatalf("nil checker must pass: %v", err)
 		}

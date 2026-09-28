@@ -97,6 +97,14 @@ type instance struct {
 	client            *agentctlclient.Client
 	operationGateOnce sync.Once
 	operationGate     *semaphore.Weighted
+
+	// generation is the standalone agentctl endpoint generation (see
+	// agentctl.Endpoint) current when this instance was created. A relaunch
+	// starts a fresh agentctl process with no memory of this instanceID, so a
+	// cached instance whose generation predates the current one is dead even
+	// when a health check against the new process's generic endpoint
+	// happens to succeed.
+	generation uint64
 }
 
 // Shared probes and prompts each take one slot. Repair takes every slot so it
@@ -462,6 +470,7 @@ func (m *Manager) createInstance(ctx context.Context, agentType string) (*instan
 		instanceID: resp.ID,
 		workDir:    workDir,
 		client:     client,
+		generation: id.Generation,
 	}, nil
 }
 
@@ -576,6 +585,14 @@ const instanceHealthCheckTimeout = 500 * time.Millisecond
 func (m *Manager) staleInstanceCause(ctx context.Context, inst *instance) error {
 	if inst == nil || inst.client == nil {
 		return errors.New("host utility instance client missing")
+	}
+	// A relaunch starts a fresh agentctl process that knows nothing of this
+	// instanceID, even though a generic health check against its new
+	// endpoint can still succeed -- check the generation first so a stale
+	// instance is recognized without waiting on a network round trip whose
+	// success would be misleading.
+	if current := m.endpoint.Current(); inst.generation != 0 && current.Generation != 0 && inst.generation != current.Generation {
+		return fmt.Errorf("instance bound to agentctl generation %d, current is %d", inst.generation, current.Generation)
 	}
 	healthCtx, cancel := context.WithTimeout(ctx, instanceHealthCheckTimeout)
 	defer cancel()

@@ -160,6 +160,16 @@ func provideGateway(
 		gateway.SetVscodeProxy(lifecycleMgr)
 		gateway.SetPortProxy(lifecycleMgr)
 		gateway.SetPortTunnel(lifecycleMgr)
+		// An execution retired for a stale agentctl generation must not leave
+		// a proxy connection, shell stream, or port tunnel alive against the
+		// dead process -- a relaunch's replacement session reuses the same
+		// session ID, so a stale cache entry would otherwise serve traffic
+		// into nothing.
+		lifecycleMgr.SetExecutionRetiredHook(func(sessionID string) {
+			gateway.VscodeProxyHandler.InvalidateProxy(sessionID)
+			gateway.PortProxyHandler.InvalidateSession(sessionID)
+			gateway.TunnelManager.InvalidateSession(sessionID)
+		})
 	}
 
 	orchestratorHandlers := orchestratorhandlers.NewHandlers(orchestratorSvc, log)

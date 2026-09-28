@@ -166,13 +166,15 @@ func provideLifecycleManager(
 	if err := lifecycleMgr.SetAgentctlStartupConfig(cfg.ManagedAgentctlStartupConfig()); err != nil {
 		return nil, fmt.Errorf("configure managed agentctl startup: %w", err)
 	}
-	// Record the standalone agentctl control-server PID so local/standalone
-	// executor rows carry a real host-local liveness handle. Subscribing
-	// (rather than reading cfg.Agent.StandalonePID once) both applies the
-	// generation provideAgentctlLauncher already published and keeps this
-	// current across a future relaunch's new PID.
+	// Record the standalone agentctl control-server PID and generation so
+	// local/standalone executor rows carry a real host-local liveness handle
+	// and executionStore can recognize an execution bound to a since-dead
+	// agentctl process. Subscribing (rather than reading these once) both
+	// applies the generation provideAgentctlLauncher already published and
+	// keeps this current across a future relaunch's new PID/generation.
 	agentRuntimeEndpoint.Subscribe(func(id agentctl.EndpointIdentity) {
 		lifecycleMgr.SetStandaloneHostPID(id.PID)
+		lifecycleMgr.SetAgentctlGeneration(id.Generation)
 	})
 	// Wire the agent_profiles reader so the launch-prep skill deploy hook
 	// (ADR 0005 Wave A) can resolve full profile rows including the office

@@ -204,7 +204,7 @@ func TestMaterializeRepositoriesForEnvironment_RescansEveryDistinctClient(t *tes
 
 	clientOne := workspaceMaterializationAgentctlClient(t, server.URL)
 	clientTwo := workspaceMaterializationAgentctlClient(t, server.URL)
-	store := NewExecutionStore()
+	store := NewExecutionStore(nil, nil)
 	for _, execution := range []*AgentExecution{
 		{ID: "execution-1", SessionID: "session-1", TaskEnvironmentID: "environment-1", agentctl: clientOne},
 		{ID: "execution-2", SessionID: "session-2", TaskEnvironmentID: "environment-1", agentctl: clientTwo},
@@ -248,7 +248,7 @@ func TestMaterializeRepositoriesForEnvironment_DeduplicatesSharedAgentctlClient(
 	defer server.Close()
 
 	sharedClient := workspaceMaterializationAgentctlClient(t, server.URL)
-	store := NewExecutionStore()
+	store := NewExecutionStore(nil, nil)
 	for _, execution := range []*AgentExecution{
 		{ID: "execution-1", SessionID: "session-1", TaskEnvironmentID: "environment-1", agentctl: sharedClient},
 		{ID: "execution-2", SessionID: "session-2", TaskEnvironmentID: "environment-1", agentctl: sharedClient},
@@ -304,7 +304,7 @@ func TestMaterializeRepositoriesForEnvironment_RemovesCheckoutsBeforeReconciling
 	}))
 	defer second.Close()
 
-	store := NewExecutionStore()
+	store := NewExecutionStore(nil, nil)
 	for _, execution := range []*AgentExecution{
 		{ID: "execution-1", SessionID: "session-1", TaskEnvironmentID: "environment-1", agentctl: workspaceMaterializationAgentctlClient(t, first.URL)},
 		{ID: "execution-2", SessionID: "session-2", TaskEnvironmentID: "environment-1", agentctl: workspaceMaterializationAgentctlClient(t, second.URL)},

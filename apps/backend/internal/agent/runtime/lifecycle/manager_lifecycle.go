@@ -223,6 +223,7 @@ func (m *Manager) Start(ctx context.Context) error {
 				agentctl:             ri.Client,
 				standaloneInstanceID: ri.StandaloneInstanceID,
 				standalonePort:       ri.StandalonePort,
+				generation:           ri.Generation,
 				promptDoneCh:         make(chan PromptCompletionSignal, 1),
 				// AC-EXECUTORS-SURVIVAL-002.14: run identity is re-derived from
 				// the runtime environment, which is itself read back from the
@@ -864,11 +865,38 @@ func (m *Manager) cleanupStaleExecution(ctx context.Context, execution *AgentExe
 func (m *Manager) RemoveExecution(executionID string) {
 	m.releaseActivity(executionActivityKey(executionID))
 	if execution, ok := m.executionStore.Get(executionID); ok {
-		m.closeStreamCoalescer(execution)
-		m.cleanupPassthroughMCPConfig(execution)
-		m.setRuntimeInterest(execution.SessionID, false)
+		m.runExecutionCleanup(execution)
 	}
 	m.executionStore.Remove(executionID)
 	m.logger.Debug("removed execution from tracking",
 		zap.String("execution_id", executionID))
+}
+
+// runExecutionCleanup releases the stream coalescer, passthrough MCP config,
+// and runtime-interest tracking for an execution that has left the store.
+// Shared by an explicit RemoveExecution and the store's own stale-generation
+// retirement path (retireStaleExecution) so both leave the same state behind.
+func (m *Manager) runExecutionCleanup(execution *AgentExecution) {
+	m.closeStreamCoalescer(execution)
+	m.cleanupPassthroughMCPConfig(execution)
+	m.setRuntimeInterest(execution.SessionID, false)
+}
+
+// retireStaleExecution is executionStore's retire callback: it runs outside
+// the store lock for an execution the store has already removed because its
+// standalone agentctl generation is no longer current. A concurrent explicit
+// RemoveExecution racing this path is safe and idempotent -- executionStore's
+// own Get call triggers this same retirement, after which RemoveExecution's
+// cleanup branch is skipped (Get returns not-found) and its trailing Remove
+// call becomes a no-op.
+func (m *Manager) retireStaleExecution(execution *AgentExecution) {
+	m.releaseActivity(executionActivityKey(execution.ID))
+	m.runExecutionCleanup(execution)
+	m.logger.Info("retired execution bound to a stale agentctl generation",
+		zap.String("execution_id", execution.ID),
+		zap.String("session_id", execution.SessionID),
+		zap.Uint64("generation", execution.generation))
+	if m.executionRetiredHook != nil {
+		m.executionRetiredHook(execution.SessionID)
+	}
 }

@@ -286,6 +286,18 @@ type Manager struct {
 	// managed agentctl launch path.
 	agentctlStartupConfig commonconfig.AgentctlStartupConfig
 
+	// agentctlGeneration is the current standalone agentctl generation (see
+	// agentctl.Endpoint). executionStore consults it, via a closure supplied
+	// at construction, to decide whether a standalone-bound execution
+	// predates the live control server and must be retired.
+	agentctlGeneration atomic.Uint64
+
+	// executionRetiredHook, when set, receives the session ID of an execution
+	// executionStore retired for a stale agentctl generation. Wired to
+	// invalidate gateway caches (VS Code proxy, port proxy/tunnel) that must
+	// not be reused against the dead agentctl's replacement.
+	executionRetiredHook func(sessionID string)
+
 	// managedGoCache provides the opt-in GOCACHE for host-local executions.
 	// System storage wiring installs it after settings persistence is ready.
 	managedGoCache ManagedGoCacheEnvironmentProvider
@@ -371,6 +383,22 @@ func (m *Manager) SetAgentctlStartupConfig(startup commonconfig.AgentctlStartupC
 	return nil
 }
 
+// SetAgentctlGeneration records the current standalone agentctl generation.
+// Wired during DI as the agentctl endpoint's Subscribe callback (see
+// backendapp), so every relaunch's new generation reaches executionStore's
+// stale-generation check without reconstruction.
+func (m *Manager) SetAgentctlGeneration(generation uint64) {
+	m.agentctlGeneration.Store(generation)
+}
+
+// SetExecutionRetiredHook installs the gateway-cache invalidation hook
+// invoked with the session ID of an execution executionStore retires for a
+// stale agentctl generation. Set once during startup wiring, before agentctl
+// can observe a generation change.
+func (m *Manager) SetExecutionRetiredHook(hook func(sessionID string)) {
+	m.executionRetiredHook = hook
+}
+
 // NewManager creates a new lifecycle manager.
 // The executorRegistry manages multiple runtimes (Docker, Standalone, etc.) for task-specific execution.
 // The fallbackPolicy controls behavior when a requested runtime is unavailable.
@@ -399,8 +427,16 @@ func NewManager(
 	// Initialize event publisher
 	eventPublisher := NewEventPublisher(eventBus, log)
 
-	// Initialize execution store
-	executionStore := NewExecutionStore()
+	// Initialize execution store. mgr is declared before it is built so the
+	// generation source and retire callback can close over it; both are only
+	// ever invoked by store accessors called after NewManager returns mgr
+	// fully constructed, mirroring the mgr.handleAgentEvent-style callbacks
+	// bound below before mgr itself is assigned.
+	var mgr *Manager
+	executionStore := NewExecutionStore(
+		func() uint64 { return mgr.agentctlGeneration.Load() },
+		func(execution *AgentExecution) { mgr.retireStaleExecution(execution) },
+	)
 
 	// Initialize session history manager for fork_session pattern (context injection)
 	historyManager, err := NewSessionHistoryManager("", dataDir, log)
@@ -408,7 +444,7 @@ func NewManager(
 		log.Warn("failed to create session history manager, context injection disabled", zap.Error(err))
 	}
 
-	mgr := &Manager{
+	mgr = &Manager{
 		registry:                 reg,
 		eventBus:                 eventBus,
 		executorRegistry:         executorRegistry,

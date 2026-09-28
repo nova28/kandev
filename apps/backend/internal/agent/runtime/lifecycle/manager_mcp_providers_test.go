@@ -39,7 +39,7 @@ func TestSetMcpProvidersForSessionCallsLiveAgentctl(t *testing.T) {
 }
 
 func TestSetMcpProvidersForSession_NoExecutionIsNoOp(t *testing.T) {
-	mgr := &Manager{executionStore: NewExecutionStore(), logger: newTestLogger()}
+	mgr := &Manager{executionStore: NewExecutionStore(nil, nil), logger: newTestLogger()}
 	if err := mgr.SetMcpProvidersForSession(context.Background(), "session-missing", []string{"gitlab"}); err != nil {
 		t.Fatalf("SetMcpProvidersForSession without execution: %v", err)
 	}

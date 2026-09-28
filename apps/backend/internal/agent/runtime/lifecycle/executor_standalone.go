@@ -307,6 +307,7 @@ func (r *StandaloneExecutor) CreateInstance(ctx context.Context, req *ExecutorCr
 		Client:               client,
 		StandaloneInstanceID: resp.ID,
 		StandalonePort:       resp.Port,
+		Generation:           id.Generation,
 		WorkspacePath:        req.WorkspacePath,
 		Metadata:             metadata,
 	}, nil
@@ -631,6 +632,7 @@ func (r *StandaloneExecutor) buildRecoveredInstances(
 			Client:               client,
 			StandaloneInstanceID: inst.ID,
 			StandalonePort:       inst.Port,
+			Generation:           id.Generation,
 			WorkspacePath:        workspacePath,
 			Metadata:             metadata,
 			Env:                  inst.Env,

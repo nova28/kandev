@@ -598,7 +598,7 @@ func TestRollbackRegisteredLaunchPreservesInventoryUntilRuntimeCleanupSucceeds(t
 	}}
 	mgr := &Manager{
 		runningWriter: writer, logger: newTestRegistryLogger(), stopCh: make(chan struct{}),
-		executionStore: NewExecutionStore(),
+		executionStore: NewExecutionStore(nil, nil),
 	}
 	execution := &AgentExecution{ID: "execution-1", SessionID: "session-1"}
 	require.NoError(t, mgr.executionStore.Add(execution))
