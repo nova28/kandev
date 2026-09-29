@@ -26,7 +26,7 @@ func TestVscodeInstallProxyDiscardsResultAfterInvalidateDuringResolve(t *testing
 	handler.InvalidateProxy("sess-race")
 
 	built := &httputil.ReverseProxy{}
-	proxy, installed := handler.installProxy("sess-race", built, "http://dead:1", epoch)
+	proxy, installed := handler.installProxy("sess-race", built, "http://dead:1", "gen-1", epoch)
 	if installed {
 		t.Fatal("installProxy() installed = true, want false for a build resolved after invalidation")
 	}
@@ -94,7 +94,7 @@ func TestPortProxyInstallProxyDiscardsResultAfterInvalidateDuringResolve(t *test
 	handler.invalidateProxy(cacheKey)
 
 	built := &httputil.ReverseProxy{}
-	proxy, installed := handler.installProxy(cacheKey, built, "http://dead:1", epoch)
+	proxy, installed := handler.installProxy(cacheKey, built, "http://dead:1", "gen-1", epoch)
 	if installed {
 		t.Fatal("installProxy() installed = true, want false for a build resolved after invalidation")
 	}
@@ -121,7 +121,7 @@ func TestPortProxyInstallProxyDiscardsResultAfterSessionInvalidateDuringResolve(
 	handler.InvalidateSession("sess-race")
 
 	built := &httputil.ReverseProxy{}
-	proxy, installed := handler.installProxy(cacheKey, built, "http://dead:1", epoch)
+	proxy, installed := handler.installProxy(cacheKey, built, "http://dead:1", "gen-1", epoch)
 	if installed {
 		t.Fatal("installProxy() installed = true, want false for a build resolved after a session invalidation")
 	}
@@ -143,7 +143,7 @@ func TestVscodeInstallProxyToleratesConcurrentCacheMissBuildsWithoutInvalidation
 	epochB := handler.beginResolve("sess-concurrent")
 
 	firstBuilt := &httputil.ReverseProxy{Rewrite: func(*httputil.ProxyRequest) {}}
-	first, installed := handler.installProxy("sess-concurrent", firstBuilt, "http://first:1", epochA)
+	first, installed := handler.installProxy("sess-concurrent", firstBuilt, "http://shared:1", "gen-1", epochA)
 	if !installed {
 		t.Fatal("installProxy() installed = false for the first concurrent build, want true")
 	}
@@ -152,7 +152,7 @@ func TestVscodeInstallProxyToleratesConcurrentCacheMissBuildsWithoutInvalidation
 	}
 
 	secondBuilt := &httputil.ReverseProxy{Rewrite: func(*httputil.ProxyRequest) {}}
-	second, installed := handler.installProxy("sess-concurrent", secondBuilt, "http://second:1", epochB)
+	second, installed := handler.installProxy("sess-concurrent", secondBuilt, "http://shared:1", "gen-1", epochB)
 	if !installed {
 		t.Fatal("installProxy() installed = false for the second concurrent build, want true")
 	}
@@ -164,7 +164,7 @@ func TestVscodeInstallProxyToleratesConcurrentCacheMissBuildsWithoutInvalidation
 	if !cached {
 		t.Fatal("cachedProxy() found no entry after two successful concurrent installs")
 	}
-	if entry.target != "http://first:1" {
+	if entry.target != "http://shared:1" {
 		t.Fatalf("cached target = %q, want the first installer's target", entry.target)
 	}
 }

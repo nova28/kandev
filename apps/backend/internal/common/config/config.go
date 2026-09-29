@@ -556,6 +556,15 @@ type FeaturesConfig struct {
 	// an adoption handshake, which is untested there).
 	AgentSurvival bool `mapstructure:"agent_survival" json:"agentSurvival"`
 
+	// CodexAppServer enables the separate native Codex app-server agent. It is
+	// off in every shipped profile and requires a restart because its protocol
+	// adapter and profile catalogue are composed at startup.
+	CodexAppServer bool `mapstructure:"codex_app_server" json:"codexAppServer"`
+
+	// AgentBackgroundWork enables normalized background work tracking,
+	// interactive controls, and subagent observation.
+	AgentBackgroundWork bool `mapstructure:"agent_background_work" json:"agentBackgroundWork"`
+
 	// AgentctlRelaunch lets the backend restart its own standalone agentctl
 	// process after an unexpected exit instead of latching the runtime
 	// unavailable for the rest of the boot. Off in prod, on in dev/e2e.

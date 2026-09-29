@@ -56,7 +56,7 @@ Right-click an agent tab on desktop to manage it. Available actions depend on it
 | **Resume**         | Attempts to continue a completed, failed, or cancelled session                                                                                                             |
 | **Delete**         | Permanently removes the conversation; if it was primary, another session is promoted when possible. The task workspace and its files are kept; a later session reuses them |
 | **Share**          | Opens the publishing preview for an eligible session                                                                                                                       |
-| **Handoff**        | Opens the launch dialog with Blank context. Select a summary when you want to include this conversation                                                                 |
+| **Handoff**        | Opens the launch dialog with Blank context. Select a summary when you want to include this conversation                                                                    |
 | **Close Others**   | Closes other visible agent panels without deleting their sessions                                                                                                          |
 
 Stopping a session is not deletion. Resume needs the executor's session record. A removed worktree, expired remote environment, restarted executor, removed profile, or missing runtime record can require a fresh session.
@@ -319,6 +319,10 @@ and leaves the session's auto-scroll preference unchanged. Scroll up to read
 history without being pulled back by incoming content. Rich-output chart
 animations have their own Appearance setting.
 
+Select **Jump to latest** above the composer to return to the newest message,
+including agent replies. The action appears only when newer content is below
+the transcript. It does not change the session's auto-scroll preference.
+
 ## Inspect changes
 
 Open **+ > Changes** on desktop. A repository-less task has no Git state, so Kandev closes this panel automatically.
@@ -344,6 +348,12 @@ Tap a filename to open its diff, or tap the row's **Show more actions** menu to
 stage or unstage, edit, or discard that file. The menu shows the full path, and
 discarding still requires confirmation. In list view, the folder appears below
 the filename; long filenames wrap.
+
+In **Commits**, each row starts collapsed. Select a row to inspect its files
+inline; the saved flat or tree Changes layout applies to this list. Select
+the icon labeled **Open commit** to open the historical commit detail. Its flat file index can
+be collapsed independently of the file sections, and selecting an index entry
+opens that file's diff. These controls also work on phones.
 
 Changes-panel Git operations use Kandev's control path, not the agent's shell. They can work when a restricted agent mode blocks shell writes to Git metadata. If the error says that `.git/index.lock` already exists or is held, stop other Git operations and inspect the lock before retrying. Remove a stale lock only after you confirm that no Git process owns it. The Changes panel uses the same worktree, so it does not bypass an active lock. If the agent cannot create `.git/index.lock` because of its permission mode, use the Changes panel. Read [Git operations](git-operations.md#prerequisites-and-trust-boundary) before you change the agent mode.
 
@@ -372,7 +382,9 @@ Review compares each submodule with the gitlink commit recorded by its parent an
 
 When a task has multiple linked pull requests, use the PR selector in the Changes diff header or Review toolbar to inspect one PR revision at a time. The selection is scoped to that task for the current app session. Switching PRs replaces only the remote PR contribution; uncommitted and committed sources keep their normal precedence. Selecting a file from a specific PR row opens that exact PR revision, even when a sibling PR changes the same path.
 
-When several pull requests are linked to a task, hover the PR control in the desktop top bar or tap the PR status chip on mobile to open the tabbed CI surface. Each PR tab has a **Remove from task** button. Removing a tab only detaches that Kandev task association; it does not close or modify the GitHub pull request, its branch or commits, the task repositories, or sibling PR associations. Explicitly linking that PR again restores the association.
+When several pull requests are linked to a task, hover the PR control in the desktop top bar or tap the PR status chip on mobile to open the tabbed CI surface. Right-click the top-bar PR control on desktop to open **Edit** and remove a selected association. Each PR tab also has a **Remove from task** button. Removing a tab only detaches that Kandev task association; it does not close or modify the GitHub pull request, its branch or commits, the task repositories, or sibling PR associations. Explicitly linking that PR again restores the association.
+
+Task rows and Kanban cards also let you remove an association. Open the menu, select **Edit**, then select `Remove owner/repo #number from task`. On a phone, open row actions or the card dots, then make the same selections. This action removes only that association. It does not change the GitHub pull request, its branch, or commits.
 
 An automatic-merge error shows **Retry** in the selected PR tab on desktop and mobile. This action requests one new evaluation for that pull request. Kandev applies all current readiness rules before it sends another merge request. Other automation and state-loading errors show **Refresh**. Refresh loads the current state and does not authorize a merge.
 

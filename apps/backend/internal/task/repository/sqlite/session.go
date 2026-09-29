@@ -1985,7 +1985,7 @@ func (r *Repository) updateTaskSessionWithSnapshotGuard(
 		args = append(args, string(*expected))
 	}
 	if expectedUpdatedAt != nil {
-		query += " AND updated_at = ?"
+		query += optimisticUpdatedAtPredicate
 		args = append(args, *expectedUpdatedAt)
 	}
 	result, err := exec.ExecContext(ctx, r.db.Rebind(query), args...)
@@ -4046,6 +4046,9 @@ func (r *Repository) purgeTaskSessionStateTx(
 			return nil, fmt.Errorf("purge prompt history for session %s: %w", session.ID, err)
 		}
 	}
+	_, _ = tx.ExecContext(ctx, r.db.Rebind(`DELETE FROM task_session_background_action_receipts WHERE session_id = ?`), session.ID)
+	_, _ = tx.ExecContext(ctx, r.db.Rebind(`DELETE FROM task_session_background_runs WHERE session_id = ?`), session.ID)
+	_, _ = tx.ExecContext(ctx, r.db.Rebind(`DELETE FROM task_session_background_work WHERE session_id = ?`), session.ID)
 	return deletedAttachments, nil
 }
 

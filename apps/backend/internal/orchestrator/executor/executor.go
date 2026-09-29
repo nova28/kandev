@@ -672,6 +672,9 @@ const McpModeOffice = mcpmode.Office
 // created by a user-configured automation.
 const McpModeAutomation = mcpmode.Automation
 
+// McpModeManagedConversation selects the isolated managed-conversation MCP surface.
+const McpModeManagedConversation = "managed-conversation"
+
 // LaunchOptions contains optional parameters for LaunchPreparedSession.
 type LaunchOptions struct {
 	AgentProfileID       string
@@ -683,10 +686,15 @@ type LaunchOptions struct {
 	// process is started. Callers use this boundary to bind turn-scoped
 	// evidence to the execution that actually won admission.
 	OnExecutionAdmitted func(executionID string)
-	Prompt              string
-	PriorACPSession     string // ACP session ID to resume for the same concrete profile
-	WorkflowStepID      string
-	StartAgent          bool
+	// OnInitialPromptAccepted transfers startup ownership after lifecycle reports
+	// that the initial prompt was accepted by the provider. OnInitialPromptFailed
+	// closes that ownership when delivery fails before acceptance.
+	OnInitialPromptAccepted func(executionID string)
+	OnInitialPromptFailed   func()
+	Prompt                  string
+	PriorACPSession         string // ACP session ID to resume for the same concrete profile
+	WorkflowStepID          string
+	StartAgent              bool
 	// RefuseIfAgentRunning makes peer-message admission fail closed when the
 	// selected session already has an active agent. Other internal launch paths
 	// retain their existing workspace reuse behavior.

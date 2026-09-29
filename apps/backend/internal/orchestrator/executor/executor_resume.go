@@ -1021,6 +1021,10 @@ type ResumeOptions struct {
 	// or a pinned follow-up dispatch. It does not change the global terminal
 	// session predicate or permit implicit resume paths.
 	AllowCompletedSessionResume bool
+	// RequireIdleSuspensionProvenance admits only a session parked by the
+	// workspace idle policy. It protects focus recovery from reviving a manual
+	// stop, cancellation, archive, or workflow-owned session.
+	RequireIdleSuspensionProvenance bool
 	// Origin carries the session ceiling's explicit automatic/manual launch
 	// classification ("automatic" or "manual") from the caller into
 	// ResumeTaskSessionWithOptions's admission gate. A plain string rather
@@ -1179,7 +1183,7 @@ func (e *Executor) resumeSession(
 	}
 	launchCtx := ctx
 	if recoveryAdmission != nil {
-		launchCtx = worktree.WithRecoveryClaim(ctx, recoveryAdmission.Claim())
+		launchCtx = worktree.WithRecoveryAdmission(ctx, recoveryAdmission)
 	}
 	cleanupCtx := resumeOwnedCleanupContext(launchCtx)
 	defer func() { _ = releaseSelectedWorktreeRecovery(cleanupCtx, &recoveryAdmission) }()
@@ -1722,6 +1726,7 @@ func (e *Executor) prepareResumeRepositorySettings(
 		return "", nil, nil, err
 	}
 	applyResumeRepositoryFlags(req, allRepos)
+	pinDirtyCloneRelocationToSelectedWorktrees(ctx, req, session, existingEnv)
 	if err := e.validateReuseEnvironmentInventory(ctx, req, existingEnv); err != nil {
 		return "", existingEnv, nil, err
 	}

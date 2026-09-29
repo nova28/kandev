@@ -17,6 +17,8 @@ export const defaultFeatureFlags = {
   claudeMidTurnSteering: false,
   needsYouInbox: false,
   agentSurvival: false,
+  codexAppServer: false,
+  agentBackgroundWork: false,
   agentctlRelaunch: false,
 } as const;
 
