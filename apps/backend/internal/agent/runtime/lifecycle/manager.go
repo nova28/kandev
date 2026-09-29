@@ -295,8 +295,12 @@ type Manager struct {
 	// executionRetiredHook, when set, receives the session ID of an execution
 	// executionStore retired for a stale agentctl generation. Wired to
 	// invalidate gateway caches (VS Code proxy, port proxy/tunnel) that must
-	// not be reused against the dead agentctl's replacement.
-	executionRetiredHook func(sessionID string)
+	// not be reused against the dead agentctl's replacement. Atomic because
+	// it is read from the generation-sweep goroutine (see
+	// SetAgentctlGeneration) concurrently with SetExecutionRetiredHook's
+	// startup-time write, which can arrive from a different goroutine before
+	// DI wiring order guarantees the write "happens before" any read.
+	executionRetiredHook atomic.Pointer[func(sessionID string)]
 
 	// managedGoCache provides the opt-in GOCACHE for host-local executions.
 	// System storage wiring installs it after settings persistence is ready.
@@ -384,25 +388,53 @@ func (m *Manager) SetAgentctlStartupConfig(startup commonconfig.AgentctlStartupC
 }
 
 // SetAgentctlGeneration records the current standalone agentctl generation
-// and immediately sweeps executionStore for executions bound to a now-stale
-// generation. Without the sweep, a relaunch only invalidates a gateway cache
-// (VS Code proxy, port proxy/tunnel) keyed on a since-retired session the
-// next time some unrelated accessor happens to touch that same execution --
-// which may be never, leaving the cache pointed at a dead server
-// indefinitely. Wired during DI as the agentctl endpoint's Subscribe callback
-// (see backendapp), so every relaunch's new generation reaches this sweep
-// without reconstruction.
+// and schedules an asynchronous sweep of executionStore for executions bound
+// to a now-stale generation. Without the sweep, a relaunch only invalidates a
+// gateway cache (VS Code proxy, port proxy/tunnel) keyed on a since-retired
+// session the next time some unrelated accessor happens to touch that same
+// execution -- which may be never, leaving the cache pointed at a dead
+// server indefinitely.
+//
+// Wired during DI as the agentctl endpoint's Subscribe callback (see
+// backendapp), so every relaunch's new generation reaches this sweep without
+// reconstruction. Endpoint.Subscribe's own contract requires observers to
+// return without blocking, calling Publish, or calling Subscribe -- a
+// synchronous sweep here would run the full retirement cascade (store sweep,
+// per-execution cleanup, gateway invalidation) under Endpoint's own mutex
+// and, during a relaunch, agentctlSupervisor's mutex too. The generation
+// itself is still recorded synchronously (a plain atomic store, safe under
+// any lock); only the sweep is deferred to its own goroutine, bounded by
+// stopCh and panic-guarded so a bug in the retirement cascade cannot crash
+// the backend from inside Publish's call stack.
 func (m *Manager) SetAgentctlGeneration(generation uint64) {
 	m.agentctlGeneration.Store(generation)
+	go m.sweepAgentctlGeneration()
+}
+
+// sweepAgentctlGeneration runs executionStore's stale-generation sweep on its
+// own goroutine. See SetAgentctlGeneration for why this must not run inline.
+func (m *Manager) sweepAgentctlGeneration() {
+	defer func() {
+		if r := recover(); r != nil {
+			m.logger.Error("recovered panic during agentctl generation sweep",
+				zap.Any("panic", r))
+		}
+	}()
+	select {
+	case <-m.stopCh:
+		return
+	default:
+	}
 	m.executionStore.SweepStaleGeneration()
 }
 
 // SetExecutionRetiredHook installs the gateway-cache invalidation hook
 // invoked with the session ID of an execution executionStore retires for a
-// stale agentctl generation. Set once during startup wiring, before agentctl
-// can observe a generation change.
+// stale agentctl generation. Safe to call concurrently with a retirement in
+// flight; set once during startup wiring, before agentctl can observe a
+// generation change.
 func (m *Manager) SetExecutionRetiredHook(hook func(sessionID string)) {
-	m.executionRetiredHook = hook
+	m.executionRetiredHook.Store(&hook)
 }
 
 // NewManager creates a new lifecycle manager.

@@ -896,7 +896,7 @@ func (m *Manager) retireStaleExecution(execution *AgentExecution) {
 		zap.String("execution_id", execution.ID),
 		zap.String("session_id", execution.SessionID),
 		zap.Uint64("generation", execution.generation))
-	if m.executionRetiredHook != nil {
-		m.executionRetiredHook(execution.SessionID)
+	if hook := m.executionRetiredHook.Load(); hook != nil {
+		(*hook)(execution.SessionID)
 	}
 }
