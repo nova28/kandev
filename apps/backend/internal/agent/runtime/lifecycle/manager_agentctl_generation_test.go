@@ -49,6 +49,39 @@ func TestManagerRetireStaleExecutionRunsHookAndCleansUp(t *testing.T) {
 	}
 }
 
+// TestSetAgentctlGenerationEagerlyRetiresStaleExecutionsWithoutAnAccessor
+// covers RV2-4: before the eager sweep, executionStore only ever retired a
+// stale-generation execution (and invoked the retired hook that invalidates
+// gateway caches) as a side effect of some other accessor -- Get,
+// GetBySessionID, List -- happening to touch that exact execution again.
+// A relaunch that bumped the generation while nothing else queried the
+// affected session left its VS Code/port proxy cache pointed at the dead
+// server indefinitely. This test bumps the generation and asserts the retire
+// hook already fired, with no accessor call in between.
+func TestSetAgentctlGenerationEagerlyRetiresStaleExecutionsWithoutAnAccessor(t *testing.T) {
+	log := newTestRegistryLogger()
+	mgr := NewManager(nil, nil, nil, nil, nil, nil, ExecutorFallbackWarn, "", log)
+
+	var retiredSessions []string
+	mgr.SetExecutionRetiredHook(func(sessionID string) {
+		retiredSessions = append(retiredSessions, sessionID)
+	})
+
+	mgr.SetAgentctlGeneration(1)
+	exec := &AgentExecution{ID: "exec-1", SessionID: "session-1", generation: 1}
+	if err := mgr.executionStore.Add(exec); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	// Relaunch: bump the generation without ever calling Get, GetBySessionID,
+	// or List for this execution again.
+	mgr.SetAgentctlGeneration(2)
+
+	if want := []string{"session-1"}; len(retiredSessions) != len(want) || retiredSessions[0] != want[0] {
+		t.Fatalf("retiredSessions = %v, want exactly one immediate retirement of session-1", retiredSessions)
+	}
+}
+
 // TestManagerSetAgentctlGenerationZeroValueDisablesRetirement pins that a
 // Manager built without ever observing a published generation (tests, or a
 // build before the endpoint subscribe callback fires) never retires

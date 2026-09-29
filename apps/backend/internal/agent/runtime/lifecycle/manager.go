@@ -383,12 +383,18 @@ func (m *Manager) SetAgentctlStartupConfig(startup commonconfig.AgentctlStartupC
 	return nil
 }
 
-// SetAgentctlGeneration records the current standalone agentctl generation.
-// Wired during DI as the agentctl endpoint's Subscribe callback (see
-// backendapp), so every relaunch's new generation reaches executionStore's
-// stale-generation check without reconstruction.
+// SetAgentctlGeneration records the current standalone agentctl generation
+// and immediately sweeps executionStore for executions bound to a now-stale
+// generation. Without the sweep, a relaunch only invalidates a gateway cache
+// (VS Code proxy, port proxy/tunnel) keyed on a since-retired session the
+// next time some unrelated accessor happens to touch that same execution --
+// which may be never, leaving the cache pointed at a dead server
+// indefinitely. Wired during DI as the agentctl endpoint's Subscribe callback
+// (see backendapp), so every relaunch's new generation reaches this sweep
+// without reconstruction.
 func (m *Manager) SetAgentctlGeneration(generation uint64) {
 	m.agentctlGeneration.Store(generation)
+	m.executionStore.SweepStaleGeneration()
 }
 
 // SetExecutionRetiredHook installs the gateway-cache invalidation hook

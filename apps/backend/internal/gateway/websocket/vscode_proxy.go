@@ -107,12 +107,15 @@ func (h *VscodeProxyHandler) HandleVscodeProxy(c *gin.Context) {
 // resolveProxy returns a cached proxy if the target hasn't changed, or creates
 // a new one. Only performs the upstream status check when no cache exists or
 // when the cached target is stale.
+//
+// The slow path (cache miss) deliberately resolves the execution and builds
+// the proxy without holding h.mu: GetExecutionBySessionID can synchronously
+// retire a generation-stale execution, whose retirement hook calls back into
+// InvalidateProxy on this same handler. Holding h.mu across that call would
+// self-deadlock -- the callback re-acquires the same, non-reentrant mutex on
+// the same goroutine. h.mu is reacquired only to install the resolved entry.
 func (h *VscodeProxyHandler) resolveProxy(c *gin.Context, sessionID string) (*httputil.ReverseProxy, error) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-
-	// Fast path: return cached proxy if available
-	if entry, ok := h.proxies[sessionID]; ok {
+	if entry, cached := h.cachedProxy(sessionID); cached {
 		h.logger.Debug("reusing cached vscode proxy",
 			zap.String("session_id", sessionID),
 			zap.String("target", entry.target))
@@ -161,7 +164,7 @@ func (h *VscodeProxyHandler) resolveProxy(c *gin.Context, sessionID string) (*ht
 
 	authToken := agentctlClient.AuthToken()
 	proxy := h.createProxy(sessionID, target, authToken)
-	h.proxies[sessionID] = &proxyEntry{proxy: proxy, target: baseURL}
+	proxy = h.installProxy(sessionID, proxy, baseURL)
 
 	h.logger.Info("created vscode proxy for session",
 		zap.String("session_id", sessionID),
@@ -169,6 +172,29 @@ func (h *VscodeProxyHandler) resolveProxy(c *gin.Context, sessionID string) (*ht
 		zap.Stringer("runtime", execution.RuntimeName),
 		zap.String("target", baseURL))
 	return proxy, nil
+}
+
+// cachedProxy returns the cached entry for sessionID, if any.
+func (h *VscodeProxyHandler) cachedProxy(sessionID string) (*proxyEntry, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	entry, ok := h.proxies[sessionID]
+	return entry, ok
+}
+
+// installProxy stores proxy as sessionID's cached entry, unless another
+// caller already installed one while this one was resolving its target -- in
+// which case the existing entry wins and the freshly built proxy is
+// discarded, so two concurrent cache-miss callers can never clobber each
+// other's entry.
+func (h *VscodeProxyHandler) installProxy(sessionID string, proxy *httputil.ReverseProxy, baseURL string) *httputil.ReverseProxy {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if entry, ok := h.proxies[sessionID]; ok {
+		return entry.proxy
+	}
+	h.proxies[sessionID] = &proxyEntry{proxy: proxy, target: baseURL}
+	return proxy
 }
 
 // createProxy builds a reverse proxy for the given target URL.

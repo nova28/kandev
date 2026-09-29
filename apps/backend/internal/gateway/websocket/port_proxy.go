@@ -220,13 +220,19 @@ func (h *PortProxyHandler) HandlePortProxy(c *gin.Context) {
 	proxy.ServeHTTP(c.Writer, c.Request)
 }
 
+// resolveProxy returns a cached proxy if one exists, or creates a new one.
+//
+// The slow path (cache miss) deliberately resolves the execution and builds
+// the proxy without holding h.mu: GetExecutionBySessionID can synchronously
+// retire a generation-stale execution, whose retirement hook calls back into
+// InvalidateSession on this same handler. Holding h.mu across that call would
+// self-deadlock -- the callback re-acquires the same, non-reentrant mutex on
+// the same goroutine (see vscode_proxy.go's resolveProxy, which has the same
+// shape). h.mu is reacquired only to install the resolved entry.
 func (h *PortProxyHandler) resolveProxy(c *gin.Context, sessionID string, port int) (*httputil.ReverseProxy, error) {
 	cacheKey := sessionID + ":" + strconv.Itoa(port)
 
-	h.mu.Lock()
-	defer h.mu.Unlock()
-
-	if entry, ok := h.proxies[cacheKey]; ok {
+	if entry, cached := h.cachedProxy(cacheKey); cached {
 		return entry.proxy, nil
 	}
 
@@ -256,7 +262,7 @@ func (h *PortProxyHandler) resolveProxy(c *gin.Context, sessionID string, port i
 	// stay on the same proxy chain instead of escaping to the host origin.
 	proxyPrefix := "/port-proxy/" + sessionID + "/" + strconv.Itoa(port)
 	proxy := h.createProxy(cacheKey, target, authToken, proxyPrefix)
-	h.proxies[cacheKey] = &portProxyEntry{proxy: proxy, target: baseURL}
+	proxy = h.installProxy(cacheKey, proxy, baseURL)
 
 	h.logger.Info("created port proxy",
 		zap.String("session_id", sessionID),
@@ -264,6 +270,28 @@ func (h *PortProxyHandler) resolveProxy(c *gin.Context, sessionID string, port i
 		zap.String("execution_id", execution.ID),
 		zap.String("target", baseURL))
 	return proxy, nil
+}
+
+// cachedProxy returns the cached entry for cacheKey, if any.
+func (h *PortProxyHandler) cachedProxy(cacheKey string) (*portProxyEntry, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	entry, ok := h.proxies[cacheKey]
+	return entry, ok
+}
+
+// installProxy stores proxy as cacheKey's cached entry, unless another caller
+// already installed one while this one was resolving its target -- in which
+// case the existing entry wins and the freshly built proxy is discarded, so
+// two concurrent cache-miss callers can never clobber each other's entry.
+func (h *PortProxyHandler) installProxy(cacheKey string, proxy *httputil.ReverseProxy, baseURL string) *httputil.ReverseProxy {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if entry, ok := h.proxies[cacheKey]; ok {
+		return entry.proxy
+	}
+	h.proxies[cacheKey] = &portProxyEntry{proxy: proxy, target: baseURL}
+	return proxy
 }
 
 func (h *PortProxyHandler) createProxy(cacheKey string, target *url.URL, authToken, proxyPrefix string) *httputil.ReverseProxy {

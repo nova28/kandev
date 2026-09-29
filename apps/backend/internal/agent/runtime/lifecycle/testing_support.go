@@ -35,3 +35,10 @@ func (ae *AgentExecution) SetMetadataForTesting(metadata map[string]interface{})
 	ae.metadata = make(map[string]interface{}, len(metadata))
 	maps.Copy(ae.metadata, metadata)
 }
+
+// SetGenerationForTesting binds a synthetic execution to a standalone
+// agentctl generation, so a dependent package's test can make it stale by
+// calling Manager.SetAgentctlGeneration with a newer value.
+func (ae *AgentExecution) SetGenerationForTesting(generation uint64) {
+	ae.generation = generation
+}
