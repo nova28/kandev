@@ -42,3 +42,14 @@ func (ae *AgentExecution) SetMetadataForTesting(metadata map[string]interface{})
 func (ae *AgentExecution) SetGenerationForTesting(generation uint64) {
 	ae.generation = generation
 }
+
+// BumpAgentctlGenerationForTesting records a new standalone agentctl
+// generation without scheduling SetAgentctlGeneration's asynchronous
+// stale-execution sweep. A test that needs an accessor (Get, GetBySessionID,
+// List) to be the first thing to observe the new generation and retire a
+// stale execution itself -- to exercise that accessor's own retirement and
+// hook-invocation path, rather than racing against the eager sweep doing it
+// first on another goroutine -- calls this instead of SetAgentctlGeneration.
+func (m *Manager) BumpAgentctlGenerationForTesting(generation uint64) {
+	m.agentctlGeneration.Store(generation)
+}

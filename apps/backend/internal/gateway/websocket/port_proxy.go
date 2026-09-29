@@ -109,6 +109,11 @@ type PortProxyHandler struct {
 
 	mu      sync.Mutex
 	proxies map[string]*portProxyEntry // key: "sessionId:port"
+	// epoch is bumped by invalidateProxy/InvalidateSession for a cache key.
+	// resolveProxy's slow path snapshots it before doing any unlocked work
+	// and installProxy refuses to cache a result built against a stale
+	// snapshot -- see installProxy.
+	epoch map[string]uint64
 }
 
 // NewPortProxyHandler creates a new port proxy handler.
@@ -125,6 +130,7 @@ func NewPortProxyHandler(lifecycleMgr *lifecycle.Manager, log *logger.Logger) *P
 		logger:           log.WithFields(zap.String("component", "port-proxy")),
 		capabilitySecret: secret,
 		proxies:          make(map[string]*portProxyEntry),
+		epoch:            make(map[string]uint64),
 	}
 }
 
@@ -229,12 +235,24 @@ func (h *PortProxyHandler) HandlePortProxy(c *gin.Context) {
 // self-deadlock -- the callback re-acquires the same, non-reentrant mutex on
 // the same goroutine (see vscode_proxy.go's resolveProxy, which has the same
 // shape). h.mu is reacquired only to install the resolved entry.
+//
+// Because that work runs unlocked, invalidateProxy/InvalidateSession can run
+// for this exact cache key while a build is in flight (a relaunch, or another
+// request hitting an upstream failure). A late install of that build's result
+// would cache a proxy that may already target a dead agentctl -- and it would
+// not self-heal, since a 401 or timeout from a merely stale target is a
+// normal HTTP response, not a transport error, so ReverseProxy.ErrorHandler
+// never runs to evict it. beginResolve snapshots the cache key's epoch before
+// the unlocked work starts; installProxy discards the result if invalidation
+// bumped the epoch in the meantime.
 func (h *PortProxyHandler) resolveProxy(c *gin.Context, sessionID string, port int) (*httputil.ReverseProxy, error) {
 	cacheKey := sessionID + ":" + strconv.Itoa(port)
 
 	if entry, cached := h.cachedProxy(cacheKey); cached {
 		return entry.proxy, nil
 	}
+
+	epoch := h.beginResolve(cacheKey)
 
 	execution, ok := h.lifecycleMgr.GetExecutionBySessionID(sessionID)
 	if !ok {
@@ -261,8 +279,15 @@ func (h *PortProxyHandler) resolveProxy(c *gin.Context, sessionID string, port i
 	// to rewrite root-absolute URLs in proxied HTML/CSS so iframe asset requests
 	// stay on the same proxy chain instead of escaping to the host origin.
 	proxyPrefix := "/port-proxy/" + sessionID + "/" + strconv.Itoa(port)
-	proxy := h.createProxy(cacheKey, target, authToken, proxyPrefix)
-	proxy = h.installProxy(cacheKey, proxy, baseURL)
+	built := h.createProxy(cacheKey, target, authToken, proxyPrefix)
+	proxy, installed := h.installProxy(cacheKey, built, baseURL, epoch)
+	if !installed {
+		h.logger.Info("discarding port proxy resolved after invalidation",
+			zap.String("session_id", sessionID),
+			zap.Int("port", port))
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "port session changed, retry"})
+		return nil, fmt.Errorf("port proxy invalidated during resolve")
+	}
 
 	h.logger.Info("created port proxy",
 		zap.String("session_id", sessionID),
@@ -280,18 +305,39 @@ func (h *PortProxyHandler) cachedProxy(cacheKey string) (*portProxyEntry, bool) 
 	return entry, ok
 }
 
-// installProxy stores proxy as cacheKey's cached entry, unless another caller
-// already installed one while this one was resolving its target -- in which
-// case the existing entry wins and the freshly built proxy is discarded, so
-// two concurrent cache-miss callers can never clobber each other's entry.
-func (h *PortProxyHandler) installProxy(cacheKey string, proxy *httputil.ReverseProxy, baseURL string) *httputil.ReverseProxy {
+// beginResolve snapshots cacheKey's current epoch before resolveProxy starts
+// its unlocked slow-path work. The snapshot is later checked by installProxy;
+// see resolveProxy for why. It always records an explicit zero entry when
+// none exists yet, since invalidateProxy/InvalidateSession are the only
+// writers that would otherwise create the key, and InvalidateSession's
+// prefix scan can only bump keys already present in the map.
+func (h *PortProxyHandler) beginResolve(cacheKey string) uint64 {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if _, ok := h.epoch[cacheKey]; !ok {
+		h.epoch[cacheKey] = 0
+	}
+	return h.epoch[cacheKey]
+}
+
+// installProxy stores proxy as cacheKey's cached entry, unless invalidation
+// bumped cacheKey's epoch since epoch was snapshotted by beginResolve --
+// meaning this build's result may already target a dead upstream, so it is
+// discarded rather than cached. When the epoch still matches and another
+// caller already installed first, that existing entry wins so two concurrent
+// cache-miss callers (no invalidation in between) never clobber each other's
+// entry.
+func (h *PortProxyHandler) installProxy(cacheKey string, proxy *httputil.ReverseProxy, baseURL string, epoch uint64) (*httputil.ReverseProxy, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.epoch[cacheKey] != epoch {
+		return nil, false
+	}
 	if entry, ok := h.proxies[cacheKey]; ok {
-		return entry.proxy
+		return entry.proxy, true
 	}
 	h.proxies[cacheKey] = &portProxyEntry{proxy: proxy, target: baseURL}
-	return proxy
+	return proxy, true
 }
 
 func (h *PortProxyHandler) createProxy(cacheKey string, target *url.URL, authToken, proxyPrefix string) *httputil.ReverseProxy {
@@ -390,13 +436,22 @@ func (h *PortProxyHandler) createProxy(cacheKey string, target *url.URL, authTok
 	return proxy
 }
 
+// invalidateProxy removes a cached proxy for cacheKey and bumps its epoch, so
+// a resolveProxy build already in flight for this cache key discards its
+// result in installProxy instead of resurrecting a proxy that may target a
+// dead upstream.
 func (h *PortProxyHandler) invalidateProxy(cacheKey string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	delete(h.proxies, cacheKey)
+	h.epoch[cacheKey]++
 }
 
-// InvalidateSession removes all cached proxies for a session.
+// InvalidateSession removes all cached proxies for a session (e.g. a relaunch
+// retiring its execution) and bumps the epoch of every cache key already seen
+// for that session, so any resolveProxy build in flight for one of its ports
+// discards its result rather than caching a proxy that may target a dead
+// upstream.
 func (h *PortProxyHandler) InvalidateSession(sessionID string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -404,6 +459,11 @@ func (h *PortProxyHandler) InvalidateSession(sessionID string) {
 	for key := range h.proxies {
 		if strings.HasPrefix(key, prefix) {
 			delete(h.proxies, key)
+		}
+	}
+	for key := range h.epoch {
+		if strings.HasPrefix(key, prefix) {
+			h.epoch[key]++
 		}
 	}
 }

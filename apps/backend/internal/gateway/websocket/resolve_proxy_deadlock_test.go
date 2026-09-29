@@ -19,12 +19,20 @@ import (
 // every request through this handler permanently. Moving the resolution work
 // outside h.mu (reacquiring only to install the resolved cache entry) breaks
 // the cycle.
+//
+// The generation bump uses BumpAgentctlGenerationForTesting rather than
+// SetAgentctlGeneration: the latter also schedules RV2-4's eager async sweep,
+// which would retire this execution (and invoke the hook) on its own
+// goroutine before the goroutine below ever calls resolveProxy, making the
+// deadlock-prevention path inside resolveProxy's own GetExecutionBySessionID
+// call vacuous. Bumping without the sweep guarantees resolveProxy's own
+// accessor call is the one that discovers staleness and retires it.
 func TestVscodeResolveProxyDoesNotDeadlockOnStaleGenerationRetirement(t *testing.T) {
 	log, _ := observedTerminalLogger(t)
 	upstream := newFakeCodeServer(t, "running")
 
 	manager := newProxyTestManager(t, log)
-	manager.SetAgentctlGeneration(1)
+	manager.BumpAgentctlGenerationForTesting(1)
 	execution := addExecutionForURL(t, manager, "sess-stale", upstream.server.URL, "", log)
 	execution.SetGenerationForTesting(1)
 
@@ -34,7 +42,7 @@ func TestVscodeResolveProxyDoesNotDeadlockOnStaleGenerationRetirement(t *testing
 	// Simulate a relaunch: the execution above is now bound to a dead
 	// generation, so the next accessor to observe it retires it and
 	// synchronously invokes the hook just installed.
-	manager.SetAgentctlGeneration(2)
+	manager.BumpAgentctlGenerationForTesting(2)
 
 	type result struct {
 		status int
@@ -66,6 +74,9 @@ func TestVscodeResolveProxyDoesNotDeadlockOnStaleGenerationRetirement(t *testing
 // PortProxyHandler counterpart of the vscode-proxy deadlock regression above:
 // the same lock-held-across-retirement shape existed byte-for-byte in
 // PortProxyHandler.resolveProxy, invalidated via InvalidateSession.
+//
+// See the vscode-proxy test above for why this uses
+// BumpAgentctlGenerationForTesting instead of SetAgentctlGeneration.
 func TestPortProxyResolveProxyDoesNotDeadlockOnStaleGenerationRetirement(t *testing.T) {
 	log, _ := observedTerminalLogger(t)
 	upstream := newFakeAgentctl(t, func(w http.ResponseWriter, _ *http.Request) {
@@ -73,7 +84,7 @@ func TestPortProxyResolveProxyDoesNotDeadlockOnStaleGenerationRetirement(t *test
 	})
 
 	manager := newProxyTestManager(t, log)
-	manager.SetAgentctlGeneration(1)
+	manager.BumpAgentctlGenerationForTesting(1)
 	execution := addExecutionForURL(t, manager, "sess-stale", upstream.server.URL, "", log)
 	execution.SetGenerationForTesting(1)
 
@@ -83,7 +94,7 @@ func TestPortProxyResolveProxyDoesNotDeadlockOnStaleGenerationRetirement(t *test
 	// Simulate a relaunch: the execution above is now bound to a dead
 	// generation, so the next accessor to observe it retires it and
 	// synchronously invokes the hook just installed.
-	manager.SetAgentctlGeneration(2)
+	manager.BumpAgentctlGenerationForTesting(2)
 
 	type result struct {
 		status int

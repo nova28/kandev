@@ -31,6 +31,11 @@ type VscodeProxyHandler struct {
 	// Cache proxies per session to avoid re-creation
 	mu      sync.Mutex
 	proxies map[string]*proxyEntry
+	// epoch is bumped by InvalidateProxy for a session. resolveProxy's slow
+	// path snapshots it before doing any unlocked work and installProxy
+	// refuses to cache a result built against a stale snapshot -- see
+	// installProxy.
+	epoch map[string]uint64
 }
 
 // NewVscodeProxyHandler creates a new VS Code proxy handler.
@@ -39,6 +44,7 @@ func NewVscodeProxyHandler(lifecycleMgr *lifecycle.Manager, log *logger.Logger) 
 		lifecycleMgr: lifecycleMgr,
 		logger:       log.WithFields(zap.String("component", "vscode-proxy")),
 		proxies:      make(map[string]*proxyEntry),
+		epoch:        make(map[string]uint64),
 	}
 }
 
@@ -114,6 +120,16 @@ func (h *VscodeProxyHandler) HandleVscodeProxy(c *gin.Context) {
 // InvalidateProxy on this same handler. Holding h.mu across that call would
 // self-deadlock -- the callback re-acquires the same, non-reentrant mutex on
 // the same goroutine. h.mu is reacquired only to install the resolved entry.
+//
+// Because that work runs unlocked, InvalidateProxy can run for this exact
+// session while a build is in flight (a relaunch, or another request hitting
+// an upstream failure). A late install of that build's result would cache a
+// proxy that may already target a dead agentctl -- and it would not
+// self-heal, since a 401 or timeout from a merely stale target is a normal
+// HTTP response, not a transport error, so ReverseProxy.ErrorHandler never
+// runs to evict it. beginResolve snapshots the session's epoch before the
+// unlocked work starts; installProxy discards the result if InvalidateProxy
+// bumped the epoch in the meantime.
 func (h *VscodeProxyHandler) resolveProxy(c *gin.Context, sessionID string) (*httputil.ReverseProxy, error) {
 	if entry, cached := h.cachedProxy(sessionID); cached {
 		h.logger.Debug("reusing cached vscode proxy",
@@ -121,6 +137,8 @@ func (h *VscodeProxyHandler) resolveProxy(c *gin.Context, sessionID string) (*ht
 			zap.String("target", entry.target))
 		return entry.proxy, nil
 	}
+
+	epoch := h.beginResolve(sessionID)
 
 	// Slow path: resolve upstream target
 	execution, ok := h.lifecycleMgr.GetExecutionBySessionID(sessionID)
@@ -163,8 +181,14 @@ func (h *VscodeProxyHandler) resolveProxy(c *gin.Context, sessionID string) (*ht
 	}
 
 	authToken := agentctlClient.AuthToken()
-	proxy := h.createProxy(sessionID, target, authToken)
-	proxy = h.installProxy(sessionID, proxy, baseURL)
+	built := h.createProxy(sessionID, target, authToken)
+	proxy, installed := h.installProxy(sessionID, built, baseURL, epoch)
+	if !installed {
+		h.logger.Info("discarding vscode proxy resolved after invalidation",
+			zap.String("session_id", sessionID))
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "vscode session changed, retry"})
+		return nil, fmt.Errorf("vscode proxy invalidated during resolve")
+	}
 
 	h.logger.Info("created vscode proxy for session",
 		zap.String("session_id", sessionID),
@@ -182,19 +206,39 @@ func (h *VscodeProxyHandler) cachedProxy(sessionID string) (*proxyEntry, bool) {
 	return entry, ok
 }
 
-// installProxy stores proxy as sessionID's cached entry, unless another
-// caller already installed one while this one was resolving its target -- in
-// which case the existing entry wins and the freshly built proxy is
-// discarded, so two concurrent cache-miss callers can never clobber each
-// other's entry.
-func (h *VscodeProxyHandler) installProxy(sessionID string, proxy *httputil.ReverseProxy, baseURL string) *httputil.ReverseProxy {
+// beginResolve snapshots sessionID's current epoch before resolveProxy starts
+// its unlocked slow-path work. The snapshot is later checked by installProxy;
+// see resolveProxy for why. It always records an explicit zero entry when
+// none exists yet, since InvalidateProxy is the only writer that would
+// otherwise create the key, and a session that has never resolved must still
+// have a key for a same-session invalidation to find and bump.
+func (h *VscodeProxyHandler) beginResolve(sessionID string) uint64 {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if _, ok := h.epoch[sessionID]; !ok {
+		h.epoch[sessionID] = 0
+	}
+	return h.epoch[sessionID]
+}
+
+// installProxy stores proxy as sessionID's cached entry, unless
+// InvalidateProxy bumped sessionID's epoch since epoch was snapshotted by
+// beginResolve -- meaning this build's result may already target a dead
+// upstream, so it is discarded rather than cached. When the epoch still
+// matches and another caller already installed first, that existing entry
+// wins so two concurrent cache-miss callers (no invalidation in between)
+// never clobber each other's entry.
+func (h *VscodeProxyHandler) installProxy(sessionID string, proxy *httputil.ReverseProxy, baseURL string, epoch uint64) (*httputil.ReverseProxy, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.epoch[sessionID] != epoch {
+		return nil, false
+	}
 	if entry, ok := h.proxies[sessionID]; ok {
-		return entry.proxy
+		return entry.proxy, true
 	}
 	h.proxies[sessionID] = &proxyEntry{proxy: proxy, target: baseURL}
-	return proxy
+	return proxy, true
 }
 
 // createProxy builds a reverse proxy for the given target URL.
@@ -241,9 +285,14 @@ func (h *VscodeProxyHandler) createProxy(sessionID string, target *url.URL, auth
 	return proxy
 }
 
-// InvalidateProxy removes a cached proxy for a session (e.g., when VS Code stops).
+// InvalidateProxy removes a cached proxy for a session (e.g., when VS Code
+// stops or a relaunch retires its execution) and bumps its epoch, so a
+// resolveProxy build already in flight for this session discards its result
+// in installProxy instead of resurrecting a proxy that may target a dead
+// upstream.
 func (h *VscodeProxyHandler) InvalidateProxy(sessionID string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	delete(h.proxies, sessionID)
+	h.epoch[sessionID]++
 }
