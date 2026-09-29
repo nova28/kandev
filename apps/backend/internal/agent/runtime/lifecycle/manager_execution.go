@@ -877,6 +877,11 @@ func (m *Manager) registerAndPublishCreatedExecution(
 				return existing, nil
 			}
 		}
+		// The store refused an execution bound to a superseded agentctl
+		// generation; the instance just spawned is unreachable through it.
+		if errors.Is(err, ErrExecutionGenerationStale) {
+			m.rollbackRacedExecution(ctx, inputs.runtime, runtimeInstance, execution)
+		}
 		return nil, fmt.Errorf("failed to register execution: %w", err)
 	}
 	isKubernetes := execution.RuntimeName == agentruntime.RuntimeKubernetes

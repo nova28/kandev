@@ -1920,6 +1920,9 @@ func (m *Manager) registerAndPublishExecution(
 			m.rollbackRacedExecution(ctx, rt, execInstance, execution)
 			return fmt.Errorf("%w: session %q (race resolved during register)", ErrAgentAlreadyRunning, sessionID)
 		}
+		if errors.Is(addErr, ErrExecutionGenerationStale) {
+			m.rollbackRacedExecution(ctx, rt, execInstance, execution)
+		}
 		return fmt.Errorf("failed to register execution: %w", addErr)
 	}
 	// This execution is durably in the store as of the Add above, and it got
