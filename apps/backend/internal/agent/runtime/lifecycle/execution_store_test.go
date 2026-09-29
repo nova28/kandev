@@ -262,6 +262,130 @@ func TestExecutionStore_ClaimPromptActivityRequiresCurrentIdentity(t *testing.T)
 	}
 }
 
+// TestExecutionStore_OwnsPromptGenerationRetiresStaleExecution covers RV2-7:
+// OwnsPromptGeneration used to read the executions map directly, bypassing
+// the staleLocked check every other accessor (Get, GetBySessionID, List)
+// honors, so a generation-stale execution -- bound to a dead standalone
+// agentctl process -- could still win a prompt-ownership claim before some
+// unrelated accessor happened to retire it first. It must now be retired and
+// treated as not owning anything, like every other accessor.
+func TestExecutionStore_OwnsPromptGenerationRetiresStaleExecution(t *testing.T) {
+	generation := uint64(1)
+	var retired []string
+	store := NewExecutionStore(func() uint64 { return generation }, func(e *AgentExecution) {
+		retired = append(retired, e.ID)
+	})
+	exec := &AgentExecution{ID: "exec-1", SessionID: "session-1", generation: 1, promptGeneration: 4}
+	if err := store.Add(exec); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	if !store.OwnsPromptGeneration(exec.SessionID, exec.ID, 4) {
+		t.Fatal("current generation: expected ownership")
+	}
+
+	generation = 2 // simulate a relaunch: exec is now bound to a dead generation
+	if store.OwnsPromptGeneration(exec.SessionID, exec.ID, 4) {
+		t.Fatal("stale execution must not win a prompt-ownership claim")
+	}
+	if want := []string{"exec-1"}; len(retired) != len(want) || retired[0] != want[0] {
+		t.Fatalf("retired = %v, want exactly one retirement of exec-1", retired)
+	}
+	if _, ok := store.Get(exec.ID); ok {
+		t.Fatal("stale execution should have been retired from the store")
+	}
+}
+
+// TestExecutionStore_OwnsPromptActivityRetiresStaleExecution is RV2-7's
+// regression for OwnsPromptActivity: same stale-generation bypass, different
+// accessor.
+func TestExecutionStore_OwnsPromptActivityRetiresStaleExecution(t *testing.T) {
+	generation := uint64(1)
+	var retired []string
+	store := NewExecutionStore(func() uint64 { return generation }, func(e *AgentExecution) {
+		retired = append(retired, e.ID)
+	})
+	exec := &AgentExecution{ID: "exec-1", SessionID: "session-1", generation: 1, promptGeneration: 4}
+	if err := store.Add(exec); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	exec.armPromptActivity()
+
+	if !store.OwnsPromptActivity(exec.SessionID, exec.ID, 4, 1) {
+		t.Fatal("current generation: expected ownership")
+	}
+
+	generation = 2
+	if store.OwnsPromptActivity(exec.SessionID, exec.ID, 4, 1) {
+		t.Fatal("stale execution must not win a prompt-activity claim")
+	}
+	if want := []string{"exec-1"}; len(retired) != len(want) || retired[0] != want[0] {
+		t.Fatalf("retired = %v, want exactly one retirement of exec-1", retired)
+	}
+}
+
+// TestExecutionStore_ClaimPromptActivityRetiresStaleExecution is RV2-7's
+// regression for ClaimPromptActivity: a stale execution must be reported as
+// ErrExecutionNotFound (and retired), never handed back for a caller to act
+// on as if it were live.
+func TestExecutionStore_ClaimPromptActivityRetiresStaleExecution(t *testing.T) {
+	generation := uint64(1)
+	var retired []string
+	store := NewExecutionStore(func() uint64 { return generation }, func(e *AgentExecution) {
+		retired = append(retired, e.ID)
+	})
+	exec := &AgentExecution{ID: "exec-1", SessionID: "session-1", generation: 1, promptGeneration: 4}
+	if err := store.Add(exec); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	exec.armPromptActivity()
+
+	if _, err := store.ClaimPromptActivity(exec.SessionID, exec.ID, 4, 1); err != nil {
+		t.Fatalf("ClaimPromptActivity at current generation: %v", err)
+	}
+
+	generation = 2
+	if _, err := store.ClaimPromptActivity(exec.SessionID, exec.ID, 4, 1); !errors.Is(err, ErrExecutionNotFound) {
+		t.Fatalf("ClaimPromptActivity for stale execution = %v, want ErrExecutionNotFound", err)
+	}
+	if want := []string{"exec-1"}; len(retired) != len(want) || retired[0] != want[0] {
+		t.Fatalf("retired = %v, want exactly one retirement of exec-1", retired)
+	}
+}
+
+// TestExecutionStore_ActivePromptGenerationRetiresStaleExecution is RV2-7's
+// regression for ActivePromptGeneration: a steer must not reattach to a
+// dispatched-in-flight generation belonging to a dead standalone agentctl
+// process.
+func TestExecutionStore_ActivePromptGenerationRetiresStaleExecution(t *testing.T) {
+	generation := uint64(1)
+	var retired []string
+	store := NewExecutionStore(func() uint64 { return generation }, func(e *AgentExecution) {
+		retired = append(retired, e.ID)
+	})
+	exec := &AgentExecution{ID: "exec-1", SessionID: "session-1", generation: 1}
+	if err := store.Add(exec); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	gen, err := store.BeginPrompt(exec.ID)
+	if err != nil {
+		t.Fatalf("BeginPrompt: %v", err)
+	}
+	store.MarkPromptDispatched(exec.ID, gen)
+
+	if got := store.ActivePromptGeneration(exec.ID); got != gen {
+		t.Fatalf("current generation: want %d, got %d", gen, got)
+	}
+
+	generation = 2
+	if got := store.ActivePromptGeneration(exec.ID); got != 0 {
+		t.Fatalf("stale execution: want 0, got %d", got)
+	}
+	if want := []string{"exec-1"}; len(retired) != len(want) || retired[0] != want[0] {
+		t.Fatalf("retired = %v, want exactly one retirement of exec-1", retired)
+	}
+}
+
 // TestExecutionStore_ListsExecutionsForTask covers
 // @covers AC-TASKS-TASK-STOP-REACHABILITY-001.1: the registry-only lookup a
 // task-scoped stop uses to recover a session whose database row is terminal

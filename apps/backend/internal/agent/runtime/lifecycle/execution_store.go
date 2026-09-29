@@ -220,78 +220,124 @@ func (s *ExecutionStore) GetBySessionID(sessionID string) (*AgentExecution, bool
 }
 
 // OwnsPromptGeneration reports whether executionID and generation still own
-// sessionID's active lifecycle prompt.
+// sessionID's active lifecycle prompt. A generation-stale execution (bound to
+// a dead standalone agentctl process) never owns anything: it is retired here
+// like any other accessor, per this store's stale-generation-visibility
+// contract, rather than being allowed to win an ownership check before some
+// other accessor happens to touch it first.
 func (s *ExecutionStore) OwnsPromptGeneration(sessionID, executionID string, generation uint64) bool {
+	current := s.currentGeneration()
 	s.mu.RLock()
-	defer s.mu.RUnlock()
-
 	currentExecutionID, exists := s.bySession[sessionID]
 	if !exists || currentExecutionID != executionID {
+		s.mu.RUnlock()
 		return false
 	}
 	execution, exists := s.executions[currentExecutionID]
-	return exists && generation != 0 && execution.promptGeneration == generation
+	if !exists {
+		s.mu.RUnlock()
+		return false
+	}
+	stale := s.staleLocked(execution, current)
+	owns := !stale && generation != 0 && execution.promptGeneration == generation
+	s.mu.RUnlock()
+	if stale {
+		s.retireStale(execution)
+	}
+	return owns
 }
 
 func (s *ExecutionStore) ownsActivePromptGeneration(
 	sessionID, executionID string,
 	generation uint64,
 ) bool {
+	current := s.currentGeneration()
 	s.mu.RLock()
-	defer s.mu.RUnlock()
-
 	currentExecutionID, exists := s.bySession[sessionID]
 	if !exists || currentExecutionID != executionID {
+		s.mu.RUnlock()
 		return false
 	}
 	execution, exists := s.executions[currentExecutionID]
-	return exists && generation != 0 &&
+	if !exists {
+		s.mu.RUnlock()
+		return false
+	}
+	stale := s.staleLocked(execution, current)
+	owns := !stale && generation != 0 &&
 		execution.promptGeneration == generation &&
 		execution.dispatchedPromptGeneration == generation &&
 		execution.promptCompletionGeneration != generation
+	s.mu.RUnlock()
+	if stale {
+		s.retireStale(execution)
+	}
+	return owns
 }
 
 // OwnsPromptActivity reports whether the execution still owns the prompt and
-// its activity has not changed since the watchdog captured its snapshot.
+// its activity has not changed since the watchdog captured its snapshot. See
+// OwnsPromptGeneration for why a stale execution is retired here rather than
+// allowed to win the check.
 func (s *ExecutionStore) OwnsPromptActivity(
 	sessionID, executionID string,
 	generation, activityEpoch uint64,
 ) bool {
+	current := s.currentGeneration()
 	s.mu.RLock()
-	defer s.mu.RUnlock()
-
 	currentExecutionID, exists := s.bySession[sessionID]
 	if !exists || currentExecutionID != executionID {
+		s.mu.RUnlock()
 		return false
 	}
 	execution, exists := s.executions[currentExecutionID]
-	if !exists || generation == 0 || activityEpoch == 0 || execution.promptGeneration != generation {
+	if !exists {
+		s.mu.RUnlock()
 		return false
 	}
-	return execution.promptActivityEpochSnapshot() == activityEpoch
+	stale := s.staleLocked(execution, current)
+	owns := !stale && generation != 0 && activityEpoch != 0 &&
+		execution.promptGeneration == generation &&
+		execution.promptActivityEpochSnapshot() == activityEpoch
+	s.mu.RUnlock()
+	if stale {
+		s.retireStale(execution)
+	}
+	return owns
 }
 
 // ClaimPromptActivity validates a captured prompt identity while the store
 // lock is held and returns that exact execution for a lifecycle operation.
 // Callers must use the returned execution instead of looking it up by session
 // again, because a session can acquire a replacement execution while the
-// operation waits for the agent to settle.
+// operation waits for the agent to settle. A generation-stale execution is
+// retired and reported as not-found, consistent with every other accessor's
+// stale-generation handling.
 func (s *ExecutionStore) ClaimPromptActivity(
 	sessionID, executionID string,
 	generation, activityEpoch uint64,
 ) (*AgentExecution, error) {
+	current := s.currentGeneration()
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	currentExecutionID, exists := s.bySession[sessionID]
 	if !exists {
+		s.mu.Unlock()
 		return nil, ErrExecutionNotFound
 	}
 	execution, exists := s.executions[currentExecutionID]
 	if !exists {
+		s.mu.Unlock()
 		return nil, ErrExecutionNotFound
 	}
-	if currentExecutionID != executionID || generation == 0 || activityEpoch == 0 || execution.promptGeneration != generation || execution.promptActivityEpochSnapshot() != activityEpoch {
+	stale := s.staleLocked(execution, current)
+	notOwned := currentExecutionID != executionID || generation == 0 || activityEpoch == 0 ||
+		execution.promptGeneration != generation || execution.promptActivityEpochSnapshot() != activityEpoch
+	s.mu.Unlock()
+	if stale {
+		s.retireStale(execution)
+		return nil, ErrExecutionNotFound
+	}
+	if notOwned {
 		return nil, ErrPromptActivityNotOwned
 	}
 	return execution, nil
@@ -304,17 +350,24 @@ func (s *ExecutionStore) ClaimPromptActivity(
 // 0 for a generation that is only admitted (not yet dispatched — its buffers are
 // mid-reset) or already completed, so a steer never overtakes an about-to-start
 // turn or attaches to a finished one; those cases fall back to an ordinary prompt.
+// It also returns 0 for a generation-stale execution, retiring it like every
+// other accessor.
 func (s *ExecutionStore) ActivePromptGeneration(executionID string) uint64 {
+	current := s.currentGeneration()
 	s.mu.RLock()
-	defer s.mu.RUnlock()
-
 	execution, exists := s.executions[executionID]
 	if !exists {
+		s.mu.RUnlock()
 		return 0
 	}
+	stale := s.staleLocked(execution, current)
 	gen := execution.promptGeneration
-	if gen == 0 || execution.dispatchedPromptGeneration != gen || execution.promptCompletionGeneration == gen {
-		return 0
+	if stale || gen == 0 || execution.dispatchedPromptGeneration != gen || execution.promptCompletionGeneration == gen {
+		gen = 0
+	}
+	s.mu.RUnlock()
+	if stale {
+		s.retireStale(execution)
 	}
 	return gen
 }
@@ -402,24 +455,46 @@ func (s *ExecutionStore) GetByContainerID(containerID string) (*AgentExecution, 
 	return s.staleGet(executionID)
 }
 
-// List returns all tracked agent executions.
-func (s *ExecutionStore) List() []*AgentExecution {
-	current := s.currentGeneration()
+// staleAndLive splits the tracked executions into live entries and entries
+// stale for the given generation, holding the read lock only long enough to
+// snapshot the map -- retirement itself always runs after the lock is
+// released (see retireStale's own doc).
+func (s *ExecutionStore) staleAndLive(current uint64) (live, stale []*AgentExecution) {
 	s.mu.RLock()
-	result := make([]*AgentExecution, 0, len(s.executions))
-	var stale []*AgentExecution
+	defer s.mu.RUnlock()
+	live = make([]*AgentExecution, 0, len(s.executions))
 	for _, execution := range s.executions {
 		if s.staleLocked(execution, current) {
 			stale = append(stale, execution)
 			continue
 		}
-		result = append(result, execution)
+		live = append(live, execution)
 	}
-	s.mu.RUnlock()
+	return live, stale
+}
+
+// List returns all tracked agent executions, retiring any stale one it
+// encounters along the way.
+func (s *ExecutionStore) List() []*AgentExecution {
+	live, stale := s.staleAndLive(s.currentGeneration())
 	for _, execution := range stale {
 		s.retireStale(execution)
 	}
-	return result
+	return live
+}
+
+// SweepStaleGeneration retires every execution bound to a generation older
+// than current, invoking the retire callback for each. Unlike List, it does
+// not build or return the live set: it exists purely for the side effect of
+// eager retirement, called by SetAgentctlGeneration so a relaunch's
+// gateway-cache invalidation (VS Code proxy, port proxy/tunnel) runs at the
+// moment the new generation is observed rather than waiting for some later,
+// unrelated accessor to happen to touch the same stale execution.
+func (s *ExecutionStore) SweepStaleGeneration() {
+	_, stale := s.staleAndLive(s.currentGeneration())
+	for _, execution := range stale {
+		s.retireStale(execution)
+	}
 }
 
 // UpdateStatus updates the status of an agent execution.
