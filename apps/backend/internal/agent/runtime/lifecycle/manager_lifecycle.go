@@ -351,7 +351,7 @@ func (m *Manager) Start(ctx context.Context) error {
 				startup.Advance(ctx, startup.StepSessionsRecovery, 1)
 				continue
 			}
-			m.setRuntimeInterest(execution.SessionID, true)
+			m.setRuntimeInterest(execution.SessionID, execution.ID, true)
 			recoveryOutcome.retrackedCount++
 			// AC-EXECUTORS-SURVIVAL-003.1: this execution is durably in the
 			// store as of the Add above, so its session is re-tracked from
@@ -879,7 +879,7 @@ func (m *Manager) RemoveExecution(executionID string) {
 func (m *Manager) runExecutionCleanup(execution *AgentExecution) {
 	m.closeStreamCoalescer(execution)
 	m.cleanupPassthroughMCPConfig(execution)
-	m.setRuntimeInterest(execution.SessionID, false)
+	m.setRuntimeInterest(execution.SessionID, execution.ID, false)
 }
 
 // retireStaleExecution is executionStore's retire callback: it runs outside

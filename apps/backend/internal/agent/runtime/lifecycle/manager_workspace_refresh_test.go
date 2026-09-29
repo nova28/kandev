@@ -45,7 +45,7 @@ func TestFinishExecutionWorkspaceActivityRefreshesBeforePausingRuntime(t *testin
 		t.Fatalf("add execution: %v", err)
 	}
 
-	mgr.setRuntimeInterest("s1", true)
+	mgr.setRuntimeInterest("s1", "exec-s1", true)
 	select {
 	case got := <-events:
 		if got != "/api/v1/workspace/poll-mode:slow" {

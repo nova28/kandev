@@ -125,11 +125,11 @@ func (m *Manager) PromptAgentWithDispatchCallback(ctx context.Context, execution
 	}
 	key := executionActivityKey(executionID)
 	m.trackActivity(key, lease)
-	m.setRuntimeInterest(execution.SessionID, true)
+	m.setRuntimeInterest(execution.SessionID, execution.ID, true)
 	operationRelease, err := execution.acquireContextResetOperation(ctx)
 	if err != nil {
 		m.releaseActivity(key)
-		m.setRuntimeInterest(execution.SessionID, false)
+		m.setRuntimeInterest(execution.SessionID, execution.ID, false)
 		return nil, err
 	}
 	defer operationRelease()
@@ -137,7 +137,7 @@ func (m *Manager) PromptAgentWithDispatchCallback(ctx context.Context, execution
 	if err != nil || !dispatchOnly {
 		m.releaseActivity(key)
 		if err != nil {
-			m.setRuntimeInterest(execution.SessionID, false)
+			m.setRuntimeInterest(execution.SessionID, execution.ID, false)
 		}
 	}
 	return result, err
@@ -158,11 +158,11 @@ func (m *Manager) SteerAgentWithDispatchCallback(ctx context.Context, executionI
 	}
 	key := executionActivityKey(executionID)
 	m.trackActivity(key, lease)
-	m.setRuntimeInterest(execution.SessionID, true)
+	m.setRuntimeInterest(execution.SessionID, execution.ID, true)
 	operationRelease, err := execution.acquireContextResetOperation(ctx)
 	if err != nil {
 		m.releaseActivity(key)
-		m.setRuntimeInterest(execution.SessionID, false)
+		m.setRuntimeInterest(execution.SessionID, execution.ID, false)
 		return nil, err
 	}
 	defer operationRelease()
@@ -170,7 +170,7 @@ func (m *Manager) SteerAgentWithDispatchCallback(ctx context.Context, executionI
 	if err != nil || !dispatchOnly {
 		m.releaseActivity(key)
 		if err != nil {
-			m.setRuntimeInterest(execution.SessionID, false)
+			m.setRuntimeInterest(execution.SessionID, execution.ID, false)
 		}
 	}
 	return result, err
@@ -2095,7 +2095,7 @@ func (m *Manager) markBootReadyForStartup(
 			m.finalWorkspaceRefresh(execution, "startup_grace")
 		},
 		func(execution *AgentExecution) {
-			m.setRuntimeInterest(execution.SessionID, false)
+			m.setRuntimeInterest(execution.SessionID, execution.ID, false)
 			m.releaseActivity(executionActivityKey(execution.ID))
 		},
 	)

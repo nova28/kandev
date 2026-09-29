@@ -242,7 +242,7 @@ func TestManager_CleanupStaleExecution_ReleasesAgentctlLockBeforeRemove(t *testi
 	// Runtime interest makes RemoveExecution publish the transition to paused.
 	// The cleanup path must detach the client before that transition attempts to
 	// acquire the client read lock.
-	mgr.pollAggregator.HandleRuntimeInterest(execution.SessionID, true)
+	mgr.pollAggregator.HandleRuntimeInterest(execution.SessionID, execution.ID, true)
 	select {
 	case <-modes:
 	case <-time.After(2 * time.Second):

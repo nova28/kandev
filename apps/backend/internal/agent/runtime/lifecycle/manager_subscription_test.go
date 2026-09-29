@@ -143,7 +143,7 @@ func TestAggregator_RuntimeInterestKeepsSlowModeWithoutUISubscription(t *testing
 
 	// An active execution must keep workspace polling alive even when the
 	// browser has no session subscription for it.
-	mgr.pollAggregator.HandleRuntimeInterest("s1", true)
+	mgr.pollAggregator.HandleRuntimeInterest("s1", "exec-s1", true)
 	mgr.pollAggregator.HandleSessionMode("s1", WorkspacePollModePaused)
 
 	mgr.pollAggregator.mu.Lock()
@@ -163,7 +163,7 @@ func TestAggregator_RuntimeInterestDoesNotOverrideFocusedSession(t *testing.T) {
 	mgr := newTestManagerForAggregator(t)
 	addExecution(mgr, "s1", "/tmp/ws1")
 
-	mgr.pollAggregator.HandleRuntimeInterest("s1", true)
+	mgr.pollAggregator.HandleRuntimeInterest("s1", "exec-s1", true)
 	mgr.pollAggregator.HandleSessionMode("s1", WorkspacePollModeFast)
 
 	mgr.pollAggregator.mu.Lock()
@@ -187,8 +187,8 @@ func TestAggregator_RuntimeInterestRemovalYieldsPaused(t *testing.T) {
 	mgr := newTestManagerForAggregator(t)
 	addExecution(mgr, "s1", "/tmp/ws1")
 
-	mgr.pollAggregator.HandleRuntimeInterest("s1", true)
-	mgr.pollAggregator.HandleRuntimeInterest("s1", false)
+	mgr.pollAggregator.HandleRuntimeInterest("s1", "exec-s1", true)
+	mgr.pollAggregator.HandleRuntimeInterest("s1", "exec-s1", false)
 
 	mgr.pollAggregator.mu.Lock()
 	_, hasLastPushed := mgr.pollAggregator.lastPushed["/tmp/ws1"]
@@ -201,6 +201,42 @@ func TestAggregator_RuntimeInterestRemovalYieldsPaused(t *testing.T) {
 	}
 	if runtimeEntries != 0 || workspaceEntries != 0 {
 		t.Errorf("runtime indexes not cleaned up: sessions=%d workspaces=%d", runtimeEntries, workspaceEntries)
+	}
+}
+
+// TestAggregator_StaleExecutionCleanupIgnoresReplacementSession covers RV2-6:
+// ExecutionStore.retireStale deletes a stale-generation execution and then
+// invokes the retire callback outside the store lock (see execution_store.go
+// retireStale). A replacement execution can register for the same session ID
+// in that gap. The stale execution's own cleanup call -- carrying the
+// retired execution's ID, not the replacement's -- must not clear runtime
+// interest that the replacement already established for itself.
+func TestAggregator_StaleExecutionCleanupIgnoresReplacementSession(t *testing.T) {
+	mgr := newTestManagerForAggregator(t)
+	addExecution(mgr, "s1", "/tmp/ws1") // registers exec-s1
+	mgr.pollAggregator.HandleRuntimeInterest("s1", "exec-s1", true)
+
+	// Simulate a relaunch: the store already retired exec-s1 (removed from
+	// bySession) and a replacement execution has registered for the same
+	// session before the retirement's own cleanup callback runs.
+	mgr.executionStore.Remove("exec-s1")
+	if err := mgr.executionStore.Add(&AgentExecution{
+		ID: "exec-s1-replacement", SessionID: "s1", WorkspacePath: "/tmp/ws1",
+	}); err != nil {
+		t.Fatalf("add replacement: %v", err)
+	}
+	mgr.pollAggregator.HandleRuntimeInterest("s1", "exec-s1-replacement", true)
+
+	// The stale retirement's cleanup callback fires late, still carrying the
+	// original (now-retired) execution's ID.
+	mgr.pollAggregator.HandleRuntimeInterest("s1", "exec-s1", false)
+
+	mgr.pollAggregator.mu.Lock()
+	_, stillInterested := mgr.pollAggregator.runtimeSessions["s1"]
+	mgr.pollAggregator.mu.Unlock()
+
+	if !stillInterested {
+		t.Error("stale execution's cleanup callback cleared runtime interest for the replacement execution")
 	}
 }
 
@@ -234,7 +270,7 @@ func TestAggregator_RuntimeInterestRemovalDeliversPaused(t *testing.T) {
 		t.Fatalf("add execution: %v", err)
 	}
 
-	mgr.pollAggregator.HandleRuntimeInterest("s1", true)
+	mgr.pollAggregator.HandleRuntimeInterest("s1", "exec-s1", true)
 	select {
 	case got := <-modes:
 		if got != string(WorkspacePollModeSlow) {
@@ -244,7 +280,7 @@ func TestAggregator_RuntimeInterestRemovalDeliversPaused(t *testing.T) {
 		t.Fatal("timed out waiting for runtime poll mode")
 	}
 
-	mgr.pollAggregator.HandleRuntimeInterest("s1", false)
+	mgr.pollAggregator.HandleRuntimeInterest("s1", "exec-s1", false)
 	select {
 	case got := <-modes:
 		if got != string(WorkspacePollModePaused) {
@@ -288,11 +324,11 @@ func TestAggregator_FailedPausedPushIsRetriedOnUnchangedContribution(t *testing.
 	mgr := newTestManagerForAggregator(t)
 	addExecutionWithClient(t, mgr, "s1", "/tmp/ws1", srv.URL)
 
-	mgr.pollAggregator.HandleRuntimeInterest("s1", true)
+	mgr.pollAggregator.HandleRuntimeInterest("s1", "exec-s1", true)
 	if got := <-modes; got != string(WorkspacePollModeSlow) {
 		t.Fatalf("initial runtime mode = %q, want slow", got)
 	}
-	mgr.pollAggregator.HandleRuntimeInterest("s1", false)
+	mgr.pollAggregator.HandleRuntimeInterest("s1", "exec-s1", false)
 	if got := <-modes; got != string(WorkspacePollModePaused) {
 		t.Fatalf("first paused mode = %q, want paused", got)
 	}
@@ -315,7 +351,7 @@ func TestAggregator_FailedPausedPushIsRetriedOnUnchangedContribution(t *testing.
 	if !dirty {
 		t.Fatal("first paused RPC did not record a dirty retry state")
 	}
-	mgr.pollAggregator.HandleRuntimeInterest("s1", false)
+	mgr.pollAggregator.HandleRuntimeInterest("s1", "exec-s1", false)
 	if got := <-modes; got != string(WorkspacePollModePaused) {
 		t.Fatalf("retried paused mode = %q, want paused", got)
 	}
@@ -330,7 +366,7 @@ func TestAggregator_FailedPausedPushIsRetriedOnUnchangedContribution(t *testing.
 func TestAggregator_FlushSessionMode_PushesRuntimeBaselineWithoutCachedUIState(t *testing.T) {
 	mgr := newTestManagerForAggregator(t)
 	addExecution(mgr, "s1", "/tmp/ws1")
-	mgr.pollAggregator.HandleRuntimeInterest("s1", true)
+	mgr.pollAggregator.HandleRuntimeInterest("s1", "exec-s1", true)
 
 	// Simulate the first push being lost before agentctl was ready. Flush must
 	// still force the runtime baseline even though no UI mode was cached.

@@ -1163,7 +1163,7 @@ func (m *Manager) publishCreatedExecution(
 	executionID string,
 	taskID string,
 ) error {
-	m.setRuntimeInterest(execution.SessionID, true)
+	m.setRuntimeInterest(execution.SessionID, execution.ID, true)
 
 	// Persist agentctl auth token only after the execution is tracked, so a
 	// race-lost rollback never leaves an orphaned secret in the store.

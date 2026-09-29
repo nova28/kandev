@@ -46,5 +46,5 @@ func (m *Manager) finishExecutionWorkspaceActivity(execution *AgentExecution, tr
 	}
 	m.finalWorkspaceRefresh(execution, trigger)
 	m.releaseActivity(executionActivityKey(execution.ID))
-	m.setRuntimeInterest(execution.SessionID, false)
+	m.setRuntimeInterest(execution.SessionID, execution.ID, false)
 }

@@ -1955,7 +1955,7 @@ func (m *Manager) registerAndPublishExecution(
 		}
 		return err
 	}
-	m.setRuntimeInterest(execution.SessionID, true)
+	m.setRuntimeInterest(execution.SessionID, execution.ID, true)
 
 	if !isKubernetes {
 		if err := m.persistRuntimeSecrets(ctx, execInstance, execution); err != nil {

@@ -145,9 +145,18 @@ func (a *workspacePollAggregator) HandleSessionMode(sessionID string, mode Works
 // purposes. Runtime interest is deliberately separate from UI session mode:
 // a browser may unsubscribe or lose focus while the execution still needs Git
 // and status updates for the task-level summary.
-func (a *workspacePollAggregator) HandleRuntimeInterest(sessionID string, active bool) {
+//
+// executionID pins the call to the execution that requested this change.
+// retireStaleExecution's cleanup callback runs outside the store lock, after
+// the stale execution has already been deleted -- a replacement execution
+// can register for the same sessionID in that gap, so a stale cleanup call
+// resolving "the current execution for sessionID" would find and mutate the
+// replacement's interest state instead of the retired execution's. Requiring
+// the caller's own execution ID to still match the current one closes that
+// window.
+func (a *workspacePollAggregator) HandleRuntimeInterest(sessionID, executionID string, active bool) {
 	execution, exists := a.mgr.GetExecutionBySessionID(sessionID)
-	if !exists || execution.WorkspacePath == "" {
+	if !exists || execution.WorkspacePath == "" || execution.ID != executionID {
 		return
 	}
 
@@ -425,9 +434,10 @@ func (m *Manager) SetSessionModeQuerier(q SessionModeQuerier) {
 }
 
 // setRuntimeInterest keeps workspace polling alive for active executions even
-// when no browser is subscribed to the session stream.
-func (m *Manager) setRuntimeInterest(sessionID string, active bool) {
+// when no browser is subscribed to the session stream. executionID must be
+// the caller's own execution ID; see HandleRuntimeInterest for why.
+func (m *Manager) setRuntimeInterest(sessionID, executionID string, active bool) {
 	if m.pollAggregator != nil {
-		m.pollAggregator.HandleRuntimeInterest(sessionID, active)
+		m.pollAggregator.HandleRuntimeInterest(sessionID, executionID, active)
 	}
 }
