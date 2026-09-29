@@ -1,6 +1,7 @@
 package lifecycle
 
 import (
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -93,6 +94,43 @@ func TestExecutionStore_GetHidesAndRetiresStaleExecution(t *testing.T) {
 	}
 	if _, ok := store.Get("exec-1"); ok {
 		t.Fatal("Get (second call): retired execution must stay hidden")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if want := []string{"exec-1"}; len(retired) != len(want) || retired[0] != want[0] {
+		t.Fatalf("retired = %v, want exactly one retirement of exec-1", retired)
+	}
+}
+
+// TestExecutionStore_AddRejectsAlreadyStaleExecution pins RV3-4: unlike
+// every other accessor, Add used to admit an execution unconditionally, even
+// one bound to a standalone generation already superseded by the time the
+// caller (e.g. a CreateInstance RPC response that resolved after a relaunch
+// began) reaches Add. Add must apply the same staleLocked check as its
+// siblings: refuse admission, retire it exactly once, and never let it
+// become visible through any accessor.
+func TestExecutionStore_AddRejectsAlreadyStaleExecution(t *testing.T) {
+	var gen atomic.Uint64
+	gen.Store(2)
+	var retired []string
+	var mu sync.Mutex
+	store := newGenerationStore(&gen, &retired, &mu)
+
+	exec := &AgentExecution{ID: "exec-1", SessionID: "session-1", generation: 1}
+	err := store.Add(exec)
+	if !errors.Is(err, ErrExecutionGenerationStale) {
+		t.Fatalf("Add: err = %v, want ErrExecutionGenerationStale", err)
+	}
+
+	if _, ok := store.Get("exec-1"); ok {
+		t.Fatal("Get: an already-stale execution must never be silently admitted")
+	}
+	if _, ok := store.GetBySessionID("session-1"); ok {
+		t.Fatal("GetBySessionID: an already-stale execution must never be silently admitted")
+	}
+	if got := store.List(); len(got) != 0 {
+		t.Fatalf("List: want 0 executions, got %d", len(got))
 	}
 
 	mu.Lock()

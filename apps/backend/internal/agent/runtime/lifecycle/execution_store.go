@@ -25,6 +25,13 @@ var ErrPromptActivityNotOwned = errors.New("prompt activity no longer owned")
 // adding a replacement.
 var ErrExecutionAlreadyExistsForSession = errors.New("execution already exists for session")
 
+// ErrExecutionGenerationStale is returned by Add when the execution is
+// already bound to a standalone agentctl generation older than the current
+// one -- for example a CreateInstance RPC response that resolved after a
+// relaunch began. The store refuses admission rather than storing a row that
+// would already be hidden by every other accessor.
+var ErrExecutionGenerationStale = errors.New("execution generation is stale")
+
 // ErrAgentAlreadyRunning is returned by LaunchAgent when an agent execution is
 // already tracked for the requested session. The error fires both when the
 // execution is live (a concurrent caller raced us) and when it is stale (a
@@ -91,11 +98,20 @@ func (s *ExecutionStore) Add(execution *AgentExecution) error {
 		return fmt.Errorf("execution and execution.ID are required")
 	}
 
+	current := s.currentGeneration()
+
 	s.mu.Lock()
-	defer s.mu.Unlock()
+
+	if s.staleLocked(execution, current) {
+		s.mu.Unlock()
+		s.runRetireCallback(execution)
+		return fmt.Errorf("%w: execution=%s generation=%d current=%d",
+			ErrExecutionGenerationStale, execution.ID, execution.generation, current)
+	}
 
 	if execution.SessionID != "" {
 		if existingID, exists := s.bySession[execution.SessionID]; exists && existingID != execution.ID {
+			s.mu.Unlock()
 			return fmt.Errorf("%w: session=%s existing=%s new=%s",
 				ErrExecutionAlreadyExistsForSession,
 				execution.SessionID, existingID, execution.ID)
@@ -112,6 +128,7 @@ func (s *ExecutionStore) Add(execution *AgentExecution) error {
 		s.byContainer[execution.ContainerID] = execution.ID
 	}
 	agentActiveRuntimes.Set(int64(len(s.executions)))
+	s.mu.Unlock()
 	return nil
 }
 
