@@ -1,6 +1,6 @@
 # ADR-2026-08-08-agentctl-crash-containment: Publish Immutable Agent Events and Explicit Runtime Failure State
 
-**Status:** proposed
+**Status:** proposed (monotonic availability and deferred in-process restart superseded by 2026-09-27-in-process-agentctl-relaunch)
 **Date:** 2026-08-08
 **Area:** backend, frontend, protocol, operations
 

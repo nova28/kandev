@@ -109,6 +109,7 @@ retains ownership of its values, validation, authority, and persistence.
 - [Agent process exit and stderr drain](system-design/agent-process-exit-drain.md)
 - [Agentctl instance stop idempotency](system-design/agentctl-instance-stop.md)
 - [Apprise rescan](system-design/apprise-rescan.md)
+- [Agent Runtime Availability](system-design/agent-runtime-availability.md)
 - [Background Work Liveness](system-design/background-work-liveness.md)
 - [Backend restart page recovery](system-design/backend-restart-page-recovery.md)
 - [Browser console retention](system-design/browser-console-retention.md)
