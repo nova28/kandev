@@ -35,8 +35,21 @@ type Launcher struct {
 	onUnexpectedExit func()
 	startupConfig    commonconfig.AgentctlStartupConfig
 
-	cmd    *exec.Cmd
+	cmd *exec.Cmd
+	// exited closes only after cmd.Wait() returns AND onUnexpectedExit has
+	// run to completion. Callers that need to wait for that full sequence
+	// (Start's crash fast-fail, ForceStop's trailing wait, Stop's success
+	// path) use this.
 	exited chan struct{}
+	// reaped closes immediately when cmd.Wait() returns, before
+	// onUnexpectedExit runs. The OS may recycle the PID the moment Wait()
+	// reaps the process -- onUnexpectedExit can then run for an arbitrary
+	// duration (e.g. writing a relaunch adoption record) before exited
+	// closes. A caller deciding whether it is still safe to signal cmd's PID
+	// must check reaped, not exited: checking exited would treat that whole
+	// callback-execution window as "still safe to signal," when in fact the
+	// PID may already belong to an unrelated process.
+	reaped chan struct{}
 	mu     sync.Mutex
 
 	// For clean shutdown
@@ -91,6 +104,7 @@ func New(cfg Config, log *logger.Logger) *Launcher {
 		startupConfig:    cfg.StartupConfig,
 		logger:           log.WithFields(zap.String("component", "agentctl-launcher")),
 		exited:           make(chan struct{}),
+		reaped:           make(chan struct{}),
 	}
 }
 
@@ -432,7 +446,7 @@ func (l *Launcher) ForceStop() {
 	}
 
 	select {
-	case <-l.exited:
+	case <-l.reaped:
 		// Already reaped: the PID may have been reused by the OS, so no
 		// signal is sent.
 	default:
@@ -709,6 +723,7 @@ func stripANSI(s string) string {
 // monitorExit waits for the process to exit and signals via the exited channel.
 func (l *Launcher) monitorExit() {
 	err := l.cmd.Wait()
+	close(l.reaped)
 
 	l.mu.Lock()
 	stopping := l.stopping

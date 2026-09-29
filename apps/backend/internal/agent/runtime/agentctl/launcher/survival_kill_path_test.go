@@ -169,6 +169,7 @@ func newSurvivalKillPathTestLauncher(t *testing.T, survivalEnabled bool) *Launch
 		host:       "localhost",
 		port:       0,
 		exited:     make(chan struct{}),
+		reaped:     make(chan struct{}),
 		logger:     newLauncherTestLogger(t),
 		startupConfig: commonconfig.AgentctlStartupConfig{
 			Configured:                true,

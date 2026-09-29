@@ -71,6 +71,7 @@ func startLauncherMonitorTest(t *testing.T, exitCode int, stopping bool) bool {
 	launcher := &Launcher{
 		cmd:              cmd,
 		exited:           make(chan struct{}),
+		reaped:           make(chan struct{}),
 		logger:           newUnexpectedExitTestLogger(t),
 		onUnexpectedExit: func() { callback <- struct{}{} },
 	}

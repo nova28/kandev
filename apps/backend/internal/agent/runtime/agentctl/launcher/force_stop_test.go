@@ -7,6 +7,10 @@ import (
 	"time"
 
 	commonconfig "github.com/kandev/kandev/internal/common/config"
+	"github.com/kandev/kandev/internal/common/logger"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+	"go.uber.org/zap/zaptest/observer"
 )
 
 // TestForceStopKillsProcessUnderAgentSurvivalWithoutFiringCallback pins the
@@ -29,6 +33,7 @@ func TestForceStopKillsProcessUnderAgentSurvivalWithoutFiringCallback(t *testing
 	l := &Launcher{
 		cmd:              cmd,
 		exited:           exited,
+		reaped:           make(chan struct{}),
 		logger:           newLauncherTestLogger(t),
 		onUnexpectedExit: func() { callback <- struct{}{} },
 		startupConfig:    commonconfig.AgentctlStartupConfig{Configured: true, AgentSurvivalEnabled: true},
@@ -92,7 +97,7 @@ func TestForceStopIsIdempotentAndSendsNoSignalAfterExit(t *testing.T) {
 		t.Fatalf("start short-lived test process: %v", err)
 	}
 
-	l := &Launcher{cmd: cmd, exited: make(chan struct{}), logger: newLauncherTestLogger(t)}
+	l := &Launcher{cmd: cmd, exited: make(chan struct{}), reaped: make(chan struct{}), logger: newLauncherTestLogger(t)}
 	go l.monitorExit()
 
 	select {
@@ -140,6 +145,7 @@ func TestForceStopBlocksUntilOnUnexpectedExitCallbackReleases(t *testing.T) {
 	l := &Launcher{
 		cmd:    cmd,
 		exited: make(chan struct{}),
+		reaped: make(chan struct{}),
 		logger: newLauncherTestLogger(t),
 		onUnexpectedExit: func() {
 			close(callbackStarted)
@@ -164,6 +170,76 @@ func TestForceStopBlocksUntilOnUnexpectedExitCallbackReleases(t *testing.T) {
 	case <-done:
 		t.Fatal("ForceStop returned while OnUnexpectedExit was still blocked on the outside mutex")
 	case <-time.After(200 * time.Millisecond):
+	}
+
+	close(release)
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("ForceStop did not return after OnUnexpectedExit was released")
+	}
+}
+
+// TestForceStopSkipsSignalOncePidIsReapedEvenWhileCallbackRuns pins RV2-8:
+// cmd.Wait() reaps the PID (making it eligible for OS reuse) before
+// onUnexpectedExit runs, and onUnexpectedExit can run for an arbitrary
+// duration before exited closes. A concurrent ForceStop call must treat the
+// PID as already reaped -- and skip signalling it -- for that entire
+// callback-execution window, not only after exited closes. Gating on exited
+// (the pre-fix behavior) would send a signal to a PID that may already
+// belong to an unrelated process.
+func TestForceStopSkipsSignalOncePidIsReapedEvenWhileCallbackRuns(t *testing.T) {
+	binary, err := exec.LookPath("true")
+	if err != nil {
+		t.Skipf("no 'true' binary on PATH: %v", err)
+	}
+	cmd := exec.Command(binary)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start short-lived test process: %v", err)
+	}
+
+	core, observed := observer.New(zapcore.DebugLevel)
+	log, err := logger.NewFromZap(zap.New(core))
+	if err != nil {
+		t.Fatalf("NewFromZap: %v", err)
+	}
+
+	callbackStarted := make(chan struct{})
+	release := make(chan struct{})
+	l := &Launcher{
+		cmd:    cmd,
+		exited: make(chan struct{}),
+		reaped: make(chan struct{}),
+		logger: log,
+		onUnexpectedExit: func() {
+			close(callbackStarted)
+			<-release
+		},
+	}
+	go l.monitorExit()
+
+	select {
+	case <-callbackStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("OnUnexpectedExit never started; the process may not have exited on its own")
+	}
+
+	done := make(chan struct{})
+	go func() {
+		l.ForceStop()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		t.Fatal("ForceStop returned while OnUnexpectedExit was still blocked on the outside mutex")
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	if launcherLogsContain(observed, "agentctl subprocess SIGKILL requested") {
+		t.Fatal("ForceStop signalled the PID while it was already reaped and the exit callback was still running")
 	}
 
 	close(release)
