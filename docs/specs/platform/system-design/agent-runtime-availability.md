@@ -257,9 +257,13 @@ launch token, not the record.
      is nil (no process was started, for example a port or nonce failure in
      `Start`), it closes the liveness pipe and releases the child lifecycle,
      then returns.
-  2. If `exited` is not yet closed, sends `SIGKILL` to the process group
-     through the existing `forceKill`. Once `exited` is closed the process has
+  2. If `reaped` is not yet closed, sends `SIGKILL` to the process group
+     through the existing `forceKill`. Once `reaped` is closed the process has
      been reaped, so no signal is sent to a PID the OS may have reused.
+     `reaped` closes immediately when `cmd.Wait()` returns, before
+     `onUnexpectedExit` runs; the longer-lived `exited` channel (used in step
+     4) only closes after that callback finishes, so checking it here would
+     treat the whole callback window as still safe to signal.
   3. Closes the liveness pipe (`closeParentPipe`) and releases the child
      lifecycle (`releaseChildLifecycle`, the Windows Job Object).
   4. Waits for `exited` to close.
