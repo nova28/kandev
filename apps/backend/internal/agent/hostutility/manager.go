@@ -440,12 +440,22 @@ func (m *Manager) createInstance(ctx context.Context, agentType string) (*instan
 		// and never runs a persistent agent subprocess. Probe/Prompt calls
 		// spawn their own ephemeral ACP subprocesses via InferencePrompt/Probe.
 	}
-	resp, err := m.controlClient.CreateInstance(ctx, req)
+
+	// Capture the endpoint identity once, before dispatching, and pin the
+	// request to it explicitly instead of letting m.controlClient (built from
+	// the same endpoint) re-resolve Current() internally at request time.
+	// m.controlClient's own resolution and a second, later read of
+	// m.endpoint.Current() are two independent reads; a relaunch landing
+	// between them would attribute resp.Port (from whichever server actually
+	// served this request) to a newer generation than the one that served
+	// it, so staleInstanceCause's generation comparison would never flag it.
+	id := m.endpoint.Current()
+	pinnedCtl := agentctlclient.NewControlClient(id.Host, id.Port, m.log, agentctlclient.WithControlAuthToken(id.Token))
+	resp, err := pinnedCtl.CreateInstance(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf("create instance: %w", err)
 	}
 
-	id := m.endpoint.Current()
 	client := agentctlclient.NewClient(id.Host, resp.Port, m.log,
 		agentctlclient.WithExecutionID(resp.ID),
 		agentctlclient.WithAuthToken(id.Token))
