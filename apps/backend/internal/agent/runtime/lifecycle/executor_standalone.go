@@ -121,7 +121,13 @@ func (r *StandaloneExecutor) stopWithRetry(ctx context.Context, instanceID strin
 // values -- workspace source roots and provider session identity -- both
 // declared to come from the adopted instance, so a transient failure here
 // must be retried before an instance's reconstruction is given up on.
-func (r *StandaloneExecutor) listInstancesWithRetry(ctx context.Context) ([]*agentctl.InstanceInfo, error) {
+//
+// The request is pinned to id, captured once by the caller before
+// enumeration, rather than resolved internally per attempt: every returned
+// instance's Port must be attributable to the exact generation that served
+// this enumeration, since the caller later stamps that same id's Generation
+// onto the recovered instance (RecoverInstances/buildRecoveredInstances).
+func (r *StandaloneExecutor) listInstancesWithRetry(ctx context.Context, id agentctl.EndpointIdentity) ([]*agentctl.InstanceInfo, error) {
 	timeout := r.recoveryReadTimeout
 	if timeout <= 0 {
 		timeout = defaultRecoveryReadTimeout
@@ -131,10 +137,12 @@ func (r *StandaloneExecutor) listInstancesWithRetry(ctx context.Context) ([]*age
 		retries = defaultRecoveryReadRetries
 	}
 
+	pinnedCtl := agentctl.NewControlClient(id.Host, id.Port, r.logger, agentctl.WithControlAuthToken(id.Token))
+
 	var lastErr error
 	for attempt := 0; attempt <= retries; attempt++ {
 		attemptCtx, cancel := context.WithTimeout(ctx, timeout)
-		instances, err := r.ctl.ListInstances(attemptCtx)
+		instances, err := pinnedCtl.ListInstances(attemptCtx)
 		cancel()
 		if err == nil {
 			return instances, nil
@@ -365,7 +373,17 @@ func (r *StandaloneExecutor) StopInstance(ctx context.Context, instance *Executo
 // rather than treating an enumeration failure as though every instance were
 // an orphan.
 func (r *StandaloneExecutor) RecoverInstances(ctx context.Context, records []*models.ExecutorRunning) ([]*ExecutorInstance, error) {
-	instances, err := r.listInstancesWithRetry(ctx)
+	// Captured once, before enumeration, and reused for every recovered
+	// instance's Generation: enumeration and generation stamping are
+	// otherwise two independent endpoint.Current() reads separated by the
+	// correlation/stop-dispatch window below, which can run for the full
+	// AC-EXECUTORS-SURVIVAL-003.7 recovery deadline. A relaunch landing
+	// between them would attribute inst.Port -- fixed at enumeration time --
+	// to a newer generation than the one that actually served it, defeating
+	// ExecutionStore's stale-generation retirement.
+	id := r.endpoint.Current()
+
+	instances, err := r.listInstancesWithRetry(ctx, id)
 	if err != nil {
 		r.logger.Warn("failed to enumerate standalone instances for recovery; leaving every record to the existing repair path",
 			zap.Error(err))
@@ -390,7 +408,7 @@ func (r *StandaloneExecutor) RecoverInstances(ctx context.Context, records []*mo
 	tracker := &jointFailureTracker{exec: r, winners: winnersBySession}
 	r.collectRecoveryStops(ctx, results, correlation.Winners, pending, tracker)
 
-	return r.buildRecoveredInstances(correlation.Winners, indexRecordsBySession(records)), nil
+	return r.buildRecoveredInstances(correlation.Winners, indexRecordsBySession(records), id), nil
 }
 
 // recoveryStopOutcome is one instance's bounded stop attempt result.
@@ -594,16 +612,19 @@ func indexRecordsBySession(records []*models.ExecutorRunning) map[string]*models
 }
 
 // buildRecoveredInstances converts every still-winning correlated instance
-// into an ExecutorInstance for the caller to re-track.
+// into an ExecutorInstance for the caller to re-track. id is the identity
+// captured by RecoverInstances before enumeration; every instance's
+// Generation is stamped from that same identity, never re-resolved here, so
+// it always matches the generation that actually produced inst.Port.
 func (r *StandaloneExecutor) buildRecoveredInstances(
 	winners map[string]*agentctl.InstanceInfo,
 	recordBySession map[string]*models.ExecutorRunning,
+	id agentctl.EndpointIdentity,
 ) []*ExecutorInstance {
 	recovered := make([]*ExecutorInstance, 0, len(winners))
 	for sessionID, inst := range winners {
 		record := recordBySession[sessionID]
 
-		id := r.endpoint.Current()
 		client := agentctl.NewClient(id.Host, inst.Port, r.logger,
 			agentctl.WithExecutionID(inst.ID),
 			agentctl.WithSessionID(sessionID),

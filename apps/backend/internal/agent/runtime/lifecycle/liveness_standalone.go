@@ -29,7 +29,7 @@ type standaloneLivenessScope struct {
 // bounded per-attempt timeout/retry shape as listInstancesWithRetry's other
 // callers (AC-EXECUTORS-SURVIVAL-002.13).
 func (r *StandaloneExecutor) newLivenessScope(ctx context.Context) *standaloneLivenessScope {
-	instances, err := r.listInstancesWithRetry(ctx)
+	instances, err := r.listInstancesWithRetry(ctx, r.endpoint.Current())
 	if err != nil {
 		return &standaloneLivenessScope{reachable: false}
 	}
