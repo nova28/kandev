@@ -175,6 +175,42 @@ func adoptSurvivingAgentctl(
 	}, agentruntime.InheritedRecordScopeAdopted
 }
 
+// wireUnexpectedExitHandling decides, from features.agentctlRelaunch alone,
+// how a fresh agentctl launch's unexpected-exit callback is wired. With the
+// flag disabled it returns the pre-PR plain closure that only marks the
+// runtime unavailable, and a nil supervisor -- spawnFreshAgentctl's own
+// cleanup and initial-publish logic branch on that nil to skip supervisor
+// wiring entirely, so a fresh launch behaves exactly as it did before the
+// relaunch supervisor existed.
+func wireUnexpectedExitHandling(
+	ctx context.Context,
+	cfg *config.Config,
+	log *logger.Logger,
+	availability *agentctlclient.Availability,
+	endpoint *agentctlclient.Endpoint,
+	store agentruntime.AdoptionRecordStore,
+	secretStore secrets.SecretStore,
+) (supervisor *agentctlSupervisor, exited *atomic.Bool, onUnexpectedExit func()) {
+	exited = &atomic.Bool{}
+	onUnexpectedExit = func() {
+		availability.MarkUnavailable(agentctlclient.AvailabilityReasonAgentctlExited, time.Now())
+	}
+	if !cfg.Features.AgentctlRelaunch {
+		return nil, exited, onUnexpectedExit
+	}
+	supervisor = buildAgentctlSupervisor(ctx, cfg, log, availability, endpoint, store, secretStore)
+	notify := supervisor.NextExitCallback()
+	// The relaunch-enabled callback also flips exited so the publish step in
+	// spawnFreshAgentctl can tell a premature exit apart from a clean launch
+	// -- NotifyExit's own generation match cannot, since nothing is published
+	// yet for it to compare against. See PublishInitialLaunch.
+	onUnexpectedExit = func() {
+		exited.Store(true)
+		notify()
+	}
+	return supervisor, exited, onUnexpectedExit
+}
+
 // spawnFreshAgentctl is today's unconditional launch path. If the
 // agent-survival capability is enabled, the freshly spawned server is also
 // durably recorded as the installation's control server (failure-table row
@@ -197,23 +233,7 @@ func spawnFreshAgentctl(
 	store agentruntime.AdoptionRecordStore,
 	secretStore secrets.SecretStore,
 ) (*agentctlLauncherResult, error) {
-	var supervisor *agentctlSupervisor
-	var exited atomic.Bool
-	onUnexpectedExit := func() {
-		availability.MarkUnavailable(agentctlclient.AvailabilityReasonAgentctlExited, time.Now())
-	}
-	if cfg.Features.AgentctlRelaunch {
-		supervisor = buildAgentctlSupervisor(ctx, cfg, log, availability, endpoint, store, secretStore)
-		notify := supervisor.NextExitCallback()
-		// The relaunch-enabled callback also flips exited so the publish
-		// step below can tell a premature exit apart from a clean launch --
-		// NotifyExit's own generation match cannot, since nothing is
-		// published yet for it to compare against. See PublishInitialLaunch.
-		onUnexpectedExit = func() {
-			exited.Store(true)
-			notify()
-		}
-	}
+	supervisor, exited, onUnexpectedExit := wireUnexpectedExitHandling(ctx, cfg, log, availability, endpoint, store, secretStore)
 
 	l, cleanup, err := launcher.Provide(ctx, launcher.Config{
 		Host:             cfg.Agent.StandaloneHost,
@@ -261,7 +281,7 @@ func spawnFreshAgentctl(
 		if renewer != nil {
 			stopper = renewer
 		}
-		if err := publishInitialLaunchOrFail(supervisor, l, stopper, &exited, cleanup, cfg); err != nil {
+		if err := publishInitialLaunchOrFail(supervisor, l, stopper, exited, cleanup, cfg); err != nil {
 			return nil, err
 		}
 	} else {

@@ -104,6 +104,25 @@ func (a *sessionReaderAdapter) GetSessionBaseBranch(ctx context.Context, session
 	return session.BaseBranch
 }
 
+// executionRetiredInvalidationHook builds the callback wired via
+// lifecycle.Manager.SetExecutionRetiredHook. An execution retired for a
+// stale agentctl generation must not leave a proxy connection, shell
+// stream, or port tunnel alive against the dead process -- a relaunch's
+// replacement session reuses the same session ID, so a stale cache entry
+// would otherwise serve traffic into nothing. All three invalidations run
+// for every retirement, regardless of which caches this session ever used.
+func executionRetiredInvalidationHook(
+	invalidateProxy func(sessionID string),
+	invalidatePortSession func(sessionID string),
+	invalidateTunnelSession func(sessionID string),
+) func(sessionID string) {
+	return func(sessionID string) {
+		invalidateProxy(sessionID)
+		invalidatePortSession(sessionID)
+		invalidateTunnelSession(sessionID)
+	}
+}
+
 func provideGateway(
 	ctx context.Context,
 	log *logger.Logger,
@@ -160,16 +179,11 @@ func provideGateway(
 		gateway.SetVscodeProxy(lifecycleMgr)
 		gateway.SetPortProxy(lifecycleMgr)
 		gateway.SetPortTunnel(lifecycleMgr)
-		// An execution retired for a stale agentctl generation must not leave
-		// a proxy connection, shell stream, or port tunnel alive against the
-		// dead process -- a relaunch's replacement session reuses the same
-		// session ID, so a stale cache entry would otherwise serve traffic
-		// into nothing.
-		lifecycleMgr.SetExecutionRetiredHook(func(sessionID string) {
-			gateway.VscodeProxyHandler.InvalidateProxy(sessionID)
-			gateway.PortProxyHandler.InvalidateSession(sessionID)
-			gateway.TunnelManager.InvalidateSession(sessionID)
-		})
+		lifecycleMgr.SetExecutionRetiredHook(executionRetiredInvalidationHook(
+			gateway.VscodeProxyHandler.InvalidateProxy,
+			gateway.PortProxyHandler.InvalidateSession,
+			gateway.TunnelManager.InvalidateSession,
+		))
 	}
 
 	orchestratorHandlers := orchestratorhandlers.NewHandlers(orchestratorSvc, log)
