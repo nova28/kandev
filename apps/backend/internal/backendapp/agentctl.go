@@ -658,7 +658,15 @@ func (s *agentctlSupervisor) NotifyExit(generation uint64) {
 	if len(s.windowStarts) >= outageWindowLimit {
 		s.log.Error("agentctl relaunch exhausted", zap.String("reason", "outage_window_limit"))
 		s.availability.MarkUnavailable(agentctlclient.AvailabilityReasonRelaunchExhausted, t0)
+		// This branch never reaches runRelaunchLoop, which is otherwise the
+		// only place that stops the current renewer -- stop it here too, or
+		// it keeps renewing ownership against a dead process until shutdown.
+		oldRenewer := s.renewer
+		s.renewer = nil
 		s.mu.Unlock()
+		if oldRenewer != nil {
+			oldRenewer.Stop()
+		}
 		return
 	}
 	s.windowStarts = append(s.windowStarts, t0)

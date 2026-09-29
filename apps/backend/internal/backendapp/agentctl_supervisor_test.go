@@ -333,6 +333,29 @@ func TestAgentctlSupervisor_FourthOutageWithinWindowSkipsAttempt(t *testing.T) {
 	}
 }
 
+// TestAgentctlSupervisor_OutageWindowLimitStopsRenewer pins RV3-3: the
+// outage_window_limit exhaustion branch is the only terminal-exhaustion path
+// that skips runRelaunchLoop entirely, so it must stop the current renewer
+// itself instead of leaking it until Shutdown.
+func TestAgentctlSupervisor_OutageWindowLimitStopsRenewer(t *testing.T) {
+	renewer := &fakeOwnershipRenewer{}
+	factory, launchers := scriptedLauncherFactory(t)
+	s, availability, endpoint, _ := newTestSupervisorWithEvents(t, factory, noopRecordFresh, noopStartRenewal)
+	bindInitialGeneration1(s, endpoint, availability, renewer)
+
+	now := time.Now()
+	s.windowStarts = []time.Time{now.Add(-9 * time.Minute), now.Add(-5 * time.Minute), now.Add(-1 * time.Minute)}
+
+	s.NotifyExit(1)
+
+	if got := renewer.stopCount(); got != 1 {
+		t.Fatalf("renewer stopped %d times, want exactly 1 (outage_window_limit must stop it directly)", got)
+	}
+	if got := len(launchers()); got != 0 {
+		t.Fatalf("launcher factory calls = %d, want 0 (window limit skips the attempt entirely)", got)
+	}
+}
+
 // TestAgentctlSupervisor_OutageOutsideWindowIsNotCounted pins the boundary:
 // an outage start exactly outageWindow old no longer counts against the
 // limit, so a fourth exit still gets a relaunch attempt.
