@@ -176,15 +176,27 @@ func NewControlClientFromEndpoint(source EndpointSource, log *logger.Logger) *Co
 	return c
 }
 
-// resolveBaseURL returns the base URL for the next request: the endpoint
-// source's current host and port when this client was built from one,
-// otherwise the fixed base URL captured at construction.
-func (c *ControlClient) resolveBaseURL() string {
-	if c.endpoint != nil {
-		id := c.endpoint.Current()
-		return fmt.Sprintf("http://%s:%d", id.Host, id.Port)
+// controlIdentityContextKey carries the bearer token pinIdentity captured for
+// the current request, so endpointAuthTransport's RoundTrip (invoked later,
+// when httpClient.Do dispatches the request) reuses that exact read instead
+// of independently re-resolving the endpoint source.
+type controlIdentityContextKey struct{}
+
+// pinIdentity captures the request identity for the next call exactly once:
+// when this client was built from an endpoint source, a single
+// endpoint.Current() read supplies both the base URL returned here and the
+// bearer token carried through the returned context. Without this, the base
+// URL (resolved here) and the Authorization header (previously resolved
+// independently and later, inside RoundTrip) were two separate Current()
+// reads -- a relaunch landing between them could pair one generation's
+// host:port with a different generation's token.
+func (c *ControlClient) pinIdentity(ctx context.Context) (context.Context, string) {
+	if c.endpoint == nil {
+		return ctx, c.baseURL
 	}
-	return c.baseURL
+	id := c.endpoint.Current()
+	baseURL := fmt.Sprintf("http://%s:%d", id.Host, id.Port)
+	return context.WithValue(ctx, controlIdentityContextKey{}, id.Token), baseURL
 }
 
 // AuthToken returns the current auth token. Used to propagate the token
@@ -208,7 +220,14 @@ type endpointAuthTransport struct {
 
 func (t *endpointAuthTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	r := req.Clone(req.Context())
-	if token := t.source.Current().Token; token != "" {
+	token, pinned := req.Context().Value(controlIdentityContextKey{}).(string)
+	if !pinned {
+		// No identity was pinned via pinIdentity (a caller outside this
+		// package's request-building methods) -- fall back to an independent
+		// read rather than silently sending no Authorization header.
+		token = t.source.Current().Token
+	}
+	if token != "" {
 		r.Header.Set("Authorization", "Bearer "+token)
 	}
 	base := t.base
@@ -236,7 +255,8 @@ func (c *ControlClient) Handshake(ctx context.Context, nonce string) (string, er
 		return "", fmt.Errorf("failed to marshal handshake request: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", c.resolveBaseURL()+"/auth/handshake", bytes.NewReader(body))
+	ctx, baseURL := c.pinIdentity(ctx)
+	req, err := http.NewRequestWithContext(ctx, "POST", baseURL+"/auth/handshake", bytes.NewReader(body))
 	if err != nil {
 		return "", err
 	}
@@ -277,7 +297,8 @@ func (c *ControlClient) Handshake(ctx context.Context, nonce string) (string, er
 
 // Health checks if the agentctl control server is healthy.
 func (c *ControlClient) Health(ctx context.Context) error {
-	req, err := http.NewRequestWithContext(ctx, "GET", c.resolveBaseURL()+"/health", nil)
+	ctx, baseURL := c.pinIdentity(ctx)
+	req, err := http.NewRequestWithContext(ctx, "GET", baseURL+"/health", nil)
 	if err != nil {
 		return err
 	}
@@ -300,7 +321,8 @@ func (c *ControlClient) Health(ctx context.Context) error {
 // state. It is used by the backend debug export to correlate host and agentctl
 // pressure without exposing control-server internals directly.
 func (c *ControlClient) SubprocessAdmission(ctx context.Context) (subproc.Snapshot, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.resolveBaseURL()+"/api/v1/debug/subprocess-admission", nil)
+	ctx, baseURL := c.pinIdentity(ctx)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/api/v1/debug/subprocess-admission", nil)
 	if err != nil {
 		return subproc.Snapshot{}, err
 	}
@@ -329,7 +351,8 @@ func (c *ControlClient) CreateInstance(ctx context.Context, req *CreateInstanceR
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", c.resolveBaseURL()+"/api/v1/instances", bytes.NewReader(body))
+	ctx, baseURL := c.pinIdentity(ctx)
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", baseURL+"/api/v1/instances", bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
@@ -365,7 +388,8 @@ func (c *ControlClient) CreateInstance(ctx context.Context, req *CreateInstanceR
 
 // DeleteInstance stops and removes an agent instance.
 func (c *ControlClient) DeleteInstance(ctx context.Context, instanceID string) error {
-	req, err := http.NewRequestWithContext(ctx, "DELETE", c.resolveBaseURL()+"/api/v1/instances/"+instanceID, nil)
+	ctx, baseURL := c.pinIdentity(ctx)
+	req, err := http.NewRequestWithContext(ctx, "DELETE", baseURL+"/api/v1/instances/"+instanceID, nil)
 	if err != nil {
 		return err
 	}
@@ -401,7 +425,8 @@ var ErrInstanceNotFound = errors.New("instance not found")
 
 // GetInstance gets information about a specific instance.
 func (c *ControlClient) GetInstance(ctx context.Context, instanceID string) (*InstanceInfo, error) {
-	req, err := http.NewRequestWithContext(ctx, "GET", c.resolveBaseURL()+"/api/v1/instances/"+instanceID, nil)
+	ctx, baseURL := c.pinIdentity(ctx)
+	req, err := http.NewRequestWithContext(ctx, "GET", baseURL+"/api/v1/instances/"+instanceID, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -451,7 +476,8 @@ type ServerDetails struct {
 // (see agentctl's identity handler): identity retrieval decides adoption
 // compatibility, so it cannot itself be gated behind the answer.
 func (c *ControlClient) GetIdentity(ctx context.Context) (*IdentityInfo, error) {
-	req, err := http.NewRequestWithContext(ctx, "GET", c.resolveBaseURL()+"/identity", nil)
+	ctx, baseURL := c.pinIdentity(ctx)
+	req, err := http.NewRequestWithContext(ctx, "GET", baseURL+"/identity", nil)
 	if err != nil {
 		return nil, err
 	}
@@ -489,7 +515,8 @@ var ErrOwnershipCredentialSuperseded = errors.New("ownership claim rejected: cre
 // instances is still owned. Refused (non-nil error) once the server's
 // unowned-shutdown one-way door has fired.
 func (c *ControlClient) ClaimOwnership(ctx context.Context) error {
-	req, err := http.NewRequestWithContext(ctx, "POST", c.resolveBaseURL()+"/api/v1/ownership/claim", nil)
+	ctx, baseURL := c.pinIdentity(ctx)
+	req, err := http.NewRequestWithContext(ctx, "POST", baseURL+"/api/v1/ownership/claim", nil)
 	if err != nil {
 		return err
 	}
@@ -530,7 +557,8 @@ func (c *ControlClient) ProveOwnership(ctx context.Context, challenge string) ([
 		return nil, err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", c.resolveBaseURL()+"/ownership/prove", bytes.NewReader(payload))
+	ctx, baseURL := c.pinIdentity(ctx)
+	req, err := http.NewRequestWithContext(ctx, "POST", baseURL+"/ownership/prove", bytes.NewReader(payload))
 	if err != nil {
 		return nil, err
 	}
@@ -558,7 +586,8 @@ func (c *ControlClient) ProveOwnership(ctx context.Context, challenge string) ([
 // GetServerDetails reads the control-server values withheld from the
 // unauthenticated identity endpoint. Requires a valid credential.
 func (c *ControlClient) GetServerDetails(ctx context.Context) (*ServerDetails, error) {
-	req, err := http.NewRequestWithContext(ctx, "GET", c.resolveBaseURL()+"/api/v1/ownership/details", nil)
+	ctx, baseURL := c.pinIdentity(ctx)
+	req, err := http.NewRequestWithContext(ctx, "GET", baseURL+"/api/v1/ownership/details", nil)
 	if err != nil {
 		return nil, err
 	}
@@ -589,7 +618,8 @@ func (c *ControlClient) GetServerDetails(ctx context.Context) (*ServerDetails, e
 // retry presenting the same (superseded) credential while unconfirmed
 // returns the same rotation again rather than allocating a new one.
 func (c *ControlClient) RotateCredential(ctx context.Context) (*CredentialRotationResult, error) {
-	req, err := http.NewRequestWithContext(ctx, "POST", c.resolveBaseURL()+"/api/v1/ownership/rotate", nil)
+	ctx, baseURL := c.pinIdentity(ctx)
+	req, err := http.NewRequestWithContext(ctx, "POST", baseURL+"/api/v1/ownership/rotate", nil)
 	if err != nil {
 		return nil, err
 	}
@@ -624,7 +654,8 @@ func (c *ControlClient) ConfirmCredentialRotation(ctx context.Context, rotationI
 		return err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", c.resolveBaseURL()+"/api/v1/ownership/confirm", bytes.NewReader(body))
+	ctx, baseURL := c.pinIdentity(ctx)
+	req, err := http.NewRequestWithContext(ctx, "POST", baseURL+"/api/v1/ownership/confirm", bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
@@ -648,7 +679,8 @@ func (c *ControlClient) ConfirmCredentialRotation(ctx context.Context, rotationI
 // and is authenticated by any credential in the acceptable set, including a
 // superseded one that has not yet been confirmed away.
 func (c *ControlClient) ShutdownControlServer(ctx context.Context) error {
-	req, err := http.NewRequestWithContext(ctx, "POST", c.resolveBaseURL()+"/api/v1/ownership/shutdown", nil)
+	ctx, baseURL := c.pinIdentity(ctx)
+	req, err := http.NewRequestWithContext(ctx, "POST", baseURL+"/api/v1/ownership/shutdown", nil)
 	if err != nil {
 		return err
 	}
@@ -667,7 +699,8 @@ func (c *ControlClient) ShutdownControlServer(ctx context.Context) error {
 
 // ListInstances lists all running agent instances.
 func (c *ControlClient) ListInstances(ctx context.Context) ([]*InstanceInfo, error) {
-	req, err := http.NewRequestWithContext(ctx, "GET", c.resolveBaseURL()+"/api/v1/instances", nil)
+	ctx, baseURL := c.pinIdentity(ctx)
+	req, err := http.NewRequestWithContext(ctx, "GET", baseURL+"/api/v1/instances", nil)
 	if err != nil {
 		return nil, err
 	}
@@ -705,7 +738,8 @@ type TurnOutcome struct {
 // session as running. The read is repeatable: it never discards what it
 // returns (AC-EXECUTORS-SURVIVAL-004.6); only AckTurnOutcome does.
 func (c *ControlClient) GetTurnOutcome(ctx context.Context, instanceID string) (*TurnOutcome, error) {
-	req, err := http.NewRequestWithContext(ctx, "GET", c.resolveBaseURL()+"/api/v1/instances/"+instanceID+"/turn-outcome", nil)
+	ctx, baseURL := c.pinIdentity(ctx)
+	req, err := http.NewRequestWithContext(ctx, "GET", baseURL+"/api/v1/instances/"+instanceID+"/turn-outcome", nil)
 	if err != nil {
 		return nil, err
 	}
@@ -749,7 +783,8 @@ func (c *ControlClient) AckTurnOutcome(ctx context.Context, instanceID string, t
 		return err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", c.resolveBaseURL()+"/api/v1/instances/"+instanceID+"/turn-outcome/ack", bytes.NewReader(body))
+	ctx, baseURL := c.pinIdentity(ctx)
+	req, err := http.NewRequestWithContext(ctx, "POST", baseURL+"/api/v1/instances/"+instanceID+"/turn-outcome/ack", bytes.NewReader(body))
 	if err != nil {
 		return err
 	}

@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -92,7 +93,7 @@ func TestControlClient_FromEndpoint_SendsNewTokenToNewPortAfterPublish(t *testin
 // TestControlClient_FromEndpoint_CurrentNeverMixesGenerationsUnderRace runs
 // concurrent requests against a client built from an endpoint while another
 // goroutine keeps publishing new identities, so -race can catch a torn read
-// of the endpoint's current identity from inside resolveBaseURL/AuthToken.
+// of the endpoint's current identity from inside pinIdentity/AuthToken.
 func TestControlClient_FromEndpoint_CurrentNeverMixesGenerationsUnderRace(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -206,5 +207,61 @@ func TestControlClient_FromEndpoint_RequestAfterReplacementPublishedReachesNewSe
 	}
 	if replacementHits != 1 {
 		t.Fatalf("replacement server saw %d requests, want exactly 1", replacementHits)
+	}
+}
+
+// TestControlClient_FromEndpoint_PinIdentityKeepsHostPortAndTokenFromSameRead
+// covers RV2-5: pinIdentity must capture host/port and the bearer token from
+// a single EndpointSource.Current() read, so a relaunch landing between
+// "resolve the base URL" and "send the request" can never pair one
+// generation's host:port with a different generation's token. It calls
+// pinIdentity directly (this test is in the same package) to capture the
+// identity for a request against server1/token-1, then publishes a relaunch
+// to server2/token-2 before the request is actually dispatched, and asserts
+// server1 still received the pinned token-1 -- proving the token used at
+// dispatch time came from the same read as the URL, not a second,
+// independent Current() call made later inside RoundTrip.
+func TestControlClient_FromEndpoint_PinIdentityKeepsHostPortAndTokenFromSameRead(t *testing.T) {
+	var gotAuth1 []string
+	srv1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth1 = append(gotAuth1, r.Header.Get("Authorization"))
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv1.Close)
+
+	srv2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv2.Close)
+
+	host1, port1 := splitTestServerHostPort(t, srv1)
+	host2, port2 := splitTestServerHostPort(t, srv2)
+
+	ep := NewEndpoint()
+	ep.Publish(host1, port1, "token-1", 111)
+
+	c := NewControlClientFromEndpoint(ep, newTestLogger())
+
+	ctx, baseURL := c.pinIdentity(context.Background())
+	if want := fmt.Sprintf("http://%s:%d", host1, port1); baseURL != want {
+		t.Fatalf("pinIdentity baseURL = %q, want %q", baseURL, want)
+	}
+
+	// Simulate a relaunch landing after the identity is pinned but before the
+	// request built from it is dispatched.
+	ep.Publish(host2, port2, "token-2", 222)
+
+	req, err := http.NewRequestWithContext(ctx, "GET", baseURL+"/health", nil)
+	if err != nil {
+		t.Fatalf("NewRequestWithContext: %v", err)
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	_ = resp.Body.Close()
+
+	if len(gotAuth1) != 1 || gotAuth1[0] != "Bearer token-1" {
+		t.Fatalf("server1 saw %v, want exactly one Bearer token-1 request (the pinned identity's own token)", gotAuth1)
 	}
 }
