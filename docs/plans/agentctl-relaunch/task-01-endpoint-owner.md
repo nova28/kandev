@@ -1,7 +1,7 @@
 ---
 id: "01-endpoint-owner"
 title: "Route standalone identity through one endpoint owner"
-status: pending
+status: done
 wave: 1
 depends_on: []
 plan: "plan.md"

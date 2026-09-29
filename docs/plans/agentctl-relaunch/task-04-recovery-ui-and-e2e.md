@@ -1,7 +1,7 @@
 ---
 id: "04-recovery-ui-and-e2e"
 title: "Show recovery states and prove a real crash recovers"
-status: pending
+status: done
 wave: 4
 depends_on:
   - "03-relaunch-supervisor"

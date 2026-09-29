@@ -1,6 +1,6 @@
 ---
 created: 2026-09-27
-status: draft
+status: in_progress
 requirements:
   - REQ-PLATFORM-AGENT-RUNTIME-AVAILABILITY-001
   - REQ-PLATFORM-AGENT-RUNTIME-AVAILABILITY-002

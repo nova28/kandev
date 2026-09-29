@@ -1,7 +1,7 @@
 ---
 id: "03-relaunch-supervisor"
 title: "Relaunch agentctl behind a runtime flag"
-status: pending
+status: done
 wave: 3
 depends_on:
   - "01-endpoint-owner"

@@ -1,7 +1,7 @@
 ---
 id: "02-retire-stale-generation"
 title: "Retire executions bound to a dead agentctl generation"
-status: pending
+status: done
 wave: 2
 depends_on:
   - "01-endpoint-owner"
