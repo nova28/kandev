@@ -17,7 +17,7 @@ func (j *Journal) HasUnresolvedSubmissions(ctx context.Context) (bool, error) {
 	j.mu.RLock()
 	defer j.mu.RUnlock()
 	var unresolved bool
-	err := j.db.View(func(tx *bolt.Tx) error {
+	err := j.viewLocked(func(tx *bolt.Tx) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -29,14 +29,7 @@ func (j *Journal) HasUnresolvedSubmissions(ctx context.Context) (bool, error) {
 			if err := json.Unmarshal(raw, &submission); err != nil {
 				return ErrJournalCorrupt
 			}
-			switch submission.State {
-			case SubmissionPrepared, SubmissionAccepted, SubmissionDispatching, SubmissionInterruptedUnknown:
-				unresolved = true
-			case SubmissionCompleted:
-				if !submission.TerminalEventRetained {
-					unresolved = true
-				}
-			}
+			unresolved = unresolved || submissionNeedsRecovery(submission)
 			return nil
 		})
 	})
@@ -53,7 +46,7 @@ func (j *Journal) ListSubmissions(ctx context.Context, sessionID string) ([]Subm
 	j.mu.RLock()
 	defer j.mu.RUnlock()
 	var submissions []Submission
-	err := j.db.View(func(tx *bolt.Tx) error {
+	err := j.viewLocked(func(tx *bolt.Tx) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -77,14 +70,14 @@ func (j *Journal) ListSubmissions(ctx context.Context, sessionID string) ([]Subm
 	return submissions, err
 }
 
-// RetireSubmission removes one explicitly recovered submission. A newer
-// harness generation must authorize the removal, so an uncertain dispatch
-// cannot be silently retried by the same generation.
+// RetireSubmission seals an explicitly recovered submission. Native resume
+// may acknowledge an interrupted unknown outcome in the same generation;
+// retiring other work requires a newer generation.
 func (j *Journal) RetireSubmission(ctx context.Context, id string, recoveryGeneration uint64) (Submission, error) {
 	j.mu.RLock()
 	defer j.mu.RUnlock()
 	var retired Submission
-	err := j.db.Update(func(tx *bolt.Tx) error {
+	err := j.updateLocked(func(tx *bolt.Tx) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -96,12 +89,15 @@ func (j *Journal) RetireSubmission(ctx context.Context, id string, recoveryGener
 		if err := json.Unmarshal(raw, &retired); err != nil {
 			return ErrJournalCorrupt
 		}
-		if recoveryGeneration == 0 || recoveryGeneration <= retired.HarnessGeneration {
+		if recoveryGeneration == 0 || recoveryGeneration < retired.HarnessGeneration ||
+			(recoveryGeneration == retired.HarnessGeneration && retired.State != SubmissionInterruptedUnknown) {
 			return ErrSubmissionGeneration
 		}
 		retired.Retired = true
-		retired.State = SubmissionCancelled
-		retired.Payload = nil
+		if retired.State != SubmissionInterruptedUnknown {
+			retired.State = SubmissionCancelled
+			retired.Payload = nil
+		}
 		retired.UpdatedAt = time.Now().UTC()
 		encoded, err := json.Marshal(retired)
 		if err != nil {
@@ -148,7 +144,7 @@ func (j *Journal) PutSubmission(ctx context.Context, submission Submission) (Sub
 		submission.State = SubmissionPrepared
 	}
 	duplicate := false
-	err := j.db.Update(func(tx *bolt.Tx) error {
+	err := j.updateLocked(func(tx *bolt.Tx) error {
 		journalBytes, err := decodeInt64(tx.Bucket(bucketMeta).Get(keyJournalBytes))
 		if err != nil {
 			return err
@@ -305,7 +301,7 @@ func (j *Journal) GetSubmission(ctx context.Context, id string) (Submission, err
 	j.mu.RLock()
 	defer j.mu.RUnlock()
 	var submission Submission
-	err := j.db.View(func(tx *bolt.Tx) error {
+	err := j.viewLocked(func(tx *bolt.Tx) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -328,7 +324,7 @@ func (j *Journal) HasUnresolvedWork(ctx context.Context) (bool, error) {
 	j.mu.RLock()
 	defer j.mu.RUnlock()
 	var unresolved bool
-	err := j.db.View(func(tx *bolt.Tx) error {
+	err := j.viewLocked(func(tx *bolt.Tx) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -340,14 +336,7 @@ func (j *Journal) HasUnresolvedWork(ctx context.Context) (bool, error) {
 			if err := json.Unmarshal(raw, &submission); err != nil {
 				return ErrJournalCorrupt
 			}
-			switch submission.State {
-			case SubmissionPrepared, SubmissionAccepted, SubmissionDispatching, SubmissionInterruptedUnknown:
-				unresolved = true
-			case SubmissionCompleted:
-				if !submission.TerminalEventRetained {
-					unresolved = true
-				}
-			}
+			unresolved = unresolved || submissionNeedsRecovery(submission)
 			return nil
 		}); err != nil || unresolved {
 			return err
@@ -376,7 +365,7 @@ func (j *Journal) TransitionSubmission(ctx context.Context, id string, next Subm
 	j.mu.RLock()
 	defer j.mu.RUnlock()
 	var submission Submission
-	err := j.db.Update(func(tx *bolt.Tx) error {
+	err := j.updateLocked(func(tx *bolt.Tx) error {
 		var err error
 		submission, err = j.transitionSubmissionTx(ctx, tx, id, next, updatedAt)
 		return err

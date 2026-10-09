@@ -86,6 +86,13 @@ type Manager struct {
 	// taskRuntimeFences serialize runtime creation with task-scoped cleanup.
 	taskRuntimeFences taskRuntimeOwnershipFences
 
+	// passthroughMCPMu serializes project-local MCP materialization and cleanup.
+	// The file is shared by executions that use the same workspace, so the
+	// filesystem operation and its ownership claim must be one critical section.
+	passthroughMCPMu               sync.Mutex
+	passthroughMCPActiveClaims     map[string]map[string]passthroughMCPFileClaim
+	passthroughMCPActiveExecutions map[string]map[string]*AgentExecution
+
 	// bootMessageService creates boot messages displayed in chat during agent startup.
 	bootMessageService BootMessageService
 
@@ -472,28 +479,30 @@ func NewManager(
 	}
 
 	mgr := &Manager{
-		registry:                 reg,
-		eventBus:                 eventBus,
-		executorRegistry:         executorRegistry,
-		executorFallbackPolicy:   fallbackPolicy,
-		credsMgr:                 credsMgr,
-		profileResolver:          profileResolver,
-		mcpProvider:              mcpProvider,
-		logger:                   componentLogger,
-		dataDir:                  dataDir,
-		executionStore:           executionStore,
-		commandBuilder:           commandBuilder,
-		sessionManager:           sessionManager,
-		eventPublisher:           eventPublisher,
-		historyManager:           historyManager,
-		remoteStatusPollInterval: 60 * time.Second,
-		remoteStatusBySession:    make(map[string]*RemoteStatus),
-		stopCh:                   stopCh,
-		skillDeployer:            NoopSkillDeployer(),
-		remediateNpxCache:        routingerr.RemediateNpxCache,
-		recoveryGuard:            NewRecoveryGuard(),
-		retrackedSessions:        make(map[string]struct{}),
-		standaloneOwnSessions:    make(map[string]struct{}),
+		registry:                       reg,
+		eventBus:                       eventBus,
+		executorRegistry:               executorRegistry,
+		executorFallbackPolicy:         fallbackPolicy,
+		credsMgr:                       credsMgr,
+		profileResolver:                profileResolver,
+		mcpProvider:                    mcpProvider,
+		logger:                         componentLogger,
+		dataDir:                        dataDir,
+		executionStore:                 executionStore,
+		commandBuilder:                 commandBuilder,
+		sessionManager:                 sessionManager,
+		eventPublisher:                 eventPublisher,
+		historyManager:                 historyManager,
+		remoteStatusPollInterval:       60 * time.Second,
+		remoteStatusBySession:          make(map[string]*RemoteStatus),
+		stopCh:                         stopCh,
+		skillDeployer:                  NoopSkillDeployer(),
+		remediateNpxCache:              routingerr.RemediateNpxCache,
+		recoveryGuard:                  NewRecoveryGuard(),
+		retrackedSessions:              make(map[string]struct{}),
+		standaloneOwnSessions:          make(map[string]struct{}),
+		passthroughMCPActiveClaims:     make(map[string]map[string]passthroughMCPFileClaim),
+		passthroughMCPActiveExecutions: make(map[string]map[string]*AgentExecution),
 	}
 	// Initialize stream manager with callbacks that delegate to manager methods
 	// mcpHandler will be set later via SetMCPHandler.
