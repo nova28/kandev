@@ -18,35 +18,3 @@ func OpenIsolatedPostgres(t testing.TB, dsn string) *sqlx.DB {
 	t.Helper()
 
 	schema := "kandev_test_" + strings.ReplaceAll(uuid.NewString(), "-", "")
-	scopedDSN, err := isolatedPostgresDSN(dsn, schema)
-	if err != nil {
-		t.Fatalf("scope postgres connection: %v", err)
-	}
-	raw, err := internaldb.OpenPostgres(scopedDSN, 1, 1)
-	if err != nil {
-		t.Fatalf("open postgres: %v", err)
-	}
-	db := sqlx.NewDb(raw, "pgx")
-	db.SetMaxOpenConns(1)
-	db.SetMaxIdleConns(1)
-
-	if _, err := db.Exec("CREATE SCHEMA " + schema); err != nil {
-		_ = db.Close()
-		t.Fatalf("create postgres schema %s: %v", schema, err)
-	}
-	t.Cleanup(func() {
-		_, _ = db.Exec("DROP SCHEMA IF EXISTS " + schema + " CASCADE")
-		_ = db.Close()
-	})
-
-	return db
-}
-
-func PostgresDSNFromEnv(t testing.TB) string {
-	t.Helper()
-	dsn := os.Getenv("KANDEV_TEST_POSTGRES_DSN")
-	if dsn == "" {
-		t.Skip("set KANDEV_TEST_POSTGRES_DSN to run Postgres tests")
-	}
-	return dsn
-}
