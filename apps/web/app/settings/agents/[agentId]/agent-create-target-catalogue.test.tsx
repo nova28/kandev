@@ -303,3 +303,233 @@ describe("existing-owner creation publication", () => {
       ACCEPTED,
       EXISTING,
     ]);
+    expect(
+      state.settingsAgents.items[0].profiles.find((profile) => profile.id === ACCEPTED),
+    ).toMatchObject({
+      id: ACCEPTED,
+      agentId: OWNER,
+      name: NAME,
+      model: MODEL,
+    });
+    expect(state.agentProfiles.items.filter((profile) => profile.id === ACCEPTED)).toHaveLength(1);
+    expect(JSON.parse(context.requests[0].body as string)).toMatchObject({
+      name: NAME,
+      model: MODEL,
+      cli_passthrough: false,
+    });
+    await waitFor(() => expect(window.location.pathname).toBe("/settings/agents/claude-code"));
+    expect(context.coordinator().hasDirty).toBe(false);
+  });
+
+  // @covers AC-AGENTS-TARGET-CREATION-CATALOGUE-001.4
+  it("rejected creation retains live sibling and newer draft", async () => {
+    const context = mount();
+    const { save } = await submit(context);
+    await selectSibling(context);
+    fireEvent.change(screen.getByTestId(NAME_INPUT), {
+      target: { value: "Unsaved newer name" },
+    });
+    let result!: SaveResult;
+    await act(async () => {
+      context.reject(new Error("Target creation refused"));
+      result = await save;
+    });
+    assertSibling(context);
+    expect(result.canLeave).toBe(false);
+    expect(result.failedIds.size).toBe(1);
+    expect(context.coordinator()).toMatchObject({ status: "error", hasDirty: true });
+    expect((screen.getByTestId(NAME_INPUT) as HTMLInputElement).value).toBe("Unsaved newer name");
+    expect(window.location.pathname + window.location.search).toBe(ROUTE);
+    expect(
+      context
+        .store()
+        .getState()
+        .agentProfiles.items.some((profile) => profile.id === ACCEPTED),
+    ).toBe(false);
+  });
+});
+
+describe("current target metadata", () => {
+  // @covers AC-AGENTS-TARGET-CREATION-CATALOGUE-001.2
+  it("creation retains current sibling and owner metadata", async () => {
+    const context = mount();
+    const { save } = await submit(context);
+    await selectSibling(context);
+    const latest = wire(EXISTING, "Updated original", {
+      model: "updated-model",
+      enabled: false,
+      config_options: { reasoning: "high" },
+      updated_at: new Date(Date.parse(instant) + 100).toISOString(),
+    });
+    receive(context, latest);
+    act(() =>
+      context.store().setState((state) => ({
+        settingsAgents: {
+          items: state.settingsAgents.items.map((owner) => ({
+            ...owner,
+            supports_mcp: false,
+            inference_capable: false,
+            mcp_config_path: "live-path",
+          })),
+        },
+      })),
+    );
+    expect((await acknowledge(context, save)).failedIds.size).toBe(0);
+    assertSibling(context);
+    const state = context.store().getState();
+    expect(state.settingsAgents.items[0]).toMatchObject({
+      supports_mcp: false,
+      inference_capable: false,
+      mcp_config_path: "live-path",
+    });
+    expect(
+      state.settingsAgents.items[0].profiles.find((profile) => profile.id === EXISTING),
+    ).toMatchObject({
+      name: "Updated original",
+      model: "updated-model",
+      enabled: false,
+      configOptions: { reasoning: "high" },
+      updatedAt: latest.updated_at,
+    });
+    expect(state.agentProfiles.items.find((profile) => profile.id === EXISTING)).toMatchObject({
+      model: "updated-model",
+      enabled: false,
+    });
+  });
+});
+
+describe("accepted partial creation retry", () => {
+  // @covers AC-AGENTS-TARGET-CREATION-CATALOGUE-001.5
+  it("partial MCP failure retains live siblings and remaps the accepted draft for retry", async () => {
+    const context = mount();
+    context.state.failMcp = true;
+    fireEvent.click(screen.getByTestId("mcp-enabled"));
+    fireEvent.change(screen.getByTestId(/^mcp-servers-/), {
+      target: { value: '{"mcpServers":{"target-tool":{"command":"review-server"}}}' },
+    });
+    const { save } = await submit(context);
+    await selectSibling(context);
+    const result = await acknowledge(context, save);
+    assertSibling(context);
+    expect(result.failedIds.size).toBe(1);
+    expect(result.canLeave).toBe(false);
+    expect(context.coordinator()).toMatchObject({ status: "error", hasDirty: true });
+    expect(window.location.pathname + window.location.search).toBe(ROUTE);
+    const accepted = context
+      .store()
+      .getState()
+      .settingsAgents.items[0].profiles.find((profile) => profile.id === ACCEPTED) as DraftProfile;
+    expect(accepted).toMatchObject({ id: ACCEPTED, mcp_config: { enabled: true, dirty: true } });
+    expect(accepted.mcp_config?.servers).toContain("target-tool");
+    expect(screen.getAllByText("Target MCP save refused").length).toBeGreaterThan(0);
+    context.state.failMcp = false;
+    let retry!: SaveResult;
+    await act(async () => {
+      retry = await context.coordinator().saveAll();
+    });
+    expect(retry.failedIds.size).toBe(0);
+    const state = context.store().getState();
+    expect(
+      state.settingsAgents.items[0].profiles.filter((profile) => profile.id === ACCEPTED),
+    ).toHaveLength(1);
+    expect(
+      (
+        state.settingsAgents.items[0].profiles.find(
+          (profile) => profile.id === ACCEPTED,
+        ) as DraftProfile
+      ).mcp_config,
+    ).toBeUndefined();
+    expect(
+      context.requests.filter(
+        (request) =>
+          request.path === `/api/v1/agents/${OWNER}/profiles` && request.method === "POST",
+      ),
+    ).toHaveLength(1);
+    expect(
+      context.requests.filter(
+        (request) =>
+          request.path === `/api/v1/agent-profiles/${ACCEPTED}/mcp-config` &&
+          request.method === "POST",
+      ),
+    ).toHaveLength(2);
+    expect(state.settingsAgents.items[0].profiles.map((profile) => profile.id)).toContain(SIBLING);
+    await waitFor(() => expect(window.location.pathname).toBe("/settings/agents/claude-code"));
+    expect(context.coordinator().hasDirty).toBe(false);
+  });
+});
+
+describe("partial creation retry with a newer accepted copy", () => {
+  // @covers AC-AGENTS-TARGET-CREATION-CATALOGUE-001.2
+  // @covers AC-AGENTS-TARGET-CREATION-CATALOGUE-001.5
+  it.each([false, true])(
+    "retains live metadata on retry with in-flight edit=%s",
+    async (edited) => {
+      const context = mount();
+      context.state.failMcp = true;
+      fireEvent.click(screen.getByTestId("mcp-enabled"));
+      const { save } = await submit(context);
+      receive(
+        context,
+        wire(ACCEPTED, "Live accepted name", {
+          model: LIVE_MODEL,
+          updated_at: new Date(Date.parse(instant) + 100).toISOString(),
+        }),
+      );
+      if (edited) {
+        fireEvent.change(screen.getByTestId(NAME_INPUT), {
+          target: { value: "Genuine draft edit" },
+        });
+      }
+      const failed = await acknowledge(context, save);
+      expect(failed.failedIds.size).toBe(1);
+      expect(window.location.pathname + window.location.search).toBe(ROUTE);
+      const published = context
+        .store()
+        .getState()
+        .settingsAgents.items[0].profiles.find(
+          (profile) => profile.id === ACCEPTED,
+        ) as DraftProfile;
+      expect(published).toMatchObject({
+        name: "Live accepted name",
+        model: LIVE_MODEL,
+        mcp_config: { dirty: true },
+      });
+      context.state.failMcp = false;
+      let retry!: SaveResult;
+      await act(async () => {
+        retry = await context.coordinator().saveAll();
+      });
+      expect(retry.failedIds.size).toBe(0);
+      const patches = context.requests.filter(
+        (request) =>
+          request.path === `/api/v1/agent-profiles/${ACCEPTED}` && request.method === "PATCH",
+      );
+      if (edited) {
+        expect(patches).toHaveLength(1);
+        expect(JSON.parse(String(patches[0].body))).toMatchObject({
+          name: "Genuine draft edit",
+          model: LIVE_MODEL,
+        });
+      } else {
+        expect(patches).toHaveLength(0);
+      }
+      expect(
+        context
+          .store()
+          .getState()
+          .settingsAgents.items[0].profiles.find((profile) => profile.id === ACCEPTED),
+      ).toMatchObject({
+        name: edited ? "Genuine draft edit" : "Live accepted name",
+        model: LIVE_MODEL,
+      });
+      expect(
+        context.requests.filter(
+          (request) =>
+            request.path === `/api/v1/agents/${OWNER}/profiles` && request.method === "POST",
+        ),
+      ).toHaveLength(1);
+      await waitFor(() => expect(window.location.pathname).toBe("/settings/agents/claude-code"));
+      expect(context.coordinator().hasDirty).toBe(false);
+    },
+  );
+});

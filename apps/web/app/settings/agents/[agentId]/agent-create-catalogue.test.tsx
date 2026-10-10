@@ -329,3 +329,119 @@ describe("normal creation catalogue publication", () => {
       ACCEPTED_ID,
       `${TARGET_OWNER}-existing`,
     ]);
+    expect(target.profiles.find((profile) => profile.id === ACCEPTED_ID)).toMatchObject({
+      name: DRAFT_NAME,
+      model: MODEL,
+    });
+    expect(state.agentProfiles.items.filter((profile) => profile.id === ACCEPTED_ID)).toHaveLength(
+      1,
+    );
+    expect(JSON.parse(context.requests[0].body as string)).toMatchObject({
+      name: DRAFT_NAME,
+      model: MODEL,
+    });
+    await waitFor(() => expect(window.location.pathname).toBe("/settings/agents/claude-code"));
+    expect(context.getCoordinator().hasDirty).toBe(false);
+  });
+
+  // @covers AC-AGENTS-CREATION-CATALOGUE-001.3
+  // @covers AC-AGENTS-CREATION-CATALOGUE-001.6
+  it("rejects creation while preserving the live choice and newer draft", async () => {
+    const context = mountCreation();
+    const { save } = await submitCreation(context);
+    await receiveAndSelectIndependent(context);
+    fireEvent.change(screen.getByTestId("profile-name-input"), {
+      target: { value: "Newer unsaved name" },
+    });
+    let result!: SaveResult;
+    await act(async () => {
+      context.pending.reject(new Error("Creation refused"));
+      result = await save;
+    });
+    assertIndependentRetained(context);
+    expect(result.canLeave).toBe(false);
+    expect(result.failedIds.size).toBe(1);
+    expect(context.getCoordinator()).toMatchObject({ hasDirty: true, status: "error" });
+    expect((screen.getByTestId("profile-name-input") as HTMLInputElement).value).toBe(
+      "Newer unsaved name",
+    );
+    expect(window.location.pathname + window.location.search).toBe(CREATE_ROUTE);
+    expect(
+      context
+        .getStore()
+        .getState()
+        .agentProfiles.items.some((profile) => profile.id === ACCEPTED_ID),
+    ).toBe(false);
+  });
+});
+
+describe("creation partial results and new owners", () => {
+  // @covers AC-AGENTS-CREATION-CATALOGUE-001.1
+  // @covers AC-AGENTS-CREATION-CATALOGUE-001.4
+  // @covers AC-AGENTS-CREATION-CATALOGUE-001.6
+  it("publishes partial accepted profile creation over the current catalogue", async () => {
+    const context = mountCreation(false, true);
+    editMcpDraft();
+    const { save } = await submitCreation(context);
+    await receiveAndSelectIndependent(context);
+    const result = await completeCreation(context, save);
+    assertIndependentRetained(context);
+    assertPartialResult(context, result);
+    expect(window.location.pathname + window.location.search).toBe(CREATE_ROUTE);
+    expect(context.getCoordinator().hasDirty).toBe(true);
+    expect(
+      context
+        .getStore()
+        .getState()
+        .settingsAgents.items.find((agent) => agent.id === TARGET_OWNER)!
+        .profiles.map((p) => p.id),
+    ).toEqual([ACCEPTED_ID, `${TARGET_OWNER}-existing`]);
+  });
+
+  // @covers AC-AGENTS-CREATION-CATALOGUE-001.5
+  // @covers AC-AGENTS-CREATION-CATALOGUE-001.6
+  it("publishes a newly created agent over the current catalogue", async () => {
+    const context = mountCreation(true);
+    const { save } = await submitCreation(context);
+    expect(context.requests[0].path).toBe("/api/v1/agents");
+    await receiveAndSelectIndependent(context);
+    const result = await completeCreation(context, save);
+    expect(result.failedIds.size).toBe(0);
+    assertIndependentRetained(context);
+    const state = context.getStore().getState();
+    expect(state.settingsAgents.items.map((agent) => agent.id)).toEqual([
+      OTHER_OWNER,
+      TARGET_OWNER,
+    ]);
+    expect(state.settingsAgents.items[1].profiles).toHaveLength(1);
+    expect(state.settingsAgents.items[1].profiles[0]).toMatchObject({
+      id: ACCEPTED_ID,
+      agentId: TARGET_OWNER,
+      name: DRAFT_NAME,
+      model: MODEL,
+    });
+    expect(state.agentProfiles.items.filter((profile) => profile.id === ACCEPTED_ID)).toHaveLength(
+      1,
+    );
+    await waitFor(() => expect(window.location.pathname).toBe("/settings/agents/claude-code"));
+  });
+
+  // @covers AC-AGENTS-CREATION-CATALOGUE-001.5
+  // @covers AC-AGENTS-CREATION-CATALOGUE-001.6
+  it("publishes a new agent partial MCP result without dropping a live choice", async () => {
+    const context = mountCreation(true, true);
+    editMcpDraft();
+    const { save } = await submitCreation(context);
+    await receiveAndSelectIndependent(context);
+    const result = await completeCreation(context, save);
+    assertIndependentRetained(context);
+    assertPartialResult(context, result);
+    expect(
+      context
+        .getStore()
+        .getState()
+        .settingsAgents.items.map((agent) => agent.id),
+    ).toEqual([OTHER_OWNER, TARGET_OWNER]);
+    await waitFor(() => expect(window.location.pathname).toBe("/settings/agents/claude-code"));
+  });
+});

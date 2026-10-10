@@ -652,3 +652,34 @@ func TestHandleAskUserQuestion_RetryIgnoresBundleOwnedByAnotherSession(t *testin
 	}()
 	require.Eventually(t, func() bool {
 		return len(store.ListPending()) == 1 && creator.calls.Load() == 1
+	}, time.Second, 5*time.Millisecond)
+	assert.Equal(t, int32(1), creator.calls.Load(), "the foreign bundle must not suppress this session's own question")
+	store.CancelSession(sessionID)
+	wg.Wait()
+}
+
+func TestHandleAskUserQuestion_WithoutRetryKeyUsesRandomIdentity(t *testing.T) {
+	svc, repo := newTestTaskService(t)
+	ctx := context.Background()
+	taskID, sessionID, derived := seedRetrySession(t, ctx, svc, repo, "retry-none")
+
+	store := clarification.NewStore(time.Minute)
+	h := NewHandlers(svc, nil, store, nil, nil, repo, repo, nil, nil, nil, nil, nil, testLogger(t))
+
+	payload := retryAskPayload(sessionID, taskID)
+	delete(payload, "retry_key")
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		_, err := h.handleAskUserQuestion(ctx, makeWSMessage(t, ws.ActionMCPAskUserQuestion, payload))
+		require.NoError(t, err)
+	}()
+	require.Eventually(t, func() bool { return len(store.ListPending()) == 1 }, time.Second, 5*time.Millisecond)
+	got := store.ListPending()[0].PendingID
+	assert.NotEmpty(t, got)
+	assert.NotEqual(t, derived, got, "without a transport retry key the identity must stay random")
+	assert.NotEqual(t, clarification.PendingIDForRequest(sessionID, "test-id", retryQuestions(t), ""), got, "the backend's own ws message id is not a retry identity")
+	store.CancelSession(sessionID)
+	wg.Wait()
+}

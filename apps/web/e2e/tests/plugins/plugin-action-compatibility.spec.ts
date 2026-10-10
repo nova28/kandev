@@ -103,3 +103,35 @@ test.describe("Plugin Action compatibility", () => {
       leftId,
     ]);
     await testPage.reload();
+    await expect(standardAction).toBeVisible();
+    await expect(testPage.locator(`[data-status-item-id="${rightId}"]`)).toBeVisible();
+    await expect(testPage.locator(`[data-status-item-id="${leftId}"]`)).toBeVisible();
+    await expect.poll(readStatusOrder).toEqual(expectedStatusOrder);
+
+    await testPage.goto("/settings/plugins");
+    const pluginRow = testPage.getByTestId(`plugin-row-${PLUGIN_ID}`);
+    await pluginRow.getByRole("button", { name: "Disable" }).click();
+    await expect(pluginRow.getByText("Disabled", { exact: true })).toBeVisible();
+    await testPage.goto("/tasks");
+    await expect(testPage.getByTestId("e2e-main-topbar-action")).toHaveCount(0);
+    await expect(testPage.getByTestId("e2e-legacy-raw-topbar-action")).toHaveCount(0);
+    await expect(testPage.locator(`[data-status-item-id="${leftId}"]`)).toHaveCount(0);
+    await expect(testPage.locator(`[data-status-item-id="${rightId}"]`)).toHaveCount(0);
+
+    await testPage.goto("/settings/plugins");
+    await pluginRow.getByRole("button", { name: "Enable" }).click();
+    await expect(pluginRow.getByText("Active", { exact: true })).toBeVisible();
+    await testPage.goto("/tasks");
+    await expect(testPage.getByTestId("e2e-main-topbar-action")).toBeVisible();
+    await expect(testPage.getByTestId("e2e-legacy-raw-topbar-action")).toBeVisible();
+    await expect.poll(readStatusOrder).toEqual(expectedStatusOrder);
+    await expect(testPage.getByTestId("e2e-main-topbar-action")).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
+    await expect(testPage.getByTestId("e2e-legacy-preview-trigger")).toHaveAttribute(
+      "aria-expanded",
+      "false",
+    );
+  });
+});
