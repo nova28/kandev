@@ -44,6 +44,12 @@ var ErrExecutorNotFound = errors.New("executor not found")
 // will produce its own events.
 var ErrExecutionRotated = errors.New("execution rotated; CAS write rejected")
 
+// ErrNomadRecoveryNotReady is returned when a recovered Nomad operation's
+// inventory has not yet reached the ready phase, so its environment cannot be
+// published. It is transient: the same operation can be published once the
+// inventory advances.
+var ErrNomadRecoveryNotReady = errors.New("nomad recovery inventory is not ready")
+
 // Status values for executors_running.status. The lifecycle manager mirrors
 // active execution state into this column; the orchestrator flips a row to
 // "prepared" when a prepare-only launch finishes with the agent process
