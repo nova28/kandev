@@ -17,18 +17,18 @@
               "Value": 22044
             }
           ],
-          "IP": "192.168.10.83",
+          "IP": "192.0.2.10",
           "Mode": "host"
         }
       ],
       "Ports": [
         {
-          "HostIP": "192.168.10.83",
+          "HostIP": "192.0.2.10",
           "Label": "agentctl_control",
           "Value": 23665
         },
         {
-          "HostIP": "192.168.10.83",
+          "HostIP": "192.0.2.10",
           "Label": "agentctl_instance",
           "Value": 22044
         }
@@ -316,7 +316,7 @@
     "InterfaceName": ""
   },
   "NodeID": "fixture-node-id",
-  "NodeName": "M4MBP.local",
+  "NodeName": "worker-node.example",
   "Resources": {
     "CPU": 48,
     "Cores": 0,
@@ -340,7 +340,7 @@
             "Value": 22044
           }
         ],
-        "IP": "192.168.10.83",
+        "IP": "192.0.2.10",
         "Mode": "host"
       }
     ],
@@ -369,7 +369,7 @@
             "Value": 22044
           }
         ],
-        "IP": "192.168.10.83",
+        "IP": "192.0.2.10",
         "Mode": "host"
       }
     ],

@@ -22,7 +22,7 @@ class NomadProfilePayloadTests(unittest.TestCase):
                 "namespace": "default",
                 "region": "global",
                 "datacenter": "dc1",
-                "node_id": "664b738d-07ee-5e7a-de6a-5aa91835db25",
+                "node_id": "00000000-0000-0000-0000-000000000001",
                 "platform": "darwin/arm64",
                 "ssh_target": "fixture@127.0.0.1",
                 "ssh_port": "22422",

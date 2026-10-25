@@ -11,7 +11,7 @@ func TestNomadExecutorValidatesDedicatedNativeProfile(t *testing.T) {
 	config := map[string]string{
 		"address": "https://nomad.example.test:4646", "namespace": "default", "region": "global",
 		"datacenter": "dc1", "node_id": "node-neo", "platform": "darwin/arm64",
-		"ssh_target": "henry@neo.internal", "ssh_port": "22",
+		"ssh_target": "kandev@neo.internal", "ssh_port": "22",
 		"ssh_host_fingerprint": "SHA256:abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJK",
 		"workspace_root":       "/var/lib/kandev/workspaces", "allocation_root": "/var/lib/kandev/allocations",
 		"cpu_mhz": "1500", "memory_mb": "4096", "nomad_token": "$kandev-secret:nomad-token",

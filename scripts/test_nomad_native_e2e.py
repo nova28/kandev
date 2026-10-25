@@ -122,7 +122,7 @@ class NomadNativePreflightTest(unittest.TestCase):
         self.assertEqual(result["nomad_version"], "2.0.7")
         self.assertNotIn("node_id", self.config["nomad"])
 
-        self.config["nomad"]["node_name"] = "664b738d-07ee-5e7a-de6a-5aa91835db25"
+        self.config["nomad"]["node_name"] = "00000000-0000-0000-0000-000000000001"
         with self.assertRaises(PreflightError):
             validate_config(self.config, run=self._run)
 

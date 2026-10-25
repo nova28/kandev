@@ -163,7 +163,8 @@ func TestNomadCreateInstanceReattachesRetainedOperationWithoutRegisterOrRestage(
 		Datacenter: profile.Datacenter, NodeID: profile.NodeID, Platform: profile.Platform,
 		SSHHost: profile.SSHHost, SSHUser: profile.SSHUser, SSHPort: profile.SSHPort,
 		SSHHostFingerprint: profile.SSHHostFingerprint, WorkspaceRoot: profile.WorkspaceRoot,
-		WorkspacePath:  filepath.Join(profile.WorkspaceRoot, "environments", request.TaskEnvironmentID, "g3"),
+		WorkspacePath:      filepath.Join(profile.WorkspaceRoot, "environments", request.TaskEnvironmentID, "g3"),
+		WorkspaceInputPath: request.WorkspacePath, WorkspaceInputCaptured: true,
 		AllocationRoot: profile.AllocationRoot, CPUMHz: profile.CPUMHz, MemoryMB: profile.MemoryMB,
 		Phase: "registered", JobCreateIndex: 5, JobDefinitionIndex: 7,
 	}

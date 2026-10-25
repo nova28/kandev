@@ -357,7 +357,7 @@ func TestBuildBootstrapScriptUsesPermanentWorkerFenceAndPrivateFile(t *testing.T
 		t.Fatal(err)
 	}
 	for _, required := range []string{
-		"if ! mkdir '/var/lib/kandev/worker-state/node-neo/active-environment'",
+		"if ! mkdir '/var/lib/worker-state/node-neo/active-environment'",
 		"KANDEV_BOOTSTRAP_ENV_FILE",
 		"NOMAD_JOB_ID",
 		"NOMAD_ALLOC_ID",
@@ -417,7 +417,7 @@ func mustJSON(t *testing.T, value any) []byte {
 func validTestProfileConfig() ProfileConfig {
 	return ProfileConfig{
 		Namespace: "default", Region: "global", Datacenter: "dc1", NodeID: "node-neo",
-		Platform: "darwin/arm64", SSHUser: "henry", SSHHost: "neo.internal", SSHPort: 22,
+		Platform: "darwin/arm64", SSHUser: "kandev", SSHHost: "neo.internal", SSHPort: 22,
 		SSHHostFingerprint: "SHA256:abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJK",
 		WorkspaceRoot:      "/var/lib/kandev/workspaces", AllocationRoot: "/var/lib/kandev/allocations",
 		CPUMHz: 1500, MemoryMB: 4096, NomadTokenSecretID: "secret-nomad-token",

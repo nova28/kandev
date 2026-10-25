@@ -150,8 +150,8 @@ separate work.
 - The real Nomad 2.0.7 allocation
   `4ecbbfe7-a412-6415-67cf-b1c793f7a338` for job
   `kandev-ba4725ddfbfada39b038b56d5ad58ff3` reached `running` on the ready,
-  eligible Mac client `M4MBP.local` (node UUID
-  `664b738d-07ee-5e7a-de6a-5aa91835db25`). The node reported 48 CPU shares and
+  eligible Mac client `worker-node.example` (node UUID
+  `00000000-0000-0000-0000-000000000001`). The node reported 48 CPU shares and
   49,152 MB memory; these are Nomad scheduler values, not measured throughput
   or hard process limits.
 - Normal Kandev task/session creation produced task
@@ -180,7 +180,7 @@ separate work.
   material, not Nomad/Kandev API tokens):
 
   ```bash
-  cd /Users/henry/Projects/KegmilV2/FleetFoundry/references/kandev
+  cd <kandev-checkout>
   python3 -m unittest -v scripts/test_nomad_native_e2e.py
   scripts/nomad-native-e2e preflight --config /private/tmp/ff-wo04-current.5TW3Gn/session-config.json
   scripts/nomad-native-e2e run --require-real --scenario session --config /private/tmp/ff-wo04-current.5TW3Gn/session-config.json

@@ -33,6 +33,9 @@ func TestFixtureTeardownOnce(t *testing.T) {
 	root := "/private/tmp/ff-wo04-rjr6dc8s"
 	const taskID = "104ce439-3805-4307-be5a-7c4e8354ba20"
 	const allocationID = "526ad79c-228f-5647-83c8-c051bb6849d1"
+	if os.Getenv("FF_FIXTURE_NODE_ID") == "" {
+		t.Fatal("exact fixture teardown requires FF_FIXTURE_NODE_ID")
+	}
 	if got := os.Getenv("FF_ALLOW_EXACT_FIXTURE_TEARDOWN"); got != "yes" {
 		t.Fatal("exact fixture teardown requires explicit test opt-in")
 	}
@@ -64,7 +67,7 @@ func TestFixtureTeardownOnce(t *testing.T) {
 	if err := json.Unmarshal(stateData, &state); err != nil {
 		t.Fatal("decode fixture Nomad state")
 	}
-	if runtimeID != state.ExecutionID || state.AllocationID != allocationID || state.NodeID != "664b738d-07ee-5e7a-de6a-5aa91835db25" || state.Phase != "ready" {
+	if runtimeID != state.ExecutionID || state.AllocationID != allocationID || state.NodeID != os.Getenv("FF_FIXTURE_NODE_ID") || state.Phase != "ready" {
 		t.Fatal("fixture runtime, allocation, node, or phase identity changed")
 	}
 	profile, err := nomadProfileFromMetadata(metadata)
