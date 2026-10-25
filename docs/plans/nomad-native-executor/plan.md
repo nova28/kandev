@@ -227,7 +227,9 @@ Deliberate deviation (work order 05). The startup-continuation design has no
 Nomad-only re-election live-evidence guard and a typed recovery-guard code on
 workspace reads. Specs are frozen on this card, so the owed follow-up is an
 amendment of the startup-continuation design (step 4) adding the environment
-publication, the re-election rule and the error mapping. The PR body names the
+publication, the re-election rule and the error mapping, plus the
+task-launch-failure-recovery design ("Abandoned claims", "Re-election", physical
+evidence list) which the Nomad re-election guard narrows. The PR body names the
 deviation, and the amendment blocks marking work order 05 complete.
 
 Work order 05 real proof passed on 2026-10-25 (run 7, local throwaway Nomad

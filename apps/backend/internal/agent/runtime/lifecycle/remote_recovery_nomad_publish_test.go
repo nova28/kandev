@@ -67,13 +67,21 @@ type countingInventoryStore struct {
 	*nomadInventoryStoreFake
 	mu    sync.Mutex
 	reads int
+	// afterNextRead runs once, after the next read returns.
+	afterNextRead func()
 }
 
 func (s *countingInventoryStore) GetExecutorRunningBySessionID(ctx context.Context, sessionID string) (*models.ExecutorRunning, error) {
 	s.mu.Lock()
 	s.reads++
+	after := s.afterNextRead
+	s.afterNextRead = nil
 	s.mu.Unlock()
-	return s.nomadInventoryStoreFake.GetExecutorRunningBySessionID(ctx, sessionID)
+	row, err := s.nomadInventoryStoreFake.GetExecutorRunningBySessionID(ctx, sessionID)
+	if after != nil {
+		after()
+	}
+	return row, err
 }
 
 func (s *countingInventoryStore) readCount() int {
@@ -726,4 +734,25 @@ func TestCreatedNomadRecoveryPublish_ProjectionMatchesLaunchEnvironmentRepos(t *
 	require.Equal(t, &models.TaskEnvironmentRepo{RepositoryID: "repo-b", BranchSlug: NomadRecoveryRepoBranchSlug("", "Fallback/Slug"), Position: 2}, repos[1])
 	require.Equal(t, 3, repos[2].Position, "position is the index in the full list, as in the launch projection")
 	require.Equal(t, "", repos[2].BranchSlug)
+}
+
+func TestCreatedNomadRecoveryPublish_AttemptWindowEndingBeforePublishClassesStarting(t *testing.T) {
+	var f *nomadPublishFixture
+	f = newNomadPublishFixture(t, nomadPublishOptions{
+		repos: twoRepoSpecs()[:1],
+		// The attempt window ends right after reconciliation, before the ready
+		// inventory read that precedes publication.
+		materialize: func(w http.ResponseWriter, _ *http.Request, req agentctl.MaterializeRepositoryRequest) {
+			f.store.mu.Lock()
+			f.store.afterNextRead = func() { f.manager.finishRemoteRecoveryAttempt(f.entry) }
+			f.store.mu.Unlock()
+			_ = json.NewEncoder(w).Encode(agentctl.MaterializeRepositoryResponse{Destination: req.Destination, Reused: true})
+		},
+	})
+
+	f.attempt()
+
+	require.Zero(t, f.publisher.callCount(), "publication is not attempted once the window has ended")
+	require.Equal(t, nomadRecoveryClassStarting, f.manager.createdNomadRecoveryClass(f.entry))
+	f.requireGuardHeld()
 }

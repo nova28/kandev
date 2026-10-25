@@ -221,6 +221,14 @@ def _default_git_bare_clone(source: str, dest: str) -> None:
         raise PreflightError("git bare clone of the fixture repository failed")
 
 
+def _default_git_head(path: str, ref: str) -> str:
+    result = subprocess.run([_default_git_binary(), "-C", path, "rev-parse", "--verify", f"{ref}^{{commit}}"], capture_output=True, text=True, timeout=30, check=False)
+    head = result.stdout.strip()
+    if result.returncode != 0 or not re.fullmatch(r"[0-9a-f]{40}", head):
+        raise PreflightError("could not resolve the fixture repository base branch commit")
+    return head
+
+
 @dataclass
 class Ops:
     """Every external effect, injectable for offline tests."""
@@ -238,6 +246,7 @@ class Ops:
     ws: Callable[[dict[str, Any]], dict[str, Any]] = _default_ws
     git_bare_clone: Callable[[str, str], None] = _default_git_bare_clone
     git_binary: Callable[[], str] = _default_git_binary
+    git_head: Callable[[str, str], str] = _default_git_head
     kill_group: Callable[[int], None] = _default_kill_group
     retention_settle: float = 5.0
     clock: Callable[[], float] = time.monotonic
@@ -505,6 +514,7 @@ class Runner:
             return None
         serve = _mkdir_private(self.root / "gitserve")
         self.ops.git_bare_clone(repo["path"], str(serve / f"{FIXTURE_REPO_NAME}.git"))
+        self.save_state(expected_head=self.ops.git_head(repo["path"], repo["base_branch"]))
         port = self.ops.free_port()
         if port == self.state["port"] or self.ops.port_open(port):
             raise PreflightError("git daemon port is already in use")
@@ -787,8 +797,8 @@ def _drive(runner: Runner, cfg: dict[str, Any], ops: Ops, root: Path) -> dict[st
 
     def workspace_read() -> None:
         read = ops.ws({"mode": "workspace-read", "ws_base": f"ws://127.0.0.1:{state['port']}", "session_id": state["session_id"], "task_id": state["task_id"], "expected_file": state["expected_file"]})
-        data["workspace_read"] = {key: read.get(key) for key in ("ok", "contains_expected_file")}
-        base._check_workspace_read(read)
+        data["workspace_read"] = {key: read.get(key) for key in ("ok", "contains_expected_file", "repo_head")}
+        base._check_workspace_read(read, state.get("expected_head"))
         runner.check_session_created()
 
     step("workspace-read-before-any-prompt", workspace_read)

@@ -47,4 +47,7 @@ already passed every recovery step and failed only that cleanup expectation.
 
 ## Not covered
 
+Run 7 predates the runner's repository HEAD assertion: it proves the expected file was read, not that the recovered checkout is at the fixture commit. A re-run is needed to cover it.
+
+
 The PostgreSQL race test for the publish CAS was not run (no PostgreSQL here).

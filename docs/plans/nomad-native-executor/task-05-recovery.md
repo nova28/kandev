@@ -328,9 +328,10 @@ class as `operator_action`.
 Wire shape (SA-023). The typed error's `Error()` is `workspace recovery guarded: <code>`
 and it exposes `Code`. `wrapSessionRecoveryGuardError` (`backendapp/adapters.go`)
 carries the code into `orchestrator.SessionRecoveryGuardError` through a new `Code`
-field and sets `Retryable` true only for `nomad_recovery_starting` and false for
-`nomad_recovery_operator_action`; other `ErrSessionRecoveryGuarded` causes keep today's
-`Retryable: true`. A test in `backendapp` covers both codes. Binding a new session to
+field and keeps `Retryable` true for both `nomad_recovery_starting` and
+`nomad_recovery_operator_action` (decision SA-030; `Code` is the only discriminator and
+`Error()`/`Details()` do not vary by it); other `ErrSessionRecoveryGuarded` causes keep
+today's `Retryable: true`. A test in `backendapp` covers both codes. Binding a new session to
 the same task keeps its existing `WorkspacePreparingError` behavior in this work order
 (a later localized UI change may distinguish the codes); this is recorded, not fixed here.
 
@@ -608,3 +609,9 @@ Not done: the fresh real-worker proof. The runner's `recovery` scenario verifies
 Cleanup was an operator teardown: `session.stop` retained the allocation and fence as the work order 04 contract requires, and the runner did not claim production cleanup. Production whole-job stop remains work order 07's.
 
 Still owed: the startup-continuation design amendment (the named deviation in `plan.md`), and the PostgreSQL race test, which was not run.
+
+### Review round 1 follow-up (2026-10-25)
+
+- Attempt window ending before publication now classes `starting`: `createdNomadPublishAllowed` returns the plain error when the entry still owns the session but the attempt window has ended (`TestCreatedNomadRecoveryPublish_AttemptWindowEndingBeforePublishClassesStarting`).
+- The fixture runner now requires the workspace read to report the selected repository HEAD and compares it to the fixture repository's base-branch commit captured before launch (negative tests: missing and mismatched HEAD). Run 7 predates this assertion: its evidence proves the expected file, not the HEAD, and is not claimed to. A re-run with the HEAD assertion is needed before this work order is closed.
+- The owed design amendment also covers `docs/specs/tasks/system-design/task-launch-failure-recovery.md` ("Abandoned claims", "Re-election" and the physical-evidence list): the Nomad re-election guard makes those sections inaccurate for Nomad environments with a retained inventory row. It blocks marking this work order complete.

@@ -222,6 +222,10 @@ func (m *Manager) createdNomadPublishAllowed(entry *remoteRecoveryRetry, info *W
 		if m.createdNomadRecoveryEntryLost(entry) {
 			return fmt.Errorf("%w: %w", errRemoteRecoveryFenced, err)
 		}
+		if createdNomadRecoveryOwnerMatches(info.TaskID, info, entry) && !m.createdNomadRecoveryEntryActive(entry) {
+			// Only the attempt window ended; the next tick retries from the pinned entry.
+			return err
+		}
 		return operatorActionRecoveryError(err)
 	}
 	if !sameNomadPreACPOperation(entryState, fresh) || fresh.Revision < entryState.Revision ||

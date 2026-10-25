@@ -24,6 +24,9 @@ FINGERPRINT = "SHA256:" + "A" * 43
 EXECUTOR = "77777777-7777-4777-8777-777777777777"
 
 
+FIXTURE_HEAD = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+
 class FakeClock:
     def __init__(self):
         self.now = 0.0
@@ -90,7 +93,7 @@ class World:
         self.daemon_group_survives = False
         self.killed_groups = []
         self.ws_failure = None
-        self.workspace_read = {"ok": True, "contains_expected_file": True}
+        self.workspace_read = {"ok": True, "contains_expected_file": True, "repo_head": FIXTURE_HEAD}
         self.alloc_status = "running"
         self.fence = "owner:fence-content\n"
         self.tree_present = True
@@ -266,7 +269,7 @@ class World:
     def ops(self):
         return fixture.Ops(
             free_port=lambda: next(self.free_ports), git_binary=lambda: "/usr/bin/git", retention_settle=0, kill_group=self.kill_group,
-            git_bare_clone=lambda src, dest: self.bare_clones.append((src, dest)), port_open=lambda port: port in self.open_ports, pid_alive=lambda pid: pid in self.alive,
+            git_bare_clone=lambda src, dest: self.bare_clones.append((src, dest)), git_head=lambda path, ref: FIXTURE_HEAD, port_open=lambda port: port in self.open_ports, pid_alive=lambda pid: pid in self.alive,
             listener_pids=lambda port: [r["pid"] for r in self.records if self.record_ports.get(r["pid"]) == port],
             registry=lambda root: FakeRegistry(self), api_factory=self.api_factory, nomad_factory=self.nomad_factory,
             keyscan=self.keyscan, key_fingerprint=self.key_fingerprint, ssh_factory=self.ssh_factory, ws=self.ws, clock=self.clock.clock, sleep=self.clock.sleep, wall=lambda: "2026-01-01T00:00:00+00:00",
@@ -495,7 +498,7 @@ class CreateFlowTest(FixtureBase):
             self.assertEqual(before[key], after[key], key)
             self.assertIsNotNone(before[key], key)
         self.assertEqual((before["job_create_index"], before["job_modify_index"]), (5, 6))
-        self.assertEqual(evidence["workspace_read"], {"ok": True, "contains_expected_file": True})
+        self.assertEqual(evidence["workspace_read"], {"ok": True, "contains_expected_file": True, "repo_head": FIXTURE_HEAD})
         self.assertTrue(all("/owner" in c for c in self.world.ssh_commands if "active-environment" in c))
         self.assertEqual(evidence["prompts_sent"], 0)
         self.assertTrue(any(line == f"evidence: {root / 'evidence.json'}" for line in self.out))
@@ -712,6 +715,14 @@ class FailureFlowTest(FixtureBase):
         self.assertEqual(self.world.ws_calls, ["workspace-read"])
         self.assertEqual(self.world.events, ["crashed"])
 
+    def test_workspace_read_without_repo_head_fails(self):
+        self.world.workspace_read = {"ok": True, "contains_expected_file": True}
+        self.assertFailedLeavingFixture("workspace-read-before-any-prompt", "repository HEAD")
+
+    def test_workspace_read_with_wrong_repo_head_fails(self):
+        self.world.workspace_read = {"ok": True, "contains_expected_file": True, "repo_head": "b" * 40}
+        self.assertFailedLeavingFixture("workspace-read-before-any-prompt", "does not match")
+
     def test_workspace_read_missing_expected_file_fails(self):
         self.world.workspace_read = {"ok": True, "contains_expected_file": False}
         self.assertFailedLeavingFixture("workspace-read-before-any-prompt", "expected file")
@@ -863,7 +874,7 @@ class SharedHelpersTest(unittest.TestCase):
         base._check_session_untouched({"state": "CREATED"}, messages, messages)
         with self.assertRaises(PreflightError):
             base._check_session_untouched({"state": "CREATED"}, messages + [{"id": "b"}], messages)
-        base._check_workspace_read({"ok": True, "contains_expected_file": True})
+        base._check_workspace_read({"ok": True, "contains_expected_file": True, "repo_head": FIXTURE_HEAD}, FIXTURE_HEAD)
         with self.assertRaises(PreflightError):
             base._check_workspace_read({"ok": True})
 

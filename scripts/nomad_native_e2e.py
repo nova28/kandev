@@ -936,9 +936,14 @@ def _check_session_untouched(session_row: dict[str, Any], messages_after: list[d
         raise PreflightError("pre-ready recovery changed the durable message identities")
 
 
-def _check_workspace_read(read: dict[str, Any]) -> None:
+def _check_workspace_read(read: dict[str, Any], expected_head: str | None = None) -> None:
     if read.get("ok") is not True or read.get("contains_expected_file") is not True:
         raise PreflightError("normal workspace read did not return the expected file")
+    head = read.get("repo_head")
+    if not isinstance(head, str) or not re.fullmatch(r"[0-9a-f]{40}", head):
+        raise PreflightError("normal workspace read did not report the selected repository HEAD")
+    if expected_head is not None and head != expected_head:
+        raise PreflightError("workspace repository HEAD does not match the fixture repository commit")
 
 
 def _run_attached_pre_ready_recovery(config: dict[str, Any]) -> dict[str, Any]:
