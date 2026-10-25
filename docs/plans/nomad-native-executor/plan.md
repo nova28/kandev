@@ -232,10 +232,10 @@ task-launch-failure-recovery design ("Abandoned claims", "Re-election", physical
 evidence list) which the Nomad re-election guard narrows. The PR body names the
 deviation, and the amendment blocks marking work order 05 complete.
 
-Work order 05 real proof passed on 2026-10-25 (run 7, local throwaway Nomad
-2.0.7 fixture): a pre-ready crash at the fixture-only barrier, an automatic
+Work order 05 real proof passed on 2026-10-25 (run 9, local throwaway Nomad
+2.0.7 fixture, supersedes run 7): a pre-ready crash at the fixture-only barrier, an automatic
 restart, environment `ready` and a normal workspace read before any prompt with
-the same execution, job, allocation and fence. Evidence is in
+the recovered checkout HEAD asserted over pinned SSH, and the same execution, job, allocation and fence. Evidence is in
 `docs/evidence/nomad-wo05/`. Its cleanup was an operator teardown; production
 whole-job stop remains work order 07's.
 

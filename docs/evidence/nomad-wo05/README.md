@@ -2,28 +2,28 @@
 
 Work order 05 (`docs/plans/nomad-native-executor/task-05-recovery.md`), fenced
 environment readiness publication. Evidence file:
-[`pre-ready-recovery-run7.json`](pre-ready-recovery-run7.json), the runner's
+[`pre-ready-recovery-run9.json`](pre-ready-recovery-run9.json), the runner's
 `evidence.json` with absolute fixture paths replaced by `<fixture-home>`.
 
-## Result: passed (run 7, exit 0)
+## Result: passed (run 9, exit 0)
 
 - Command: `scripts/nomad-native-e2e run --require-real --scenario pre-ready-recovery --create-fixture --config <bootstrap outside the repository>`.
-- Runner at `ce68dc0e2f`; backend built from `560dfd2b57` (kandev sha256 `ff11e58903f4f96b3fb5e62aeed90c0e892ca943105409e8b3ed42df14ba2e5e`, agentctl-darwin-arm64 sha256 `698ed0d6ebcc8156850fb6d19b9cbcf4a114cea12e0f5822bda8c4ca87e3cce8`).
+- Runner at `54ab535df2`; backend and agentctl built from `0e73ef6a15` (kandev sha256 `87b63baed495b1ffb369c1c5128262ef451dac85dd725e0bda42c1bfa4f6d44a`, agentctl-darwin-arm64 sha256 `328d8409f9569592776eb93240e58b673ef48a0495268f6198a8b98560ed5fde`, codesign verified). All 11 steps passed.
 - Cluster: throwaway local Nomad 2.0.7 on loopback, darwin/arm64 client, fixture sshd with a pinned host key. No real cluster or live service was touched.
 - The fixture backend was SIGKILLed at the fixture-only pre-publish barrier, after the workspace input was durable and the inventory phase was `ready` while the `task_environments` row was still `creating`. It was restarted without the barrier.
-- Before any prompt (`prompts_sent: 0`): the environment became `ready`, a normal workspace read returned the expected file, and the execution, job, allocation, node and fence were unchanged.
+- Before any prompt (`prompts_sent: 0`): the environment became `ready`, a normal workspace read returned the expected file, the recovered checkout HEAD `4c687ac69a70a67447ba936ed7b79ac861002683` (read over the pinned read-only SSH channel, since git snapshots exist only after an agent turn) equalled the fixture git-daemon repository HEAD, and the execution, job, allocation, node and fence were unchanged.
 
 | Identity | Before crash | After recovery |
 | --- | --- | --- |
-| execution | `db602d5f-0381-4593-844a-39221183b1d9` | same |
-| job | `kandev-431754849dd35561737413eb104e5ba4`, create/modify index 89/89 | same |
-| allocation | `61b08712-ac6a-8269-b586-d1595e5b2f5b` | same |
+| execution | `a57f4a03-7025-4470-af8f-ad2c8703fe72` | same |
+| job | `kandev-50e5c3075a93089e39613eafbfd3ea99`, create/modify index 153/153 | same |
+| allocation | `97fa6e7b-fb6d-ae9e-cbf1-a13ae25b33cf` | same |
 | node | `5dd33836-f337-39c7-8bd3-d60004c67585` | same |
-| fence owner sha256 | `b7816ac1...f761` | same |
+| fence owner sha256 | `80abea59...7d17` | same |
 | environment status | `creating` | `ready` |
 | remote process count | 2 | 2 |
 
-Backend pids: 72995 before the crash, 73802 after the restart.
+Backend pids: 89103 before the crash, 89811 after the restart.
 
 ## Cleanup is an operator teardown, not production cleanup
 
@@ -37,7 +37,7 @@ allocations.
 
 ## Earlier attempts
 
-Runs 1 to 6 failed and exposed runner bugs, all fixed before run 7: no agent
+Runs 1 to 6 failed and exposed runner bugs, fixed before run 7. Run 7 passed but never proved the repository HEAD. Run 8 passed every recovery step and failed only the new HEAD assertion, which wrongly read git snapshots (empty before any turn); run 9 reads HEAD over SSH. Bugs fixed: no agent
 profile on a fresh fixture home (now an inert ACP agent is created), a missing
 settings interlock header, an incomplete Nomad executor config, a local
 repository without a provider origin (now a runner-owned `git daemon` plus
@@ -47,7 +47,6 @@ already passed every recovery step and failed only that cleanup expectation.
 
 ## Not covered
 
-Run 7 predates the runner's repository HEAD assertion: it proves the expected file was read, not that the recovered checkout is at the fixture commit. A re-run is needed to cover it.
-
+Run 9 supersedes run 7 and is the authoritative WO05 evidence. Production whole-job cleanup is work order 07.
 
 The PostgreSQL race test for the publish CAS was not run (no PostgreSQL here).

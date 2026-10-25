@@ -1,0 +1,79 @@
+{
+  "allocation_id": "97fa6e7b-fb6d-ae9e-cbf1-a13ae25b33cf",
+  "backend_pids": {"after_restart": 89811, "before_crash": 89103},
+  "cleanup": {
+    "allocation_state_after_stop": "running",
+    "backend_pid_stopped": 89811,
+    "fence_retained": true,
+    "fence_sha256_after_stop": "80abea5945679ee1d6f68bc3245bed73dcba04fad12c48081b523a1a31e77d17",
+    "git_daemon_pid_stopped": 89098,
+    "job_status_after_stop": "running",
+    "operator_teardown_required": {
+      "allocation_id": "97fa6e7b-fb6d-ae9e-cbf1-a13ae25b33cf",
+      "environment_id": "1b4d9ed0-ec4c-4e1f-8b5c-44546fc9ce4b",
+      "fence_path": "<fixture-home>/worker-state/5dd33836-f337-39c7-8bd3-d60004c67585/active-environment",
+      "job_id": "kandev-50e5c3075a93089e39613eafbfd3ea99",
+      "reason": "an ordinary session stop retains the allocation, fence, controller and workspace; ending the Nomad job is not part of this path"
+    },
+    "production_cleanup": false,
+    "remote_processes_retained": 2
+  },
+  "environment_id": "1b4d9ed0-ec4c-4e1f-8b5c-44546fc9ce4b",
+  "environment_status": {"after": "ready", "before": "creating"},
+  "execution_id": "a57f4a03-7025-4470-af8f-ad2c8703fe72",
+  "fence_sha256": "80abea5945679ee1d6f68bc3245bed73dcba04fad12c48081b523a1a31e77d17",
+  "finished": "2026-10-25T13:17:50+00:00",
+  "fixture_root": "<fixture-home>/runs/nomad-e2e-fixture-<id>",
+  "identities": {
+    "after": {
+      "allocation_id": "97fa6e7b-fb6d-ae9e-cbf1-a13ae25b33cf",
+      "environment_status": "ready",
+      "execution_id": "a57f4a03-7025-4470-af8f-ad2c8703fe72",
+      "fence_owner_sha256": "80abea5945679ee1d6f68bc3245bed73dcba04fad12c48081b523a1a31e77d17",
+      "inventory_phase": "ready",
+      "job_create_index": 153,
+      "job_id": "kandev-50e5c3075a93089e39613eafbfd3ea99",
+      "job_modify_index": 153,
+      "node_id": "5dd33836-f337-39c7-8bd3-d60004c67585",
+      "remote_process_count": 2
+    },
+    "before": {
+      "allocation_id": "97fa6e7b-fb6d-ae9e-cbf1-a13ae25b33cf",
+      "environment_status": "creating",
+      "execution_id": "a57f4a03-7025-4470-af8f-ad2c8703fe72",
+      "fence_owner_sha256": "80abea5945679ee1d6f68bc3245bed73dcba04fad12c48081b523a1a31e77d17",
+      "inventory_phase": "ready",
+      "job_create_index": 153,
+      "job_id": "kandev-50e5c3075a93089e39613eafbfd3ea99",
+      "job_modify_index": 153,
+      "node_id": "5dd33836-f337-39c7-8bd3-d60004c67585",
+      "remote_process_count": 2
+    }
+  },
+  "inventory_phase": {"after": "ready", "before": "ready"},
+  "job_id": "kandev-50e5c3075a93089e39613eafbfd3ea99",
+  "mode": "created-real-pre-ready-recovery",
+  "node_id": "5dd33836-f337-39c7-8bd3-d60004c67585",
+  "port": 62186,
+  "prompts_sent": 0,
+  "server_identity": "db544e22b57109a82c3958a315cbe6b84c674a3be51be4b49063df5dc71bcc53",
+  "session_id": "7106418f-a1aa-4eb3-8edb-24cce44d94b0",
+  "started": "2026-10-25T13:17:40+00:00",
+  "status": "passed",
+  "steps": [
+    {"duration_s": 0.298, "name": "start-git-daemon", "status": "passed"},
+    {"duration_s": 1.406, "name": "start-backend-with-barrier", "status": "passed"},
+    {"duration_s": 0.024, "name": "create-fixture-objects", "status": "passed"},
+    {"duration_s": 1.805, "name": "await-pre-publish-barrier", "status": "passed"},
+    {"duration_s": 0.138, "name": "snapshot-before-crash", "status": "passed"},
+    {"duration_s": 0.054, "name": "crash-backend", "status": "passed"},
+    {"duration_s": 0.313, "name": "restart-backend-without-barrier", "status": "passed"},
+    {"duration_s": 0.139, "name": "await-recovery", "status": "passed"},
+    {"duration_s": 0.0, "name": "assert-identity-preserved", "status": "passed"},
+    {"duration_s": 0.091, "name": "workspace-read-before-any-prompt", "status": "passed"},
+    {"duration_s": 5.406, "name": "session-stop-and-teardown", "status": "passed"}
+  ],
+  "task_id": "38159ad8-91eb-4995-92cf-ff9cfaeb53ce",
+  "workspace_path": "<fixture-home>/worker/workspace/environments/1b4d9ed0-ec4c-4e1f-8b5c-44546fc9ce4b/g1",
+  "workspace_read": {"contains_expected_file": true, "ok": true, "repo_head": "4c687ac69a70a67447ba936ed7b79ac861002683"}
+}
