@@ -594,7 +594,7 @@ and an unpinned startup owner blocking workspace access. These are local
 deterministic tests; the damaged live fixture has not yet been automatically
 recovered by this new continuation path.
 
-### Build results (2026-10-25): code complete, real proof passed (run 9)
+### Build results (2026-10-25): code complete, real proof passed (run 10)
 
 Commits `4ea68182c2` (stale test literals fixed, infrastructure identifiers scrubbed), `b5fdb19e85` (SQLite `PublishRecoveredNomadEnvironmentReady` and the Nomad re-election guard), `2fec5a781c` (lifecycle publication, typed guard error, `backendapp` wiring). Targeted tests pass: sqlite `TestPublishRecoveredNomadEnvironmentReady_*`/`TestReelectNomad_*`, lifecycle `TestCreatedNomadRecoveryPublish_*`, orchestrator `TestPersistTaskEnvironment_PublishedNomadReady_*` and slug parity, `backendapp` `TestWrapSessionRecoveryGuardError_*`. The PostgreSQL race test is present but skipped here (no `KANDEV_TEST_POSTGRES_DSN`); it has not been run. Pre-existing failures are unchanged: `backendapp` and `orchestrator/executor` fail the same 55 tests at 73c8155caf and now; lifecycle fails the same 23 lines before and after.
 
@@ -604,7 +604,7 @@ Not done: the fresh real-worker proof. The runner's `recovery` scenario verifies
 
 ### Real proof (2026-10-25): passed
 
-`scripts/nomad-native-e2e run --require-real --scenario pre-ready-recovery --create-fixture` passed (run 9, exit 0, all 11 steps; supersedes run 7) against a throwaway local Nomad 2.0.7 fixture, runner `54ab535df2`, backend and agentctl built from `0e73ef6a15`. The backend was SIGKILLed at the fixture-only pre-publish barrier and restarted. Before any prompt the environment went `creating` to `ready`, a normal workspace read returned the expected file, the recovered checkout HEAD `4c687ac69a70a67447ba936ed7b79ac861002683` (read over pinned read-only SSH, equal to the fixture git-daemon repository HEAD) matched, and the execution, job (`kandev-50e5c3075a93089e39613eafbfd3ea99`, index 153), allocation, node and fence were unchanged. Evidence: `docs/evidence/nomad-wo05/`. Runs 1 to 8 found and fixed runner bugs only (run 8 failed solely because the HEAD assertion read git snapshots, which exist only after a turn) (the history is in the evidence README).
+`scripts/nomad-native-e2e run --require-real --scenario pre-ready-recovery --create-fixture` passed (run 10, exit 0, all 11 steps; supersedes runs 7 and 9) against a throwaway local Nomad 2.0.7 fixture, runner `84c1e3f6fc`, backend and agentctl built from `0e73ef6a15`. The backend was SIGKILLed at the fixture-only pre-publish barrier and restarted. Before any prompt the environment went `creating` to `ready`, a normal workspace read returned the expected file, the recovered checkout HEAD `4c687ac69a70a67447ba936ed7b79ac861002683` (read over pinned read-only SSH, equal to the fixture git-daemon repository HEAD) matched, and the execution, job (`kandev-f2bedea5c9b1d0ab231da7576ffe2cce`, index 186), allocation, node and fence were unchanged. Evidence: `docs/evidence/nomad-wo05/`. Runs 1 to 8 found and fixed runner bugs only (run 8 failed solely because the HEAD assertion read git snapshots, which exist only after a turn) (the history is in the evidence README).
 
 Cleanup was an operator teardown: `session.stop` retained the allocation and fence as the work order 04 contract requires, and the runner did not claim production cleanup. Production whole-job stop remains work order 07's.
 
