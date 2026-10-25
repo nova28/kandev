@@ -2,8 +2,9 @@
 
 One invocation creates a fresh private fixture, runs its own headless Kandev
 through normal APIs, SIGKILLs the backend at the deterministic pre-publish
-barrier, restarts it, asserts recovery, and tears down through the production
-session stop path. The first failed assertion stops the run without cleanup;
+barrier, restarts it, asserts recovery, then stops the session and records the
+retained allocation and fence as an operator teardown. The first failed
+assertion stops the run without cleanup;
 `cleanup-fixture` then performs the teardown against the retained fixture.
 
 The runner never mutates Nomad: its only Nomad access is HTTP GET.
@@ -19,6 +20,7 @@ import posixpath
 import re
 import shlex
 import shutil
+import signal
 import socket
 import sqlite3
 import stat
@@ -199,6 +201,13 @@ def _default_ws(payload: dict[str, Any]) -> dict[str, Any]:
         raise PreflightError("fixture WebSocket driver result is unreadable") from None
 
 
+def _default_kill_group(pgid: int) -> None:
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+
+
 def _default_git_binary() -> str:
     path = shutil.which("git")
     if not path:
@@ -229,6 +238,8 @@ class Ops:
     ws: Callable[[dict[str, Any]], dict[str, Any]] = _default_ws
     git_bare_clone: Callable[[str, str], None] = _default_git_bare_clone
     git_binary: Callable[[], str] = _default_git_binary
+    kill_group: Callable[[int], None] = _default_kill_group
+    retention_settle: float = 5.0
     clock: Callable[[], float] = time.monotonic
     sleep: Callable[[float], Any] = time.sleep
     wall: Callable[[], str] = lambda: datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -421,7 +432,8 @@ class Runner:
     def fence(self) -> str | None:
         """SHA-256 of the worker's active-environment fence, or None when it is absent."""
         path = shlex.quote(_fence_path(self.state))
-        code, out = self.ssh(f"if [ -e {path} ]; then cat -- {path}; else exit 3; fi")
+        # The bootstrap fence is a directory created by mkdir; its owner file carries the identity.
+        code, out = self.ssh(f"if [ -e {path} ]; then cat -- {path}/owner; else exit 3; fi")
         if code == 3:
             return None
         if code != 0:
@@ -568,41 +580,75 @@ class Runner:
         return messages
 
     # -- teardown ------------------------------------------------------------------------
-    def teardown(self) -> dict[str, Any]:
-        """Production stop path, then verification; fails on the first unmet condition."""
-        report: dict[str, Any] = {}
+    def teardown(self, strict_retention: bool = True) -> dict[str, Any]:
+        """Stop the session through the normal path, assert the WO04 retention contract, then stop runner-owned processes.
+
+        An ordinary session stop retains the allocation, fence and workspace; ending the Nomad job is not part of this
+        path, so the job is reported as an operator teardown and is never claimed as production cleanup.
+        """
+        report: dict[str, Any] = {"production_cleanup": False}
         if not any(item["label"] == PROCESS_LABEL for item in self.registry.read_records()):
             self.start_backend(None)
         record = next(item for item in self.registry.read_records() if item["label"] == PROCESS_LABEL)
         if self.state.get("session_id"):
             self.ops.ws({"mode": "session-stop", "ws_base": f"ws://127.0.0.1:{self.state['port']}", "session_id": self.state["session_id"]})
         if self.state.get("allocation_id"):
-            allocation_id = self.state["allocation_id"]
-
-            def terminal() -> str | None:
-                status = self.nomad(f"/v1/allocation/{allocation_id}").get("ClientStatus")
-                return status if status in TERMINAL_ALLOCATION_STATES else None
-
-            report["allocation_state"] = self.poll(self.ops.allocation_timeout, 1.0, terminal, "Nomad allocation did not reach a terminal state after the session stop")
-            self.poll(self.ops.fence_timeout, 1.0, lambda: self.fence() is None, "worker active-environment fence is still present after the session stop")
-            report["fence_released"] = True
+            report.update(self._observe_retention(strict_retention))
         if self.registry.stop(PROCESS_LABEL, timeout=15) not in ("stopped", "already_absent"):
             raise PreflightError("fixture backend did not stop through its exact owned process record")
         self.verify_gone(record["pid"])
         report["backend_pid_stopped"] = record["pid"]
         daemon = next((item for item in self.registry.read_records() if item["label"] == GIT_DAEMON_LABEL), None)
         if daemon is not None:
-            if self.registry.stop(GIT_DAEMON_LABEL, timeout=15) not in ("stopped", "already_absent"):
-                raise PreflightError("git daemon did not stop through its exact owned process record")
-            if self.ops.pid_alive(daemon["pid"]) or self.ops.port_open(self.state["git_port"]):
-                raise PreflightError("git daemon process or port is still present")
+            self._stop_daemon(daemon)
             report["git_daemon_pid_stopped"] = daemon["pid"]
-        if self.state.get("allocation_id"):
-            inventory = {key: self.state[key] for key in ("allocation_id", "job_id", "environment_id")}
-            if self.remote_tree(inventory):
-                raise PreflightError("remote runtime processes are still present after teardown")
-            report["remote_processes_remaining"] = 0
         return report
+
+    def _observe_retention(self, strict: bool) -> dict[str, Any]:
+        self.ops.sleep(self.ops.retention_settle)
+        allocation_id, job_id = self.state["allocation_id"], self.state["job_id"]
+        status = self.nomad(f"/v1/allocation/{allocation_id}").get("ClientStatus")
+        job = self.nomad(f"/v1/job/{job_id}")
+        job = job.get("Job", job)
+        fence = self.fence()
+        inventory = {key: self.state[key] for key in ("allocation_id", "job_id", "environment_id")}
+        retained = {
+            "allocation_state_after_stop": status, "job_status_after_stop": job.get("Status"), "fence_retained": fence is not None,
+            "fence_sha256_after_stop": fence, "remote_processes_retained": len(self.remote_tree(inventory)),
+        }
+        if strict:
+            if status in TERMINAL_ALLOCATION_STATES:
+                raise PreflightError("session stop unexpectedly ended the Nomad allocation; the retention contract is violated")
+            if fence is None or fence != self.state.get("fence_sha256", fence):
+                raise PreflightError("session stop released or changed the worker fence; the retention contract is violated")
+        retained["operator_teardown_required"] = {
+            "reason": "an ordinary session stop retains the allocation, fence, controller and workspace; ending the Nomad job is not part of this path",
+            "job_id": job_id, "allocation_id": allocation_id, "environment_id": self.state["environment_id"], "fence_path": _fence_path(self.state),
+        }
+        return retained
+
+    def _stop_daemon(self, daemon: dict[str, Any]) -> None:
+        try:
+            result = self.registry.stop(GIT_DAEMON_LABEL, timeout=15)
+        except Exception:
+            # A forked git-daemon child outlives its leader; the recorded group is the owned unit.
+            self.ops.kill_group(daemon["pgid"])
+            self.ops.sleep(0.5)
+            result = self.registry.stop(GIT_DAEMON_LABEL, timeout=15)
+        if result not in ("stopped", "already_absent"):
+            raise PreflightError("git daemon did not stop through its exact owned process record")
+        if self.ops.pid_alive(daemon["pid"]) or self.ops.port_open(self.state["git_port"]):
+            raise PreflightError("git daemon process or port is still present")
+
+
+def _identity_record(inventory: dict[str, Any], observed: dict[str, Any], environment_status: str) -> dict[str, Any]:
+    nomad = observed["nomad"]
+    return {
+        "execution_id": inventory["execution_id"], "job_id": nomad["job_id"], "job_create_index": nomad["job_create_index"],
+        "job_modify_index": nomad["job_definition_index"], "allocation_id": nomad["allocation_id"], "node_id": nomad["node_id"],
+        "fence_owner_sha256": observed["fence"], "environment_status": environment_status, "inventory_phase": inventory["phase"],
+        "remote_process_count": len(observed["tree"]),
+    }
 
 
 def _git_isolation_env(root: Path) -> dict[str, str]:
@@ -697,6 +743,8 @@ def _drive(runner: Runner, cfg: dict[str, Any], ops: Ops, root: Path) -> dict[st
         return {"generation": generation, "messages": messages, "nomad": runner.nomad_snapshot(inventory), "tree": runner.remote_tree(inventory), "fence": runner.fence()}
 
     before = step("snapshot-before-crash", pre_crash)
+    runner.save_state(fence_sha256=before["fence"], environment_id=environment_id, job_id=inventory["job_id"], allocation_id=inventory["allocation_id"])
+    data["identities"] = {"before": _identity_record(inventory, before, "creating")}
     if not before["tree"] or before["fence"] is None:
         raise PreflightError("remote runtime process tree or worker fence is missing before the crash")
     if before["generation"] != inventory["generation"]:
@@ -723,6 +771,7 @@ def _drive(runner: Runner, cfg: dict[str, Any], ops: Ops, root: Path) -> dict[st
         return {"inventory": inventory_after, "nomad": runner.nomad_snapshot(inventory_after), "tree": runner.remote_tree(inventory_after), "fence": runner.fence()}
 
     after = step("await-recovery", recovered)
+    data["identities"]["after"] = _identity_record(after["inventory"], after, "ready")
 
     def identity() -> None:
         if after["inventory"] != inventory:
@@ -738,11 +787,12 @@ def _drive(runner: Runner, cfg: dict[str, Any], ops: Ops, root: Path) -> dict[st
 
     def workspace_read() -> None:
         read = ops.ws({"mode": "workspace-read", "ws_base": f"ws://127.0.0.1:{state['port']}", "session_id": state["session_id"], "task_id": state["task_id"], "expected_file": state["expected_file"]})
+        data["workspace_read"] = {key: read.get(key) for key in ("ok", "contains_expected_file")}
         base._check_workspace_read(read)
         runner.check_session_created()
 
     step("workspace-read-before-any-prompt", workspace_read)
-    cleanup = step("cleanup-production-stop-path", runner.teardown)
+    cleanup = step("session-stop-and-teardown", runner.teardown)
     return {
         "task_id": state["task_id"], "session_id": state["session_id"], "environment_id": environment_id, "execution_id": inventory["execution_id"],
         "job_id": inventory["job_id"], "allocation_id": inventory["allocation_id"], "node_id": inventory["node_id"],
@@ -789,7 +839,7 @@ def run_cleanup_fixture(root_text: str, ops: Ops | None = None, out: Callable[[s
         evidence.data = {"status": "unknown", "steps": []}
     try:
         runner = Runner(root, state, token, ops, evidence)
-        report = runner.step("cleanup-fixture", runner.teardown)
+        report = runner.step("cleanup-fixture", lambda: runner.teardown(strict_retention=False))
     except Exception as exc:
         evidence.data["cleanup"] = {"status": "failed", "error": evidence.scrub(str(exc)), "finished": ops.wall()}
         evidence.save()

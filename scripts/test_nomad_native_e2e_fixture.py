@@ -70,6 +70,8 @@ class FakeRegistry:
         return self._retire(label, "crashed")
 
     def stop(self, label, timeout=5):
+        if label == fixture.GIT_DAEMON_LABEL and self.world.daemon_group_survives:
+            raise RuntimeError("leader stopped but process group still has members")
         return self._retire(label, "stopped")
 
 
@@ -83,8 +85,10 @@ class World:
         self.phase, self.captured = "ready", True
         self.recover_mutation = None
         self.stop_leaves_alive = False
-        self.stop_effect = True
-        self.fence_survives_stop = False
+        self.stop_effect = False
+        self.fence_survives_stop = True
+        self.daemon_group_survives = False
+        self.killed_groups = []
         self.ws_failure = None
         self.workspace_read = {"ok": True, "contains_expected_file": True}
         self.alloc_status = "running"
@@ -253,12 +257,15 @@ class World:
             self.alloc_status = "complete"
         if not self.fence_survives_stop:
             self.fence = None
-        self.tree_present = False
         return {"ok": True}
+
+    def kill_group(self, pgid):
+        self.killed_groups.append(pgid)
+        self.daemon_group_survives = False
 
     def ops(self):
         return fixture.Ops(
-            free_port=lambda: next(self.free_ports), git_binary=lambda: "/usr/bin/git",
+            free_port=lambda: next(self.free_ports), git_binary=lambda: "/usr/bin/git", retention_settle=0, kill_group=self.kill_group,
             git_bare_clone=lambda src, dest: self.bare_clones.append((src, dest)), port_open=lambda port: port in self.open_ports, pid_alive=lambda pid: pid in self.alive,
             listener_pids=lambda port: [r["pid"] for r in self.records if self.record_ports.get(r["pid"]) == port],
             registry=lambda root: FakeRegistry(self), api_factory=self.api_factory, nomad_factory=self.nomad_factory,
@@ -466,13 +473,30 @@ class CreateFlowTest(FixtureBase):
         self.assertEqual([s["status"] for s in evidence["steps"]], ["passed"] * len(evidence["steps"]))
         self.assertEqual([s["name"] for s in evidence["steps"]], [
             "start-git-daemon", "start-backend-with-barrier", "create-fixture-objects", "await-pre-publish-barrier", "snapshot-before-crash", "crash-backend",
-            "restart-backend-without-barrier", "await-recovery", "assert-identity-preserved", "workspace-read-before-any-prompt", "cleanup-production-stop-path",
+            "restart-backend-without-barrier", "await-recovery", "assert-identity-preserved", "workspace-read-before-any-prompt", "session-stop-and-teardown",
         ])
         self.assertEqual((evidence["job_id"], evidence["allocation_id"], evidence["node_id"], evidence["execution_id"]), (JOB, ALLOC, NODE, EXEC_ID))
         self.assertEqual(evidence["environment_status"], {"before": "creating", "after": "ready"})
         self.assertEqual(evidence["inventory_phase"], {"before": "ready", "after": "ready"})
-        self.assertEqual(evidence["cleanup"]["allocation_state"], "complete")
-        self.assertTrue(evidence["cleanup"]["fence_released"])
+        cleanup = evidence["cleanup"]
+        self.assertIs(cleanup["production_cleanup"], False)
+        self.assertEqual(cleanup["allocation_state_after_stop"], "running")
+        self.assertEqual(cleanup["job_status_after_stop"], "running")
+        self.assertTrue(cleanup["fence_retained"])
+        self.assertEqual(cleanup["fence_sha256_after_stop"], evidence["fence_sha256"])
+        self.assertEqual(cleanup["remote_processes_retained"], 2)
+        teardown = cleanup["operator_teardown_required"]
+        self.assertEqual((teardown["job_id"], teardown["allocation_id"]), (JOB, ALLOC))
+        self.assertTrue(teardown["fence_path"].endswith("/active-environment"))
+        before, after = evidence["identities"]["before"], evidence["identities"]["after"]
+        self.assertEqual(before["environment_status"], "creating")
+        self.assertEqual(after["environment_status"], "ready")
+        for key in ("execution_id", "job_id", "job_create_index", "job_modify_index", "allocation_id", "node_id", "fence_owner_sha256", "remote_process_count"):
+            self.assertEqual(before[key], after[key], key)
+            self.assertIsNotNone(before[key], key)
+        self.assertEqual((before["job_create_index"], before["job_modify_index"]), (5, 6))
+        self.assertEqual(evidence["workspace_read"], {"ok": True, "contains_expected_file": True})
+        self.assertTrue(all("/owner" in c for c in self.world.ssh_commands if "active-environment" in c))
         self.assertEqual(evidence["prompts_sent"], 0)
         self.assertTrue(any(line == f"evidence: {root / 'evidence.json'}" for line in self.out))
         text = self.everything_written()
@@ -612,6 +636,18 @@ class GitProviderRedirectTest(FixtureBase):
         self.assertEqual(self.world.open_ports, set())
         self.assertEqual(self.world.events.count("stopped"), 2)
 
+    def test_forked_daemon_children_are_killed_through_the_owned_process_group(self):
+        self.world.daemon_group_survives = True
+        self.assertEqual(self.run_flow(), 0, self.err)
+        self.assertEqual(len(self.world.killed_groups), 1)
+        daemon_pid = self.evidence()["cleanup"]["git_daemon_pid_stopped"]
+        self.assertEqual(self.world.killed_groups, [daemon_pid])
+        self.assertEqual(self.world.records, [])
+
+    def test_daemon_group_is_not_killed_when_the_owned_stop_succeeds(self):
+        self.assertEqual(self.run_flow(), 0, self.err)
+        self.assertEqual(self.world.killed_groups, [])
+
     def test_daemon_that_survives_teardown_fails_cleanup(self):
         self.world.stop_leaves_alive = True
         self.assertNotEqual(self.run_flow(), 0)
@@ -690,8 +726,8 @@ class FailureFlowTest(FixtureBase):
 
     def test_cleanup_failures_fail_loudly(self):
         cases = (
-            ("allocation not terminal", {"stop_effect": False}, "terminal state"),
-            ("fence still present", {"fence_survives_stop": True}, "fence is still present"),
+            ("allocation ended by session stop", {"stop_effect": True}, "retention contract"),
+            ("fence released by session stop", {"fence_survives_stop": False}, "retention contract"),
             ("process still alive", {"stop_leaves_alive": True}, "still alive"),
         )
         for name, attrs, message in cases:
@@ -699,7 +735,7 @@ class FailureFlowTest(FixtureBase):
                 self.setUp()
                 for key, value in attrs.items():
                     setattr(self.world, key, value)
-                self.assertFailedLeavingFixture("cleanup-production-stop-path", message)
+                self.assertFailedLeavingFixture("session-stop-and-teardown", message)
                 self.assertEqual(self.world.ws_calls.count("session-stop"), 1)
                 self.temp.cleanup()
 
@@ -757,7 +793,8 @@ class CleanupFixtureTest(FixtureBase):
         self.assertEqual(evidence["cleanup"]["status"], "passed")
         self.assertEqual(self.world.ws_calls, ["session-stop"])
         self.assertEqual(self.world.records, [])
-        self.assertEqual(self.world.alloc_status, "complete")
+        self.assertEqual(self.world.alloc_status, "running")
+        self.assertIs(evidence["cleanup"]["production_cleanup"], False)
         self.assertNotIn(TOKEN, self.everything_written())
 
     def test_cleanup_starts_the_backend_first_when_it_is_down(self):
@@ -773,12 +810,21 @@ class CleanupFixtureTest(FixtureBase):
     def test_cleanup_failure_fails_loudly_once_and_reprints_the_command(self):
         self.world.recover_mutation = "tree"
         self.assertEqual(self.run_flow(), 2)
-        self.world.stop_effect = False
+        self.world.stop_leaves_alive = True
         self.out.clear()
         self.assertEqual(self.cleanup(), 2)
         self.assertEqual(self.world.ws_calls.count("session-stop"), 1)
         self.assertTrue(any(line.startswith("operator cleanup: python3 scripts/nomad_native_e2e.py cleanup-fixture") for line in self.out))
         self.assertEqual(self.evidence()["cleanup"]["status"], "failed")
+
+    def test_cleanup_fixture_records_but_does_not_fail_on_a_released_allocation(self):
+        self.world.recover_mutation = "tree"
+        self.assertEqual(self.run_flow(), 2)
+        self.world.stop_effect, self.world.fence_survives_stop = True, False
+        self.assertEqual(self.cleanup(), 0, self.err)
+        cleanup = self.evidence()["cleanup"]
+        self.assertEqual(cleanup["allocation_state_after_stop"], "complete")
+        self.assertFalse(cleanup["fence_retained"])
 
     def test_cleanup_without_a_fixture_state_fails_before_acting(self):
         empty = self._dir("empty-root")
