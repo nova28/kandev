@@ -88,6 +88,8 @@ class World:
         self.fence = "owner:fence-content\n"
         self.tree_present = True
         self.job_index = 6
+        self.agent_profiles = [{"id": "agent1", "name": "inert"}]
+        self.agent_create_profiles = [{"id": "inert-prof", "name": "nomad-fixture-inert"}]
         self.task_created = False
         self.api_calls, self.nomad_paths, self.ws_calls, self.ssh_commands = [], [], [], []
         self.bodies = []
@@ -161,7 +163,10 @@ class World:
             if path == "/workflows/wf1/workflow/steps":
                 return {"steps": [{"id": "step1"}]}
             if path == "/agents":
-                return {"agents": [{"profiles": [{"id": "agent1", "name": "inert"}]}]}
+                return {"agents": [{"profiles": list(self.agent_profiles)}]}
+            if path == "/agents/tui":
+                self.agent_created = body
+                return {"id": "agent-inert", "profiles": list(self.agent_create_profiles)}
             if path == "/executors" and method == "GET":
                 return {"executors": []}
             if path == "/executors":
@@ -508,6 +513,50 @@ class CreateFlowTest(FixtureBase):
         task = json.loads(next(b for b in self.world.bodies if "prepare_session" in b))
         self.assertTrue(task["prepare_session"])
         self.assertNotIn("start_agent", task)
+
+
+class AgentProfileSelectionTest(FixtureBase):
+    def task_body(self):
+        return json.loads(next(b for b in self.world.bodies if "prepare_session" in b))
+
+    def test_zero_profiles_creates_the_inert_acp_agent_and_uses_its_profile(self):
+        self.world.agent_profiles = []
+        self.assertEqual(self.run_flow(), 0, self.err)
+        created = self.world.agent_created
+        self.assertEqual(created["protocol"], "acp")
+        self.assertEqual(created["command"], "python3")
+        self.assertEqual(created["command_args"], [str(fixture.INERT_ACP_SCRIPT)])
+        self.assertTrue(fixture.INERT_ACP_SCRIPT.is_file())
+        self.assertEqual(created["display_name"], fixture.INERT_AGENT_NAME)
+        self.assertEqual(self.task_body()["agent_profile_id"], "inert-prof")
+
+    def test_zero_matching_profiles_creates_the_agent_under_the_requested_name(self):
+        self.config["agent_profile_name"] = "other"
+        self.assertEqual(self.run_flow(), 0, self.err)
+        self.assertEqual(self.world.agent_created["display_name"], "other")
+
+    def test_exactly_one_profile_is_used_without_creating_an_agent(self):
+        self.assertEqual(self.run_flow(), 0, self.err)
+        self.assertNotIn(("POST", "/agents/tui"), self.world.api_calls)
+        self.assertEqual(self.task_body()["agent_profile_id"], "agent1")
+
+    def test_many_profiles_without_a_name_fail_without_creating_anything(self):
+        self.world.agent_profiles = [{"id": "a", "name": "x"}, {"id": "b", "name": "y"}]
+        self.assertEqual(self.run_flow(), 2)
+        self.assertNotIn(("POST", "/agents/tui"), self.world.api_calls)
+        self.assertNotIn(("POST", "/tasks"), self.world.api_calls)
+
+    def test_a_name_selects_one_of_many_profiles(self):
+        self.world.agent_profiles = [{"id": "a", "name": "x"}, {"id": "b", "name": "y"}]
+        self.config["agent_profile_name"] = "y"
+        self.assertEqual(self.run_flow(), 0, self.err)
+        self.assertEqual(self.task_body()["agent_profile_id"], "b")
+
+    def test_inert_agent_creation_without_exactly_one_profile_fails_closed(self):
+        self.world.agent_profiles = []
+        self.world.agent_create_profiles = []
+        self.assertNotEqual(self.run_flow(), 0)
+        self.assertNotIn(("POST", "/tasks"), self.world.api_calls)
 
 
 class FailureFlowTest(FixtureBase):

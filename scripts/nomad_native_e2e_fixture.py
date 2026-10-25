@@ -59,6 +59,10 @@ def cleanup_command(root: Path | str) -> str:
     return f"python3 scripts/nomad_native_e2e.py cleanup-fixture --fixture-root {shlex.quote(str(root))}"
 
 
+INERT_AGENT_NAME = "nomad-fixture-inert"
+INERT_ACP_SCRIPT = Path(__file__).resolve().parent.parent / "apps/backend/internal/agent/nomad/integration/fixtures/inert_acp.py"
+
+
 def _fixture_argv(binary: str) -> list[str]:
     return [binary, "__backend"]
 
@@ -407,6 +411,8 @@ class Runner:
         profiles = [p for agent in api("GET", "/agents", None).get("agents", []) for p in agent.get("profiles", [])]
         wanted = cfg["agent_profile_name"]
         profiles = [p for p in profiles if wanted is None or p.get("name") == wanted]
+        if not profiles:
+            profiles = [self._create_inert_profile(wanted or INERT_AGENT_NAME)]
         if len(profiles) != 1:
             raise PreflightError("expected exactly one matching agent profile on the fresh fixture")
         secret = api("POST", "/secrets", {"name": "nomad-fixture-token", "value": self.token})
@@ -435,6 +441,18 @@ class Runner:
         if not task.get("id") or not task.get("session_id"):
             raise PreflightError("task creation did not return a task and session")
         self.save_state(workspace_id=workspace["id"], task_id=task["id"], session_id=task["session_id"], repository_id=repository["id"], executor_profile_id=profile["id"])
+
+    def _create_inert_profile(self, display_name: str) -> dict[str, Any]:
+        """Register the repo's model-free inert ACP as a custom agent; a fresh fixture home has no profile."""
+        agent = self.api("POST", "/agents/tui", {
+            "display_name": display_name, "command": "python3", "command_args": [str(INERT_ACP_SCRIPT)],
+            "protocol": "acp", "description": "Model-free inert ACP for the Nomad recovery fixture",
+        })
+        agent = agent.get("agent", agent)
+        profiles = agent.get("profiles") or []
+        if len(profiles) != 1 or not profiles[0].get("id"):
+            raise PreflightError("inert ACP agent creation did not return exactly one profile")
+        return profiles[0]
 
     def _register_repository(self, cfg: dict[str, Any], workspace_id: str) -> dict[str, Any]:
         repo = cfg["repository"]
