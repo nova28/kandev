@@ -2,12 +2,17 @@ import contextlib
 import io
 import json
 import os
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from nomad_native_e2e import PreflightError, _fixture_backend_argv, _recovery_completed_turn, _run_attached_session, main, validate_config
+from nomad_native_e2e import (
+    PreflightError, REQUIRED_SCENARIOS, _fixture_backend_argv, _pre_ready_contract, _recovery_completed_turn,
+    _run_attached_session, check_post_ready_environment, check_pre_ready_environment, check_pre_ready_session,
+    main, validate_config,
+)
 
 
 class NomadNativePreflightTest(unittest.TestCase):
@@ -244,6 +249,103 @@ class NomadNativePreflightTest(unittest.TestCase):
             _recovery_completed_turn([user, delivery, {**delivery, "id": "delivery-2"}], turn)
         with self.assertRaisesRegex(PreflightError, "correlated"):
             _recovery_completed_turn([user, {**delivery, "turn_id": "other-turn"}], turn)
+
+
+    def _pre_ready_config(self):
+        env_id = "11111111-1111-4111-8111-111111111111"
+        session = {
+            "api_base": "http://127.0.0.1:43840/api/v1", "ws_base": "ws://127.0.0.1:43840", "nomad_http": "http://127.0.0.1:4646",
+            "task_id": "22222222-2222-4222-8222-222222222222", "session_id": "33333333-3333-4333-8333-333333333333",
+            "environment_id": env_id, "node_id": "44444444-4444-4444-8444-444444444444", "node_name": "ff-fixture-worker",
+            "job_id": "job", "allocation_id": "55555555-5555-4555-8555-555555555555", "workspace_path": "/w/g1",
+            "environment_generation": 1, "agentctl_pid": 11, "acp_pid": 12, "child_pid": 13, "grandchild_pid": 14,
+            "nomad_client_pid": 15, "kandev_backend_pid": 16, "kandev_binary_path": "/bin/kandev",
+        }
+        expected = {"process_label": "kandev", "operation_id": "op", "server_identity": "srv", "job_create_index": 3,
+                    "job_definition_index": 4, "expected_repo_count": 1, "expected_file": "README.md"}
+        return {"session": session, "pre_ready_recovery": expected}
+
+    def test_pre_ready_scenario_is_selectable_and_requires_real(self):
+        self.assertIn("pre-ready-recovery", REQUIRED_SCENARIOS)
+        error = io.StringIO()
+        with contextlib.redirect_stderr(error):
+            result = main(["run", "--scenario", "pre-ready-recovery", "--config", "/missing/config.json"])
+        self.assertEqual(result, 2)
+        self.assertIn("requires --require-real", error.getvalue())
+        error = io.StringIO()
+        with contextlib.redirect_stderr(error):
+            result = main(["run", "--scenario", "pre-ready-recovery", "--require-real", "--config", "/missing/config.json"])
+        self.assertEqual(result, 2)
+        self.assertIn("pre-ready recovery verification failed", error.getvalue())
+
+    def test_config_may_carry_pre_ready_recovery_key(self):
+        self.config["pre_ready_recovery"] = self._pre_ready_config()["pre_ready_recovery"]
+        self.assertEqual(validate_config(self.config, run=self._run)["nomad_version"], "2.0.7")
+
+    def test_pre_ready_contract_accepts_exact_key_sets(self):
+        session, expected = _pre_ready_contract(self._pre_ready_config())
+        self.assertEqual(expected["expected_repo_count"], 1)
+        self.assertEqual(session["environment_generation"], 1)
+
+    def test_pre_ready_contract_rejects_missing_and_extra_keys(self):
+        for section in ("session", "pre_ready_recovery"):
+            missing = self._pre_ready_config()
+            missing[section].pop(next(iter(missing[section])))
+            with self.assertRaises(PreflightError):
+                _pre_ready_contract(missing)
+            extra = self._pre_ready_config()
+            extra[section]["unexpected"] = 1
+            with self.assertRaises(PreflightError):
+                _pre_ready_contract(extra)
+        with self.assertRaises(PreflightError):
+            _pre_ready_contract({"session": self._pre_ready_config()["session"]})
+
+    def test_pre_ready_contract_rejects_invalid_values(self):
+        for key, value in (("expected_repo_count", -1), ("expected_repo_count", True), ("expected_file", "")):
+            config = self._pre_ready_config()
+            config["pre_ready_recovery"][key] = value
+            with self.assertRaises(PreflightError):
+                _pre_ready_contract(config)
+
+    def _environment_db(self, status="creating", workspace_path="", repos=1, generation=1):
+        db = sqlite3.connect(":memory:")
+        db.execute("CREATE TABLE task_environments (id TEXT PRIMARY KEY, status TEXT, workspace_path TEXT, ownership_generation INTEGER)")
+        db.execute("CREATE TABLE task_environment_repos (id TEXT PRIMARY KEY, task_environment_id TEXT)")
+        db.execute("INSERT INTO task_environments VALUES ('env', ?, ?, ?)", (status, workspace_path, generation))
+        for index in range(repos):
+            db.execute("INSERT INTO task_environment_repos VALUES (?, 'env')", (f"r{index}",))
+        return db
+
+    def test_pre_ready_environment_requires_creating_with_empty_workspace(self):
+        self.assertEqual(check_pre_ready_environment(self._environment_db(), "env"), 1)
+        with self.assertRaises(PreflightError):
+            check_pre_ready_environment(self._environment_db(status="ready"), "env")
+        with self.assertRaises(PreflightError):
+            check_pre_ready_environment(self._environment_db(workspace_path="/w/g1"), "env")
+        with self.assertRaises(PreflightError):
+            check_pre_ready_environment(self._environment_db(), "other")
+
+    def test_post_ready_environment_pending_until_ready_then_exact(self):
+        self.assertEqual(check_post_ready_environment(self._environment_db(), "env", "/w/g1", 1, 1), "pending")
+        ready = self._environment_db(status="ready", workspace_path="/w/g1")
+        self.assertEqual(check_post_ready_environment(ready, "env", "/w/g1", 1, 1), "ready")
+        for kwargs, args in (
+            ({"status": "ready", "workspace_path": "/w/other"}, ("/w/g1", 1, 1)),
+            ({"status": "ready", "workspace_path": "/w/g1", "generation": 2}, ("/w/g1", 1, 1)),
+            ({"status": "ready", "workspace_path": "/w/g1", "repos": 0}, ("/w/g1", 1, 1)),
+            ({"status": "ready", "workspace_path": "/w/g1", "repos": 2}, ("/w/g1", 1, 1)),
+        ):
+            with self.assertRaises(PreflightError):
+                check_post_ready_environment(self._environment_db(**kwargs), "env", *args)
+
+    def test_pre_ready_session_requires_created_without_acp_or_user_messages(self):
+        check_pre_ready_session({"state": "CREATED"}, [{"author_type": "agent", "type": "status"}])
+        with self.assertRaises(PreflightError):
+            check_pre_ready_session({"state": "WAITING_FOR_INPUT"}, [])
+        with self.assertRaises(PreflightError):
+            check_pre_ready_session({"state": "CREATED", "downstream_acp_session_id": "acp"}, [])
+        with self.assertRaises(PreflightError):
+            check_pre_ready_session({"state": "CREATED"}, [{"author_type": "user"}])
 
 
 if __name__ == "__main__":

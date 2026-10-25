@@ -48,6 +48,16 @@
         "can_drop_active_connections": {"const": true}
       }
     },
+    "pre_ready_recovery": {
+      "type": "object", "additionalProperties": false,
+      "required": ["process_label", "operation_id", "server_identity", "job_create_index", "job_definition_index", "expected_repo_count", "expected_file"],
+      "properties": {
+        "process_label": {"type": "string", "minLength": 1}, "operation_id": {"type": "string", "minLength": 1},
+        "server_identity": {"type": "string", "minLength": 1},
+        "job_create_index": {"type": "integer", "minimum": 1}, "job_definition_index": {"type": "integer", "minimum": 1},
+        "expected_repo_count": {"type": "integer", "minimum": 0}, "expected_file": {"type": "string", "minLength": 1}
+      }
+    },
     "session": {
       "type": "object", "additionalProperties": false,
       "required": ["api_base", "ws_base", "nomad_http", "task_id", "session_id", "environment_id", "node_id", "node_name", "job_id", "allocation_id", "workspace_path", "repo_name", "repo_head", "repo_file", "repo_file_marker", "agentctl_pid", "acp_pid", "child_pid", "grandchild_pid", "nomad_client_pid", "kandev_backend_pid", "agentctl_binary_path", "agentctl_runtime_path", "agentctl_sha256", "kandev_binary_path", "kandev_sha256", "kandev_build_identity"],
