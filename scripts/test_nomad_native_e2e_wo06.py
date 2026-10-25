@@ -1,6 +1,7 @@
 import dataclasses
 import hashlib
 import json
+import os
 import socket
 import time
 import unittest
@@ -36,6 +37,7 @@ class Sim(World):
             "ReservedResources": {"Cpu": {"CpuShares": 100}, "Memory": {"MemoryMB": 96}},
         }
         self.jobs, self.allocs, self.procs = {}, {}, []
+        self.prompts, self.flapped = [], False
         self.fence_text = None
         self.stops, self.eligibility_calls, self.kills, self.relays, self.titles = [], [], [], [], []
         self.b_created = False
@@ -81,6 +83,8 @@ class Sim(World):
             if role == "agentctl" and self.flags.get("agentctl_renamed"):
                 command = f"/alloc/{ALLOC}/mystery --job {JOB}"
             if self.flags.get("no_children") and role in ("child", "grandchild"):
+                continue
+            if self.flags.get("lazy_tree") and role != "agentctl":
                 continue
             self.procs.append({"pid": pid, "ppid": ppid, "pgid": 200, "started": STARTED_A, "command": command, "env": "A"})
         self.reschedule()
@@ -210,7 +214,11 @@ class Sim(World):
                 pid = int(command.split()[2])
                 return 0, "".join(self._row(p) for p in self.procs if p["pid"] == pid)
             if command.startswith("ps -eww"):
-                return 0, "".join(self._row(p) for p in self.procs) + "    1     0     1 Sun Oct 25 09:00:00 2026 /sbin/init\n"
+                transient = ""
+                if self.flags.get("flap") and not self.flapped and any(p["pid"] == 200 for p in self.procs):
+                    self.flapped = True
+                    transient = self._row({"pid": 210, "ppid": 200, "pgid": 200, "started": STARTED_A, "command": "/usr/bin/helper --short-lived"})
+                return 0, transient + "".join(self._row(p) for p in self.procs) + "    1     0     1 Sun Oct 25 09:00:00 2026 /sbin/init\n"
             return super_head(self, command)
 
         return call
@@ -226,6 +234,14 @@ class Sim(World):
             self.allocs[ALLOC]["ClientStatus"] = "failed"
             self.allocs[ALLOC]["TaskStates"]["agentctl"]["State"] = "dead"
             self.reschedule()
+
+    def prompt(self, payload):
+        self.prompts.append(payload)
+        for pid, ppid, role in ((201, 200, "acp"), (202, 201, "child"), (203, 202, "grandchild")):
+            if self.flags.get("lazy_tree") and not any(p["pid"] == pid for p in self.procs):
+                command = f"/alloc/{ALLOC}/acp --job {JOB}" if role == "acp" else f"/usr/bin/python3 {role}.py"
+                self.procs.append({"pid": pid, "ppid": ppid, "pgid": 200, "started": STARTED_A, "command": command, "env": "A"})
+        return {"accepted": True, "message_id": "m1"}
 
     def nomad_stop(self, address, token, namespace, job_id):
         self.stops.append((address, namespace, job_id))
@@ -296,7 +312,7 @@ class Sim(World):
 
     def ops(self):
         return dataclasses.replace(
-            super().ops(), sleep=self.sleep, nomad_stop=self.nomad_stop, nomad_set_eligibility=self.set_eligibility,
+            super().ops(), sleep=self.sleep, nomad_stop=self.nomad_stop, prompt=self.prompt, nomad_set_eligibility=self.set_eligibility,
             relay_factory=self.make_relay, scenario_timeout=60.0, poll_interval=1.0,
         )
 
@@ -670,6 +686,34 @@ class ProcessIdentityTest(Wo06Base):
         self.assertFalse(wo06._is_agentctl("/usr/bin/python3 agentctl.py"))
 
 
+class LiveRegressionTest(Wo06Base):
+    def test_content_addressed_agentctl_name_is_identified(self):
+        digest = "ab" * 32
+        self.assertTrue(wo06._is_agentctl(f"/alloc/x/local/agentctl-{digest} --job j"))
+        self.assertTrue(wo06._is_agentctl("agentctl"))
+        self.assertFalse(wo06._is_agentctl(f"/alloc/x/agentctl-{digest[:-1]} --job j"))
+        self.assertFalse(wo06._is_agentctl(f"/alloc/x/agentctl-{digest.upper()} --job j"))
+        self.assertFalse(wo06._is_agentctl("/alloc/x/agentctl-evil --job j"))
+
+    def test_a_transient_startup_helper_is_never_recorded_for_admission(self):
+        self.assertEqual(self.run_scn("admission", lazy_tree=True, flap=True), 0, "\n".join(self.err))
+        self.assertEqual(self.evidence()["identities"]["A"]["roles"], ["agentctl"])
+        self.assertNotIn(210, self.world.kills)
+
+    def test_disconnect_prompts_once_to_start_the_managed_tree(self):
+        self.assertEqual(self.run_scn("disconnect", lazy_tree=True), 0, "\n".join(self.err))
+        self.assertEqual(len(self.world.prompts), 1)
+        self.assertEqual([item["role"] for item in self.evidence()["identities"]["A"]["processes"]], ["agentctl", "acp", "child", "grandchild"])
+
+    def test_tree_excludes_this_process_and_its_ancestors(self):
+        rows = [{"pid": os.getpid(), "ppid": os.getppid()}, {"pid": os.getppid(), "ppid": 1}, {"pid": 5, "ppid": 1}]
+        self.assertEqual(wo06._self_and_ancestors(rows), {os.getpid(), os.getppid()})
+
+    def test_kill_group_refuses_the_runners_own_group(self):
+        with self.assertRaises(wo06.PreflightError):
+            fixture._default_kill_group(os.getpgrp())
+
+
 class RelayFailureTest(Wo06Base):
     def test_failure_heals_and_keeps_the_relay_with_an_operator_note(self):
         evidence = self.assert_failed(self.run_scn("disconnect", lost_after_heal=True), "ClientStatus 'lost' after the heal", "heal-and-assert-original-allocation-survives")
@@ -753,7 +797,7 @@ class DisconnectTest(Wo06Base):
         self.assert_failed(self.run_scn("disconnect", lost_after_heal=True), "ClientStatus 'lost' after the heal, expected running", "heal-and-assert-original-allocation-survives")
 
     def test_environment_without_children_cannot_prove_survival(self):
-        self.assert_failed(self.run_scn("disconnect", no_children=True), "no managed child or grandchild", "snapshot-a")
+        self.assert_failed(self.run_scn("disconnect", no_children=True), "did not settle", "start-managed-process-tree")
 
     def test_b_exit_code_not_73(self):
         self.assert_failed(self.run_scn("disconnect", b_exit=1), "expected failed with exit code 73", "assert-b-rejected-and-a-survivors-intact")

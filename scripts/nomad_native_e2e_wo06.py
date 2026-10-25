@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import shlex
 import socket
@@ -54,9 +55,13 @@ def _is_nomad_helper(command: str) -> bool:
     return tokens[0].rsplit("/", 1)[-1] == "nomad"
 
 
+# The runtime installs agentctl content-addressed as agentctl-<sha256>.
+_AGENTCTL_NAME = re.compile(r"agentctl(-[0-9a-f]{64})?")
+
+
 def _is_agentctl(command: str) -> bool:
     tokens = command.split()
-    return bool(tokens) and tokens[0].rsplit("/", 1)[-1] == "agentctl" and not _is_nomad_helper(command)
+    return bool(tokens) and _AGENTCTL_NAME.fullmatch(tokens[0].rsplit("/", 1)[-1]) is not None and not _is_nomad_helper(command)
 
 
 def quarantine_marker_path(node_id: str, namespace: str) -> str:
@@ -182,6 +187,16 @@ def _endpoint(text: str) -> tuple[str, int]:
 
 def _ident(rows: list[dict[str, Any]]) -> list[tuple[int, str]]:
     return sorted((row["pid"], row["started"]) for row in rows)
+
+
+def _self_and_ancestors(rows: list[dict[str, Any]]) -> set[int]:
+    """This process and its ancestors: never part of a fixture tree, so a teardown cannot signal itself or its caller."""
+    by_pid = {row["pid"]: row for row in rows}
+    out, cursor = set(), os.getpid()
+    while cursor > 1 and cursor not in out:
+        out.add(cursor)
+        cursor = by_pid[cursor]["ppid"] if cursor in by_pid else (os.getppid() if cursor == os.getpid() else 0)
+    return out
 
 
 def _needles(env: dict[str, Any]) -> list[str]:
@@ -351,7 +366,8 @@ class Scenario:
         agentctl; any other root is labelled unidentified.
         """
         needles = _needles(env)
-        rows = self.ps_rows()
+        protected = _self_and_ancestors(self.ps_rows())
+        rows = [row for row in self.ps_rows() if row["pid"] not in protected]
         members = {row["pid"]: row for row in rows if any(needle in row["command"] for needle in needles)}
         matched = set(members)
         grew = True
@@ -424,6 +440,18 @@ class Scenario:
         self.data.setdefault("identities", {})[label] = {key: env[key] for key in ("task_id", "session_id", "environment_id", "job_id", "allocation_id", "node_id")}
         return env
 
+    def stable_tree(self, env: dict[str, Any], minimum_depth: int = 0) -> list[dict[str, Any]]:
+        """Two consecutive equal snapshots, so a transient helper that exits during startup is never recorded."""
+        previous: list[Any] = []
+
+        def stable() -> list[dict[str, Any]] | None:
+            current = self.tree(env)
+            settled = bool(previous) and _ident(current) == previous[-1] and any(item["depth"] >= minimum_depth for item in current)
+            previous[:] = [_ident(current)]
+            return current if settled else None
+
+        return self.poll(stable, f"the remote process tree of environment {env['label']} did not settle before timeout")
+
     def await_ready(self, label: str, task: dict[str, str]) -> dict[str, Any]:
         def ready() -> dict[str, Any] | None:
             inventory = self.soft(lambda: self.r.inventory(task["session_id"], task["id"]))
@@ -444,7 +472,8 @@ class Scenario:
         if got_cpu != self.cfg["cpu_mhz"] or got_mem != self.cfg["memory_mb"]:
             raise PreflightError(f"allocation resources {allocated} differ from the request cpu_mhz={self.cfg['cpu_mhz']} memory_mb={self.cfg['memory_mb']}")
         nomad = self.r.nomad_snapshot(inventory)
-        tree, fence = self.tree(env), self.r.fence()
+        tree = self.stable_tree(env)
+        fence = self.r.fence()
         if not tree or fence is None:
             raise PreflightError(f"environment {label} has no remote process tree or worker fence")
         if not any(item["role"] == "agentctl" and item["depth"] == 0 for item in tree):
@@ -718,6 +747,18 @@ def _disconnect_steps(runner: fx.Runner, cfg: dict[str, Any], ops: fx.Ops, step:
     task_a = {"id": runner.state["task_id"], "session_id": runner.state["session_id"]}
     snapshot = step("await-a-running", lambda: scn.await_ready("A", task_a))
     env_a = scn.envs["A"]
+
+    def start_managed_tree() -> None:
+        """An idle prepared session runs no ACP agent; one inert prompt through the normal API starts the child and grandchild."""
+        ack = ops.prompt({"ws_base": f"ws://127.0.0.1:{runner.state['port']}", "task_id": task_a["id"], "session_id": task_a["session_id"],
+                          "content": "For this inert transport check, output exactly WO06_DISCONNECT_TREE"})
+        if ack.get("accepted") is not True:
+            raise PreflightError("the inert fixture prompt was not accepted")
+        tree = scn.stable_tree(env_a, minimum_depth=2)
+        env_a["tree"] = snapshot["tree"] = tree
+        scn.save_envs()
+
+    step("start-managed-process-tree", start_managed_tree)
 
     def snapshot_a() -> dict[str, Any]:
         survivors = [item for item in snapshot["tree"] if item["depth"] >= 2]

@@ -224,6 +224,8 @@ def _default_ws(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _default_kill_group(pgid: int) -> None:
+    if pgid == os.getpgrp() or pgid == os.getpgid(os.getppid()):
+        raise PreflightError("refusing to signal the process group of this runner or its caller")
     try:
         os.killpg(pgid, signal.SIGKILL)
     except ProcessLookupError:
@@ -284,6 +286,18 @@ def _default_kill_exact(ssh: Callable[[str], tuple[int, str]], identity: dict[st
     return "killed"
 
 
+def _default_prompt(payload: dict[str, Any]) -> dict[str, Any]:
+    """Send one inert prompt through the normal message API (the same driver the recovery scenario uses)."""
+    script = Path(__file__).with_name("nomad_native_e2e_recovery.js")
+    result = subprocess.run(["node", str(script)], input=json.dumps(payload), text=True, capture_output=True, timeout=25, check=False)
+    if result.returncode != 0:
+        raise PreflightError("fixture prompt was not accepted")
+    try:
+        return json.loads(result.stdout.strip().splitlines()[-1])
+    except (json.JSONDecodeError, IndexError):
+        raise PreflightError("fixture prompt acknowledgment is unreadable") from None
+
+
 def _default_git_binary() -> str:
     path = shutil.which("git")
     if not path:
@@ -325,6 +339,7 @@ class Ops:
     git_binary: Callable[[], str] = _default_git_binary
     git_head: Callable[[str, str], str] = _default_git_head
     kill_group: Callable[[int], None] = _default_kill_group
+    prompt: Callable[[dict[str, Any]], dict[str, Any]] = _default_prompt
     retention_settle: float = 5.0
     clock: Callable[[], float] = time.monotonic
     sleep: Callable[[float], Any] = time.sleep
