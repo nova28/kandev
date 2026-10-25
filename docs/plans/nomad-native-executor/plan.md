@@ -168,9 +168,12 @@ silently erase records, kill unidentified processes or re-enable a node.
 - [ ] [Task 05: Ambiguous-operation and restart recovery](task-05-recovery.md)
 - [ ] [Task 06: Capacity and actual client disconnect](task-06-admission-disconnect.md)
 - [ ] [Task 07: Cooperative cancellation and quarantine](task-07-cleanup-quarantine.md)
-- [ ] [Task 08: Built runtime and contribution handoff](task-08-package-handoff.md)
+- [ ] [Task 08: Built runtime and contribution handoff](task-08-package-handoff.md) (cancelled; replaced by the [Nomad worker pool plan](../nomad-worker-pool/plan.md))
 
-Execute 01 -> 02 -> 03 -> 04 -> 05 -> 06 -> 07 -> 08 sequentially. Each has an
+Execute 01 -> 02 -> 03 -> 04 -> 05 -> 06 -> 07 sequentially, then continue with the
+[Nomad worker pool plan](../nomad-worker-pool/plan.md), whose final work order carries
+the built-runtime proof and contribution handoff. The single pinned worker is the
+first slice; the pool is the destination. Each has an
 independent verification boundary; only the complete real matrix proves the
 advertised supported executor.
 
