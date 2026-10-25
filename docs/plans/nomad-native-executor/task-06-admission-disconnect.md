@@ -1,7 +1,7 @@
 ---
 id: "06-admission-disconnect"
 title: "Capacity and actual client disconnect"
-status: in_progress
+status: done
 wave: 6
 depends_on:
   - "05-recovery"
@@ -97,9 +97,9 @@ Nomad policy must be tested on 2.0.7; defaults are not guarantees. Closing a Kan
 
 ## Results
 
-Build complete offline (2026-10-25). Admission has real-worker proof (`docs/evidence/nomad-wo06/`); disconnect is pending its rerun with the bounded `lost_after`, so this work order is not complete.
+Complete (2026-10-26). Real-worker proof in `docs/evidence/nomad-wo06/`: admission run 3 (AC-EXECUTORS-NOMAD-001.2) and disconnect run 7 (AC-EXECUTORS-NOMAD-002.3), both against a local throwaway Nomad 2.0.7 fixture. A bundle refresh must remove a signed macOS binary before copying; replacing it in place gets it SIGKILLed.
 
 - Go: `nomad/quarantine.go` (node read, ineligible-only call, create-only Variables marker, dedicated-node check), `EnvironmentState.QuarantineState`, and the lifecycle admission gate (`executor_nomad_admission.go`) running before any launch intent, secret or registration. Quarantine and pending-reconcile are offline-tested building blocks with no production trigger (task 07 wires triggers and operator readmission). `go test -race` over `./internal/agent/nomad` and `./internal/agent/runtime/lifecycle` with `TestNomad` passes; each Verification prefix matches at least one test. One existing test timeout was raised from 30ms to 300ms because admission adds fake round trips; its assertion is unchanged.
 - Runner: `admission` and `disconnect` run only with `--create-fixture` (`scripts/nomad_native_e2e_wo06.py`); 206 offline Python tests pass, covering each assertion failing once, first-failure-keeps-fixture, idempotent `cleanup-fixture`, and a real-socket relay.
 - Independent review found and fixed: a live quarantine trigger on any bootstrap error (removed), a fail-open inventory read, a runner that could re-enable a quarantined node, a leader misidentification risk (Nomad's executor parent), and a failed disconnect run leaving the client partitioned.
-- Not yet proven live: Nomad JSON shapes the runner assumes, `lost_after` default behavior on 2.0.7 (a lost or replaced original allocation fails the scenario by design), and agentctl teardown of managed groups on job stop. Evidence will be recorded in `docs/evidence/nomad-wo06/`.
+- Live finding: Nomad 2.0.7 `lost_after=0` marks the original allocation lost immediately; fixed by the bounded profile `disconnect_lost_after`.
