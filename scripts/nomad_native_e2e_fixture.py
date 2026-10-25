@@ -7,7 +7,10 @@ retained allocation and fence as an operator teardown. The first failed
 assertion stops the run without cleanup;
 `cleanup-fixture` then performs the teardown against the retained fixture.
 
-The runner never mutates Nomad: its only Nomad access is HTTP GET.
+Nomad access is HTTP GET, with two operator-teardown mutations: ending a job the runner recorded as
+fixture-created (DELETE /v1/job/<id> with purge disabled) and compare-owner removal of the fixture's
+own worker fence over pinned SSH. The WO06 admission and disconnect scenarios (nomad_native_e2e_wo06) are the
+only callers of those mutations; neither is production cleanup.
 """
 
 from __future__ import annotations
@@ -227,6 +230,60 @@ def _default_kill_group(pgid: int) -> None:
         pass
 
 
+def _default_nomad_stop(address: str, token: str, namespace: str, job_id: str) -> Any:
+    """Operator end of one fixture job: purge is always false so the job and its allocations stay inspectable."""
+    if not _JOB_ID.fullmatch(job_id):
+        raise PreflightError("refusing to end a job that does not follow the kandev-<hash> pattern")
+    request = urllib.request.Request(f"{address}/v1/job/{job_id}?purge=false&namespace={namespace}", method="DELETE", headers={"X-Nomad-Token": token, "Accept": "application/json"})
+    try:
+        with _NOMAD_OPENER.open(request, timeout=15) as response:
+            return json.loads(response.read() or b"{}")
+    except urllib.error.HTTPError as exc:
+        raise PreflightError(f"Nomad DELETE failed with status {exc.code}") from None
+    except (OSError, urllib.error.URLError):
+        raise PreflightError("Nomad DELETE is unreachable") from None
+
+
+def _default_nomad_set_eligibility(address: str, token: str, region: str, node_id: str, eligible: bool) -> Any:
+    """Operator toggle of the fixture node's scheduling eligibility; it never drains or deletes the node."""
+    if not re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", node_id):
+        raise PreflightError("refusing to change eligibility of a malformed node id")
+    body = json.dumps({"NodeID": node_id, "Eligibility": "eligible" if eligible else "ineligible"}).encode()
+    request = urllib.request.Request(f"{address}/v1/node/{node_id}/eligibility?region={region}", data=body, method="POST",
+                                     headers={"X-Nomad-Token": token, "Accept": "application/json", "Content-Type": "application/json"})
+    try:
+        with _NOMAD_OPENER.open(request, timeout=15) as response:
+            return json.loads(response.read() or b"{}")
+    except urllib.error.HTTPError as exc:
+        raise PreflightError(f"Nomad eligibility change failed with status {exc.code}") from None
+    except (OSError, urllib.error.URLError):
+        raise PreflightError("Nomad eligibility change is unreachable") from None
+
+
+def _default_kill_exact(ssh: Callable[[str], tuple[int, str]], identity: dict[str, Any], needles: list[str]) -> str:
+    """SIGKILL one remote process only when its pid, start time and command still match the recorded identity.
+
+    Returns "killed" or "already_gone"; any identity mismatch raises before a signal is sent.
+    """
+    pid = identity.get("pid")
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 1:
+        raise PreflightError("refusing to signal a process without a recorded pid")
+    code, out = ssh(f"ps -p {pid} -ww -o pid=,ppid=,pgid=,lstart=,command=")
+    rows = [match for match in (_PS_ROW.match(line) for line in out.splitlines()) if match and int(match.group(1)) == pid]
+    if not rows:
+        return "already_gone"
+    row = rows[0]
+    command = row.group(5)
+    started = " ".join(row.group(4).split())
+    matches = any(needle and needle in command for needle in needles) or (identity.get("cmd_sha256") and hashlib.sha256(command.encode()).hexdigest() == identity["cmd_sha256"])
+    if started != identity.get("started") or not matches:
+        raise PreflightError(f"process {pid} no longer matches its recorded identity; refusing to signal it")
+    code, _ = ssh(f"kill -KILL {pid}")
+    if code != 0:
+        raise PreflightError(f"signalling process {pid} failed")
+    return "killed"
+
+
 def _default_git_binary() -> str:
     path = shutil.which("git")
     if not path:
@@ -276,6 +333,12 @@ class Ops:
     allocation_timeout: float = 120.0
     fence_timeout: float = 60.0
     recovery_timeout: float = 120.0
+    nomad_stop: Callable[[str, str, str, str], Any] = _default_nomad_stop
+    kill_exact: Callable[[Callable[[str], tuple[int, str]], dict[str, Any], list[str]], str] = _default_kill_exact
+    nomad_set_eligibility: Callable[[str, str, str, str, bool], Any] = _default_nomad_set_eligibility
+    relay_factory: Callable[[tuple[str, int], tuple[str, int]], Any] | None = None
+    scenario_timeout: float = 300.0
+    poll_interval: float = 1.0
 
 
 @dataclass
@@ -402,19 +465,21 @@ class Runner:
             raise PreflightError("fixture backend ownership record was not retired")
 
     # -- reads -------------------------------------------------------------------
-    def inventory(self) -> dict[str, Any]:
+    def inventory(self, session_id: str | None = None, task_id: str | None = None) -> dict[str, Any]:
+        session_id, task_id = session_id or self.state["session_id"], task_id or self.state["task_id"]
+
         def read(db: sqlite3.Connection) -> list[tuple[Any, ...]]:
-            return db.execute("SELECT task_id, runtime, agent_execution_id, metadata FROM executors_running WHERE session_id = ?", (self.state["session_id"],)).fetchall()
+            return db.execute("SELECT task_id, runtime, agent_execution_id, metadata FROM executors_running WHERE session_id = ?", (session_id,)).fetchall()
 
         rows = self.ops.read_db(self.database, read)
         if len(rows) != 1:
             raise PreflightError("expected exactly one durable executor inventory row")
-        task_id, runtime, execution_id, raw = rows[0]
+        row_task_id, runtime, execution_id, raw = rows[0]
         try:
             nomad_state = json.loads(raw)["nomad_environment_state"]
         except (TypeError, KeyError, json.JSONDecodeError):
             raise PreflightError("Nomad inventory state is unreadable") from None
-        if task_id != self.state["task_id"] or runtime != "nomad":
+        if row_task_id != task_id or runtime != "nomad":
             raise PreflightError("durable executor inventory row has the wrong owner or runtime")
         snapshot = {key: nomad_state.get(key) for key in _INVENTORY_KEYS}
         snapshot["execution_id"] = execution_id
@@ -475,6 +540,16 @@ class Runner:
             raise PreflightError("remote fence read failed")
         return hashlib.sha256(out.encode()).hexdigest()
 
+    def fence_owner(self) -> str | None:
+        """Raw owner text of the worker's active-environment fence, or None when it is absent."""
+        path = shlex.quote(_fence_path(self.state))
+        code, out = self.ssh(f"if [ -e {path} ]; then cat -- {path}/owner; else exit 3; fi")
+        if code == 3:
+            return None
+        if code != 0:
+            raise PreflightError("remote fence read failed")
+        return out
+
     # -- create phase ----------------------------------------------------------------
     def setup_api_objects(self, cfg: dict[str, Any]) -> None:
         api = self.api
@@ -511,15 +586,20 @@ class Runner:
         profile = api("POST", f"/executors/{executor['id']}/profiles", {**build_profile_payload(source), "mcp_policy": "", "prepare_script": "", "cleanup_script": ""})
         profile = profile.get("profile", profile)
         repository = self._register_repository(cfg, workspace["id"])
-        task = api("POST", "/tasks", {
+        self._task_ctx = {
             "workspace_id": workspace["id"], "workflow_id": workflow["id"], "workflow_step_id": step["id"],
-            "title": "Nomad pre-ready recovery fixture", "description": "Pre-ready recovery fixture; no prompt is sent.",
             "repositories": [{"repository_id": repository["id"], "base_branch": cfg["repository"]["base_branch"]}],
-            "prepare_session": True, "agent_profile_id": profiles[0]["id"], "executor_id": executor["id"], "executor_profile_id": profile["id"],
-        })
+            "agent_profile_id": profiles[0]["id"], "executor_id": executor["id"], "executor_profile_id": profile["id"],
+        }
+        task = self.create_task("Nomad pre-ready recovery fixture", "Pre-ready recovery fixture; no prompt is sent.")
+        self.save_state(workspace_id=workspace["id"], task_id=task["id"], session_id=task["session_id"], repository_id=repository["id"], executor_profile_id=profile["id"])
+
+    def create_task(self, title: str, description: str = "Nomad fixture task; no prompt is sent.") -> dict[str, str]:
+        """Create one more task on the executor profile prepared by setup_api_objects."""
+        task = self.api("POST", "/tasks", {**self._task_ctx, "title": title, "description": description, "prepare_session": True})
         if not task.get("id") or not task.get("session_id"):
             raise PreflightError("task creation did not return a task and session")
-        self.save_state(workspace_id=workspace["id"], task_id=task["id"], session_id=task["session_id"], repository_id=repository["id"], executor_profile_id=profile["id"])
+        return {"id": task["id"], "session_id": task["session_id"]}
 
     def _create_inert_profile(self, display_name: str) -> dict[str, Any]:
         """Register the repo's model-free inert ACP as a custom agent; a fresh fixture home has no profile."""
@@ -728,36 +808,44 @@ def _materialize(cfg: dict[str, Any], root: Path, port: int) -> None:
 
 
 def run_create_fixture(config: Any, ops: Ops | None = None, out: Callable[[str], Any] = print, err: Callable[[str], Any] | None = None,
-                       run: Callable[..., Any] = subprocess.run, checkout_root: Path = bootstrap.CHECKOUT_ROOT) -> int:
+                       run: Callable[..., Any] = subprocess.run, checkout_root: Path = bootstrap.CHECKOUT_ROOT,
+                       drive: Callable[..., dict[str, Any]] | None = None, mode: str = "created-real-pre-ready-recovery",
+                       label: str = "pre-ready recovery", check_config: Callable[[dict[str, Any]], Any] | None = None,
+                       state_extra: Callable[[dict[str, Any]], dict[str, Any]] | None = None) -> int:
+    """Shared create-fixture shell. The WO06 scenarios pass their own drive, label, config check and extra state."""
     ops = ops or Ops()
     err = err or (lambda text: print(text, file=sys.stderr))
     try:
         cfg = bootstrap.validate_bootstrap(config, run=run, checkout_root=checkout_root)
+        if check_config is not None:
+            check_config(cfg)
         token = bootstrap.read_token(Path(cfg["nomad"]["token_file"]))
         port = ops.free_port()
         if port == bootstrap.LIVE_KANDEV_PORT:
             raise PreflightError("refusing to use the live Kandev port")
     except (PreflightError, OSError) as exc:
-        err(f"real pre-ready recovery bootstrap failed: {exc}")
+        err(f"real {label} bootstrap failed: {exc}")
         return 2
     root = Path(tempfile.mkdtemp(prefix="nomad-e2e-fixture-", dir=cfg["temp_root_parent"]))
     root.chmod(0o700)
     evidence = Evidence(root, [token])
-    evidence.data.update({"mode": "created-real-pre-ready-recovery", "fixture_root": str(root), "port": port, "started": ops.wall()})
+    evidence.data.update({"mode": mode, "fixture_root": str(root), "port": port, "started": ops.wall()})
     runner: Runner | None = None
     try:
         _materialize(cfg, root, port)
         state = _new_state(cfg, root, port, cfg["nomad"]["token_file"])
+        if state_extra is not None:
+            state.update(state_extra(cfg))
         _save_state(root, state)
         evidence.save()
         runner = Runner(root, state, token, ops, evidence)
-        report = _drive(runner, cfg, ops, root)
+        report = (drive or _drive)(runner, cfg, ops, root)
     except Exception as exc:
         steps = evidence.data["steps"]
         failed = next((item["name"] for item in reversed(steps) if item["status"] == "failed"), steps[-1]["name"] if steps else "materialize")
         evidence.data.update({"status": "failed", "failed_step": failed, "error": evidence.scrub(str(exc)), "finished": ops.wall()})
         evidence.save()
-        err(evidence.scrub(f"real pre-ready recovery failed: {exc}"))
+        err(evidence.scrub(f"real {label} failed: {exc}"))
         out(evidence.render())
         out(f"evidence: {root / EVIDENCE_FILE}")
         out(f"operator cleanup: {cleanup_command(root)}")
@@ -888,7 +976,11 @@ def run_cleanup_fixture(root_text: str, ops: Ops | None = None, out: Callable[[s
         evidence.data = {"status": "unknown", "steps": []}
     try:
         runner = Runner(root, state, token, ops, evidence)
-        report = runner.step("cleanup-fixture", lambda: runner.teardown(strict_retention=False))
+        if state.get("scenario"):
+            import nomad_native_e2e_wo06 as wo06  # scenario fixtures tear down every recorded environment, not one session
+            report = runner.step("cleanup-fixture", lambda: wo06.cleanup_fixture(runner))
+        else:
+            report = runner.step("cleanup-fixture", lambda: runner.teardown(strict_retention=False))
     except Exception as exc:
         evidence.data["cleanup"] = {"status": "failed", "error": evidence.scrub(str(exc)), "finished": ops.wall()}
         evidence.save()

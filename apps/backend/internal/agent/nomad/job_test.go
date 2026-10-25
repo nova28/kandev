@@ -423,3 +423,21 @@ func validTestProfileConfig() ProfileConfig {
 		CPUMHz: 1500, MemoryMB: 4096, NomadTokenSecretID: "secret-nomad-token",
 	}
 }
+
+func TestNomadNativeJobDisconnectPolicy(t *testing.T) {
+	profile := validTestProfileConfig()
+	profile.Address = "http://127.0.0.1:4646"
+	state := validTestState()
+	state.JobID, _ = StableJobID(JobIdentity{EnvironmentID: state.EnvironmentID, Generation: state.Generation, OperationID: state.OperationID, InstallationID: state.InstallationID})
+	job, err := BuildNativeJob(NativeJobInput{Profile: profile, State: state, AgentctlPath: "/var/lib/kandev/allocations/env-1/agentctl", BootstrapPath: "/var/lib/kandev/allocations/env-1/bootstrap.sh"})
+	if err != nil {
+		t.Fatalf("BuildNativeJob: %v", err)
+	}
+	group := job.TaskGroups[0]
+	if group.Count != 1 || group.RestartPolicy.Attempts != 0 || group.ReschedulePolicy.Attempts != 0 || group.ReschedulePolicy.Unlimited {
+		t.Fatalf("group can restart, reschedule, or scale: %+v", group)
+	}
+	if group.Disconnect.Replace || group.Disconnect.Reconcile != "keep_original" {
+		t.Fatalf("disconnect policy = %+v, want no replacement and keep_original", group.Disconnect)
+	}
+}

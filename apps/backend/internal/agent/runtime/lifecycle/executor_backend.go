@@ -748,6 +748,9 @@ type ExecutorCreateRequest struct {
 	// and attaches only its reference to launch metadata. Nomad must call this
 	// before dispatching the corresponding irreversible remote operation.
 	PersistNomadRuntimeSecret func(context.Context, string, string) error
+	// ListNomadInventory returns every retained typed Nomad state, including
+	// terminal rows. Nomad admission fails closed when it is nil or errors.
+	ListNomadInventory func(context.Context) ([]agentnomad.EnvironmentState, error)
 	// ReleaseRuntimeInventory removes this launch's provisional row after every
 	// created resource was rolled back. Implementations must use execution CAS.
 	ReleaseRuntimeInventory func(context.Context) error

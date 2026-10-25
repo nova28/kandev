@@ -53,6 +53,7 @@ type EnvironmentState struct {
 	Phase                  string `json:"phase"`
 	DrainReceiptDigest     string `json:"drain_receipt_digest,omitempty"`
 	DrainReceiptGeneration int64  `json:"drain_receipt_generation,omitempty"`
+	QuarantineState        string `json:"quarantine_state,omitempty"`
 }
 
 func (s EnvironmentState) Validate() error {
@@ -130,6 +131,11 @@ func (s EnvironmentState) validatePhaseAndIndexes() error {
 	case "intent", "registered", "allocated", "ready", "cleanup_pending", "quarantined", "absent":
 	default:
 		return fmt.Errorf("nomad environment state has invalid phase")
+	}
+	switch s.QuarantineState {
+	case "", QuarantinePending, QuarantineMarked:
+	default:
+		return fmt.Errorf("nomad environment state has invalid quarantine state")
 	}
 	if err := s.validateRuntimeIndexes(); err != nil {
 		return err

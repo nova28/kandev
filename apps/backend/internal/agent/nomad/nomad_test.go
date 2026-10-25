@@ -252,3 +252,23 @@ func cloneTestConfig(source map[string]string) map[string]string {
 	}
 	return clone
 }
+
+func TestNomadWorkerQuarantineStateValidation(t *testing.T) {
+	for _, value := range []string{"", QuarantinePending, QuarantineMarked} {
+		state := validTestState()
+		state.QuarantineState = value
+		encoded, err := MarshalEnvironmentState(state)
+		if err != nil {
+			t.Fatalf("quarantine state %q rejected: %v", value, err)
+		}
+		decoded, err := UnmarshalEnvironmentState(encoded)
+		if err != nil || decoded.QuarantineState != value {
+			t.Fatalf("round trip %q = %q, %v", value, decoded.QuarantineState, err)
+		}
+	}
+	state := validTestState()
+	state.QuarantineState = "released"
+	if err := state.Validate(); err == nil {
+		t.Fatal("unknown quarantine state accepted")
+	}
+}

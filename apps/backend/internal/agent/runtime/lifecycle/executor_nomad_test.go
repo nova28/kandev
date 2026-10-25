@@ -548,6 +548,8 @@ type nomadCreateFixture struct {
 	rejectBootstrap      bool
 	multipleAllocations  bool
 	jobHistoryMissing    bool
+	fake                 *nomadAdmissionFake
+	inventory            []nomad.EnvironmentState
 }
 
 type nomadCreateSecretReader struct{}
@@ -570,7 +572,7 @@ func newNomadCreateFixture(t *testing.T, failRegistration bool) *nomadCreateFixt
 	t.Setenv("KANDEV_AGENTCTL_DARWIN_ARM64_BINARY", artifactPath)
 	artifactHash := sha256.Sum256(artifact)
 	artifactDigest := hex.EncodeToString(artifactHash[:])
-	fixture := &nomadCreateFixture{artifactDigest: artifactDigest}
+	fixture := &nomadCreateFixture{artifactDigest: artifactDigest, fake: newNomadAdmissionFake()}
 
 	agentctlServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -603,6 +605,9 @@ func newNomadCreateFixture(t *testing.T, failRegistration bool) *nomadCreateFixt
 	nomadServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("X-Nomad-Token") != "fixture-token" {
 			t.Errorf("Nomad API request omitted resolved secret token")
+		}
+		if fixture.fake.serve(w, r) {
+			return
 		}
 		switch {
 		case r.Method == http.MethodPut && r.URL.Path == "/v1/jobs":
@@ -743,7 +748,11 @@ func newNomadCreateFixture(t *testing.T, failRegistration bool) *nomadCreateFixt
 				return err
 			}
 			fixture.checkpoints = append(fixture.checkpoints, state)
+			fixture.fake.record("checkpoint:" + state.Phase + ":" + state.QuarantineState)
 			return nil
+		},
+		ListNomadInventory: func(context.Context) ([]nomad.EnvironmentState, error) {
+			return fixture.inventory, nil
 		},
 	}
 	fixture.request.PersistNomadRuntimeSecret = func(_ context.Context, metadataKey, value string) error {

@@ -126,7 +126,7 @@ func TestNomadStagingBarrierRemainsUnknownAndDoesNotRegisterOnRetry(t *testing.T
 func TestNomadRegisteredAllocationBarrierResumesSameJob(t *testing.T) {
 	fixture := newNomadCreateFixture(t, false)
 	fixture.allocationsPending = true
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()
 	_, err := fixture.runtime.CreateInstance(ctx, fixture.request)
 	if err == nil || !strings.Contains(err.Error(), "wait for exact running Nomad allocation") {

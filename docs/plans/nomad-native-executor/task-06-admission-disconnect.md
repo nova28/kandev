@@ -1,7 +1,7 @@
 ---
 id: "06-admission-disconnect"
 title: "Capacity and actual client disconnect"
-status: pending
+status: in_progress
 wave: 6
 depends_on:
   - "05-recovery"
@@ -14,7 +14,6 @@ acceptance_criteria:
   - AC-EXECUTORS-NOMAD-001.2
   - AC-EXECUTORS-NOMAD-002.3
   - AC-EXECUTORS-NOMAD-003.3
-  - AC-EXECUTORS-NOMAD-003.4
 system_design:
   - ../../specs/executors/system-design/nomad-native-executor.md
 ---
@@ -23,7 +22,7 @@ system_design:
 
 ## Summary
 
-Prove scheduler capacity and real disconnected-client behavior. Quarantine must prevent placement across operations and survive GCed allocation history.
+Prove scheduler capacity and real disconnected-client behavior. Quarantine building blocks (client, state, admission gate) must prevent placement across operations and survive GCed allocation history. The live quarantine triggers on cleanup failure and the operator readmission procedure (AC-EXECUTORS-NOMAD-003.4) belong to task 07; 003.3 here covers only the mechanism and its offline proof.
 
 ## In scope
 
@@ -36,33 +35,44 @@ Prove scheduler capacity and real disconnected-client behavior. Quarantine must 
 
 - Rendered UI, Docker/VM execution, plugin implementation, provider SDK/protobuf changes, model-backed workloads, and production rollout.
 
+## Decisions (spec review round 1)
+
+- Topology: `admission` and `disconnect` run only with `--create-fixture`, and only against a loopback `http` Nomad address (anything else is rejected before any action). The operator supplies a throwaway Nomad 2.0.7 server and client; for `disconnect` the client joins through the fixture-owned loopback relay named in the bootstrap `partition` block (`listen`, `upstream`); the HTTP API is not relayed. The relay is the bypass proof: the node must leave `ready` when it is closed.
+- Release of A is the runner's operator teardown, reported `production_cleanup=false`; production release is task 07. Because freeing A's reservation places queued B at once and B's bootstrap exits 73 on A's still-held fence, the runner marks the fixture node ineligible before stopping A, verifies terminal allocation, exact process absence and compare-owner fence removal, then restores the eligibility it changed. B must have zero allocations through that window and one running allocation after it.
+- A client disconnect leaves the environment as uncertain, not quarantined. The admission gate rejects while the node is not `ready`/`eligible`; in the window after Nomad reports the node ready but before the original allocation reconciles, the worker start fence (not the gate) prevents a second controller, and the runner orders its queued-B step after the original allocation is running again. Any observed stop, loss or replacement of the original allocation fails the scenario and sends the policy back to design review.
+- Queued-B crash (AC-002.3) runs inside `disconnect` after reconnect: B queued, backend killed, only A's agentctl leader killed by verified pid and start time. Evidence: B allocation terminal with exit code 73, exactly one allocation each for A and B, no B agentctl process, A's recorded child/grandchild alive, A's fence owner hash unchanged. B's post-restart envelope phase is not asserted here.
+- The admission gate runs before any intent checkpoint, secret or registration and rejects on: another retained envelope for the NodeID in `QuarantineState` pending/marked or `cleanup_pending`; a Nomad Variables marker; node not `ready` and `eligible`; unreadable inventory, node or marker (fail closed). A rejection writes no inventory. Quarantine order: persist `pending`, check dedicated node, set ineligible, create marker (create-only, a conflict means already quarantined), persist `marked`.
+- Dedicated owner is the profile-pinned NodeID, datacenter and platform matched against the Nomad node record. Nomad node ACLs are not scoped per node; this is recorded as a limitation, not claimed as isolation.
+- Live quarantine triggers are not wired in this task: `quarantineWorker` and `reconcilePendingNomadQuarantine` are offline-tested building blocks. Triggering them on cleanup failure and reconciling `pending` on startup belong to task 07, which also owns operator readmission.
+- The Kandev Nomad client exposes no eligible, drain or marker-delete call. Only the runner, as the fixture operator, restores eligibility.
+- `job.go` needs no change: the disconnect, restart and reschedule policy already exists; a test now pins it.
+- Honest capacity statement: count=1 is per job group, not a worker limit; native reservations are scheduler bookkeeping, not hard limits on macOS or on outside processes. Recorded in the evidence `limitations`.
+
 ## Acceptance
 
-- Real A/B evaluations demonstrate resource reservation rather than count=1; B starts only after safe A release and native reservation limits are described honestly.
-- Actual Nomad client partition leaves one original workload running and no duplicate execution/allocation; reconnect restores original identities without another prompt.
-- Quarantine makes the owned dedicated node ineligible, rejects new operations and survives history loss/restart; unresolved control-plane loss cannot reopen admission.
+- Real A/B evaluations demonstrate resource reservation (A over half of node capacity minus reserve, B unallocated with exhausted-dimension evidence); B starts only after the recorded safe A release.
+- Actual Nomad client partition leaves one original workload running and no duplicate execution/allocation; reconnect restores original identities without another prompt; queued B is refused by A's fence after a leader crash.
+- Offline tests prove quarantine marks the owned node ineligible, rejects new operations, survives empty history and restart, and an unavailable control API leaves a durable pending interlock.
 
 ## Verification
 
-All new paths/test names are future deliverables. Run the complete block from
-any shell with the named absolute root and fixture-only config set. Use TDD for
-changed logic; no-tests-to-run or a skipped required real scenario fails the
-work order. Do not mark done based only on existing tests.
+All test names below are deliverables. Run from any shell with the absolute root and the bootstrap-schema fixture config (no production Nomad address; loopback only). A matching-test guard fails on no-tests-to-run.
 
 ```bash
 : "${KANDEV_ROOT:?Set absolute Kandev worktree path}"
 : "${KANDEV_NOMAD_TEST_CONFIG:?Set absolute fixture-only JSON config path}"
+for spec in "./internal/agent/nomad NomadWorkerQuarantine" "./internal/agent/nomad NomadNativeJobDisconnectPolicy" "./internal/agent/runtime/lifecycle NomadAdmissionFence" "./internal/agent/runtime/lifecycle NomadWorkerQuarantine" "./internal/agent/runtime/lifecycle NomadCrashWithQueuedEnvironment"; do set -- $spec; n=$(cd "$KANDEV_ROOT/apps/backend" && go test "$1" -list "$2" | grep -c '^Test'); [ "$n" -ge 1 ] || { echo "no tests match $2 in $1" >&2; exit 1; }; done
 (cd "$KANDEV_ROOT/apps/backend" && go test -race ./internal/agent/nomad ./internal/agent/runtime/lifecycle -run 'TestNomadNativeJob|TestNomadWorkerQuarantine|TestNomadAdmissionFence|TestNomadCrashWithQueuedEnvironment' -count=1)
-(cd "$KANDEV_ROOT" && scripts/nomad-native-e2e run --require-real --scenario admission --config "$KANDEV_NOMAD_TEST_CONFIG")
-(cd "$KANDEV_ROOT" && scripts/nomad-native-e2e run --require-real --scenario disconnect --config "$KANDEV_NOMAD_TEST_CONFIG")
+(cd "$KANDEV_ROOT/scripts" && python3 -m unittest test_nomad_native_e2e test_nomad_native_e2e_fixture test_nomad_native_e2e_wo06)
+(cd "$KANDEV_ROOT" && scripts/nomad-native-e2e run --require-real --create-fixture --scenario admission --config "$KANDEV_NOMAD_TEST_CONFIG")
+(cd "$KANDEV_ROOT" && scripts/nomad-native-e2e run --require-real --create-fixture --scenario disconnect --config "$KANDEV_NOMAD_TEST_CONFIG")
 ```
 
 ## Files likely touched
 
-- `apps/backend/internal/agent/nomad/job.go, quarantine.go and tests (new)`
+- `apps/backend/internal/agent/nomad/quarantine.go`, `state.go` and tests
 - `apps/backend/internal/agent/runtime/lifecycle/executor_nomad_admission.go and tests (new)`
-- `apps/backend/internal/agent/nomad/integration/admission_disconnect_test.go and partition fixture (new)`
-- `scripts/nomad-native-e2e`
+- `scripts/nomad_native_e2e_wo06.py` and its tests, `scripts/nomad_native_e2e.py`, `scripts/nomad_native_e2e_bootstrap.py` (the `admission` and `disconnect` runner scenarios replace the integration Go test)
 
 ## Dependencies
 
@@ -86,4 +96,9 @@ Nomad policy must be tested on 2.0.7; defaults are not guarantees. Closing a Kan
 
 ## Results
 
-Pending. Implementation and verification evidence have not yet been recorded.
+Build complete offline (2026-10-25); real-worker proof pending, so this work order is not complete.
+
+- Go: `nomad/quarantine.go` (node read, ineligible-only call, create-only Variables marker, dedicated-node check), `EnvironmentState.QuarantineState`, and the lifecycle admission gate (`executor_nomad_admission.go`) running before any launch intent, secret or registration. Quarantine and pending-reconcile are offline-tested building blocks with no production trigger (task 07 wires triggers and operator readmission). `go test -race` over `./internal/agent/nomad` and `./internal/agent/runtime/lifecycle` with `TestNomad` passes; each Verification prefix matches at least one test. One existing test timeout was raised from 30ms to 300ms because admission adds fake round trips; its assertion is unchanged.
+- Runner: `admission` and `disconnect` run only with `--create-fixture` (`scripts/nomad_native_e2e_wo06.py`); 206 offline Python tests pass, covering each assertion failing once, first-failure-keeps-fixture, idempotent `cleanup-fixture`, and a real-socket relay.
+- Independent review found and fixed: a live quarantine trigger on any bootstrap error (removed), a fail-open inventory read, a runner that could re-enable a quarantined node, a leader misidentification risk (Nomad's executor parent), and a failed disconnect run leaving the client partitioned.
+- Not yet proven live: Nomad JSON shapes the runner assumes, `lost_after` default behavior on 2.0.7 (a lost or replaced original allocation fails the scenario by design), and agentctl teardown of managed groups on job stop. Evidence will be recorded in `docs/evidence/nomad-wo06/`.

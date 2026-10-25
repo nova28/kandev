@@ -25,7 +25,7 @@ _TOP_REQUIRED = {
     "schema_version", "kandev_binary", "nomad", "ssh", "workspace_root", "allocation_root",
     "cpu_mhz", "memory_mb", "repository", "expected_file", "temp_root_parent",
 }
-_TOP_OPTIONAL = {"agent_profile_name"}
+_TOP_OPTIONAL = {"agent_profile_name", "partition"}
 _NOMAD_KEYS = {"address", "token_file", "namespace", "region", "datacenter", "node_id", "platform"}
 _SSH_KEYS = {"target", "port", "host_fingerprint", "identity_file"}
 _NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}")
@@ -142,6 +142,27 @@ def _temp_root_parent(value: Any, checkout: Path) -> Path:
     return resolved
 
 
+def _loopback_endpoint(value: Any, label: str) -> tuple[str, int]:
+    match = re.fullmatch(r"(127\.0\.0\.1|localhost):(\d{1,5})", value) if isinstance(value, str) else None
+    if match is None or not 1 <= int(match.group(2)) <= 65535:
+        raise PreflightError(f"partition.{label} must be a loopback host:port")
+    return match.group(1), int(match.group(2))
+
+
+def validate_partition(value: Any, nomad_http_address: str) -> dict[str, str]:
+    """Loopback relay endpoints for the disconnect scenario: the throwaway client dials `listen`, which relays to `upstream`."""
+    if not isinstance(value, dict) or value.keys() != {"listen", "upstream"}:
+        raise PreflightError("partition must contain exactly listen and upstream")
+    listen, upstream = _loopback_endpoint(value["listen"], "listen"), _loopback_endpoint(value["upstream"], "upstream")
+    nomad_port = urlsplit(nomad_http_address).port
+    if listen[1] == upstream[1]:
+        raise PreflightError("partition.listen and partition.upstream must use different ports")
+    for label, port in (("listen", listen[1]), ("upstream", upstream[1])):
+        if port == LIVE_KANDEV_PORT or port == nomad_port:
+            raise PreflightError(f"partition.{label} must not use the live Kandev port or the Nomad HTTP port")
+    return {"listen": value["listen"], "upstream": value["upstream"]}
+
+
 def validate_bootstrap(config: Any, run: Callable[..., Any] = subprocess.run, checkout_root: Path = CHECKOUT_ROOT) -> dict[str, Any]:
     """Returns a normalized copy; raises PreflightError before anything is created."""
     if not isinstance(config, dict) or config.keys() - (_TOP_REQUIRED | _TOP_OPTIONAL) or _TOP_REQUIRED - config.keys():
@@ -195,4 +216,5 @@ def validate_bootstrap(config: Any, run: Callable[..., Any] = subprocess.run, ch
         "repository": repository, "expected_file": expected_file,
         "temp_root_parent": str(_temp_root_parent(config["temp_root_parent"], checkout)),
         "agent_profile_name": profile_name,
+        "partition": validate_partition(config["partition"], address) if "partition" in config else None,
     }

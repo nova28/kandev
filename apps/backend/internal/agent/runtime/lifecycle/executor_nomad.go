@@ -98,6 +98,9 @@ func (r *NomadExecutor) CreateInstance(ctx context.Context, req *ExecutorCreateR
 func (r *NomadExecutor) launchNewOperation(ctx context.Context, req *ExecutorCreateRequest, id nomadLaunchIdentity) (_ *ExecutorInstance, returnedErr error) {
 	profile := id.profile
 	state := newNomadIntentState(req, id)
+	if err := r.admitNomadLaunch(ctx, req, profile); err != nil {
+		return nil, err
+	}
 	nonce, err := recordNomadLaunchIntent(ctx, req, state)
 	if err != nil {
 		return nil, err
@@ -159,6 +162,26 @@ func (r *NomadExecutor) launchNewOperation(ctx context.Context, req *ExecutorCre
 		return nil, err
 	}
 	return connection.instance, nil
+}
+
+func (r *NomadExecutor) admitNomadLaunch(ctx context.Context, req *ExecutorCreateRequest, profile nomad.ProfileConfig) error {
+	client, err := r.newNomadAdmissionClient(ctx, profile)
+	if err != nil {
+		return err
+	}
+	return r.admitNewNomadOperation(ctx, req, profile, client)
+}
+
+func (r *NomadExecutor) newNomadAdmissionClient(ctx context.Context, profile nomad.ProfileConfig) (*nomad.Client, error) {
+	token, err := r.revealNomadToken(ctx, profile)
+	if err != nil {
+		return nil, err
+	}
+	client, err := r.newNomadClient(profile.Address, token)
+	if err != nil {
+		return nil, fmt.Errorf("configure Nomad API client: %w", err)
+	}
+	return client, nil
 }
 
 func (r *NomadExecutor) StopInstance(_ context.Context, instance *ExecutorInstance, force bool) error {
