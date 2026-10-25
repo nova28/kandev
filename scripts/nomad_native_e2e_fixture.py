@@ -797,8 +797,16 @@ def _drive(runner: Runner, cfg: dict[str, Any], ops: Ops, root: Path) -> dict[st
 
     def workspace_read() -> None:
         read = ops.ws({"mode": "workspace-read", "ws_base": f"ws://127.0.0.1:{state['port']}", "session_id": state["session_id"], "task_id": state["task_id"], "expected_file": state["expected_file"]})
-        data["workspace_read"] = {key: read.get(key) for key in ("ok", "contains_expected_file", "repo_head")}
-        base._check_workspace_read(read, state.get("expected_head"))
+        data["workspace_read"] = {key: read.get(key) for key in ("ok", "contains_expected_file")}
+        base._check_workspace_read(read)
+        # Git snapshots exist only after an agent turn, so HEAD comes from the pinned read-only SSH probe.
+        workspace = shlex.quote(after["inventory"]["workspace_path"])
+        code, out = runner.ssh(f'for d in {workspace}/*/; do if [ -e "${{d}}.git" ]; then git -C "$d" rev-parse HEAD; fi; done')
+        if code != 0:
+            raise PreflightError("workspace repository HEAD read failed")
+        head = base._parse_checkout_heads(out)
+        data["workspace_read"]["repo_head"] = head
+        base._check_workspace_head(head, state.get("expected_head"))
         runner.check_session_created()
 
     step("workspace-read-before-any-prompt", workspace_read)

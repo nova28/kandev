@@ -936,12 +936,21 @@ def _check_session_untouched(session_row: dict[str, Any], messages_after: list[d
         raise PreflightError("pre-ready recovery changed the durable message identities")
 
 
-def _check_workspace_read(read: dict[str, Any], expected_head: str | None = None) -> None:
+def _check_workspace_read(read: dict[str, Any]) -> None:
     if read.get("ok") is not True or read.get("contains_expected_file") is not True:
         raise PreflightError("normal workspace read did not return the expected file")
-    head = read.get("repo_head")
-    if not isinstance(head, str) or not re.fullmatch(r"[0-9a-f]{40}", head):
-        raise PreflightError("normal workspace read did not report the selected repository HEAD")
+
+
+def _parse_checkout_heads(output: str) -> str:
+    """Return the single checkout HEAD printed by the read-only workspace probe."""
+    heads = [line.strip() for line in output.splitlines() if line.strip()]
+    if len(heads) != 1 or not re.fullmatch(r"[0-9a-f]{40}", heads[0]):
+        raise PreflightError("workspace did not report exactly one repository checkout HEAD")
+    return heads[0]
+
+
+def _check_workspace_head(head: str, expected_head: str | None) -> None:
+    # A URL repository has no local bare repo to compare against; the probe already proved a real commit ID.
     if expected_head is not None and head != expected_head:
         raise PreflightError("workspace repository HEAD does not match the fixture repository commit")
 
@@ -1033,8 +1042,6 @@ def _run_attached_pre_ready_recovery(config: dict[str, Any]) -> dict[str, Any]:
         "server_identity": inventory_after["server_identity"],
         "repo_count": expected["expected_repo_count"], "workspace_read_ok": True, "prompts_sent": 0,
     }
-    if read.get("repo_head"):
-        report["repo_head"] = read["repo_head"]
     return report
 
 

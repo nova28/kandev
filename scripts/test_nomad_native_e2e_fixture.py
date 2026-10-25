@@ -93,7 +93,8 @@ class World:
         self.daemon_group_survives = False
         self.killed_groups = []
         self.ws_failure = None
-        self.workspace_read = {"ok": True, "contains_expected_file": True, "repo_head": FIXTURE_HEAD}
+        self.workspace_read = {"ok": True, "contains_expected_file": True, "snapshots": []}
+        self.checkout_heads = FIXTURE_HEAD + "\n"
         self.alloc_status = "running"
         self.fence = "owner:fence-content\n"
         self.tree_present = True
@@ -243,6 +244,8 @@ class World:
             self.ssh_commands.append(command)
             if "active-environment" in command:
                 return (3, "") if self.fence is None else (0, self.fence)
+            if "rev-parse HEAD" in command:
+                return 0, self.checkout_heads
             assert command.startswith("ps -eww")
             if not self.tree_present:
                 return 0, ""
@@ -716,11 +719,20 @@ class FailureFlowTest(FixtureBase):
         self.assertEqual(self.world.events, ["crashed"])
 
     def test_workspace_read_without_repo_head_fails(self):
-        self.world.workspace_read = {"ok": True, "contains_expected_file": True}
-        self.assertFailedLeavingFixture("workspace-read-before-any-prompt", "repository HEAD")
+        self.world.checkout_heads = ""
+        self.assertFailedLeavingFixture("workspace-read-before-any-prompt", "exactly one repository checkout HEAD")
+
+    def test_workspace_head_asserted_when_git_snapshots_are_empty(self):
+        self.assertEqual(self.world.workspace_read["snapshots"], [])
+        self.world.checkout_heads = "b" * 40 + "\n"
+        self.assertFailedLeavingFixture("workspace-read-before-any-prompt", "does not match")
+
+    def test_workspace_head_with_two_checkouts_fails(self):
+        self.world.checkout_heads = FIXTURE_HEAD + "\n" + FIXTURE_HEAD + "\n"
+        self.assertFailedLeavingFixture("workspace-read-before-any-prompt", "exactly one repository checkout HEAD")
 
     def test_workspace_read_with_wrong_repo_head_fails(self):
-        self.world.workspace_read = {"ok": True, "contains_expected_file": True, "repo_head": "b" * 40}
+        self.world.checkout_heads = "b" * 40 + "\n"
         self.assertFailedLeavingFixture("workspace-read-before-any-prompt", "does not match")
 
     def test_workspace_read_missing_expected_file_fails(self):
@@ -874,9 +886,14 @@ class SharedHelpersTest(unittest.TestCase):
         base._check_session_untouched({"state": "CREATED"}, messages, messages)
         with self.assertRaises(PreflightError):
             base._check_session_untouched({"state": "CREATED"}, messages + [{"id": "b"}], messages)
-        base._check_workspace_read({"ok": True, "contains_expected_file": True, "repo_head": FIXTURE_HEAD}, FIXTURE_HEAD)
+        base._check_workspace_read({"ok": True, "contains_expected_file": True})
         with self.assertRaises(PreflightError):
             base._check_workspace_read({"ok": True})
+        self.assertEqual(base._parse_checkout_heads(FIXTURE_HEAD + "\n"), FIXTURE_HEAD)
+        base._check_workspace_head(FIXTURE_HEAD, FIXTURE_HEAD)
+        base._check_workspace_head(FIXTURE_HEAD, None)
+        with self.assertRaises(PreflightError):
+            base._check_workspace_head("b" * 40, FIXTURE_HEAD)
 
 
 if __name__ == "__main__":
