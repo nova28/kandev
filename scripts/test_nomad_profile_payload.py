@@ -13,10 +13,10 @@ class NomadProfilePayloadTests(unittest.TestCase):
     def setUp(self):
         self.source = {
             "schema_version": 1,
-            "executor_id": "0a9cdc1d-1122-4430-adff-3502fd219217",
-            "profile_id": "4268bed8-227f-476a-bc46-d094a7c01b07",
+            "executor_id": "00000000-0000-0000-0000-000000000002",
+            "profile_id": "00000000-0000-0000-0000-000000000003",
             "profile_name": "isolated fixture worker",
-            "nomad_token_ref": "$kandev-secret:9847b2cc-e7d3-43f9-bc70-990d88739fb3",
+            "nomad_token_ref": "$kandev-secret:00000000-0000-0000-0000-000000000004",
             "config": {
                 "address": "http://127.0.0.1:26461",
                 "namespace": "default",

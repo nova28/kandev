@@ -47,13 +47,17 @@ class FakeRegistry:
 
     def start(self, label, argv, *, cwd, env):
         w = self.world
-        w.pid += 1
-        record = {"label": label, "pid": w.pid, "started_at": "t", "pgid": w.pid}
+        if w.reuse_pid and w.last_crashed_pid and label == fixture.PROCESS_LABEL:
+            pid = w.last_crashed_pid
+        else:
+            w.pid += 1
+            pid = w.pid
+        record = {"label": label, "pid": pid, "started_at": "t", "pgid": pid}
         w.records.append(record)
-        w.alive.add(w.pid)
+        w.alive.add(pid)
         port = int(env["KANDEV_SERVER_PORT"]) if "KANDEV_SERVER_PORT" in env else int(next(a for a in argv if a.startswith("--port=")).split("=")[1])
         w.open_ports.add(port)
-        w.record_ports[w.pid] = port
+        w.record_ports[pid] = port
         w.starts.append({"argv": list(argv), "env": dict(env), "cwd": str(cwd)})
         if label != fixture.GIT_DAEMON_LABEL:
             w.on_start(env)
@@ -70,11 +74,26 @@ class FakeRegistry:
         return result
 
     def crash(self, label, timeout=5):
-        return self._retire(label, "crashed")
+        w = self.world
+        record = next(item for item in w.records if item["label"] == label)
+        port = w.record_ports.get(record["pid"])
+        if w.crash_result != "crashed":
+            return w.crash_result
+        result = self._retire(label, "crashed")
+        w.last_crashed_pid = record["pid"]
+        if w.crash_leaves == "alive":
+            w.alive.add(record["pid"])
+        elif w.crash_leaves == "port":
+            w.open_ports.add(port)
+        elif w.crash_leaves == "record":
+            w.records.append(record)
+        return result
 
     def stop(self, label, timeout=5):
         if label == fixture.GIT_DAEMON_LABEL and self.world.daemon_group_survives:
             raise RuntimeError("leader stopped but process group still has members")
+        if label == fixture.GIT_DAEMON_LABEL and self.world.daemon_stop_error:
+            raise RuntimeError(self.world.daemon_stop_error)
         return self._retire(label, "stopped")
 
 
@@ -111,6 +130,16 @@ class World:
         self.barrier = None
         self.secret_value = None
         self.clock = FakeClock()
+        self.state_overrides, self.exec_column = {}, EXEC_ID
+        self.env_status, self.env_workspace, self.env_generation = "creating", "", 1
+        self.session_state = "CREATED"
+        self.crash_result, self.crash_leaves, self.last_crashed_pid, self.reuse_pid = "crashed", None, None, False
+        self.node_status, self.node_eligibility, self.node_id_reported = "ready", "eligible", NODE
+        self.job_status, self.allocations, self.alloc_node, self.task_state = "running", [{"ID": ALLOC}], NODE, "running"
+        self.extra_listeners, self.listener_hosts_value = [], {"127.0.0.1"}
+        self.ps_code, self.fence_code, self.head_code = 0, None, 0
+        self.extra_message = False
+        self.daemon_stop_error = None
 
     # backend side effects
     def on_start(self, env):
@@ -129,12 +158,13 @@ class World:
             "job_create_index": 5, "job_definition_index": 6, "allocation_id": ALLOC, "node_id": NODE,
             "workspace_path": "/ws/environments/env/g1", "server_identity": "srv", "phase": self.phase, "workspace_input_captured": self.captured,
         }
+        state.update(self.state_overrides)
         db = self._db()
         db.execute("CREATE TABLE executors_running (session_id TEXT, task_id TEXT, runtime TEXT, agent_execution_id TEXT, metadata TEXT)")
         db.execute("CREATE TABLE task_environments (id TEXT, status TEXT, workspace_path TEXT, ownership_generation INTEGER)")
         db.execute("CREATE TABLE task_environment_repos (id TEXT, task_environment_id TEXT)")
-        db.execute("INSERT INTO executors_running VALUES ('sess1','task1','nomad',?,?)", (EXEC_ID, json.dumps({"nomad_environment_state": state})))
-        db.execute("INSERT INTO task_environments VALUES (?, 'creating', '', 1)", (ENV_ID,))
+        db.execute("INSERT INTO executors_running VALUES ('sess1','task1','nomad',?,?)", (self.exec_column, json.dumps({"nomad_environment_state": state})))
+        db.execute("INSERT INTO task_environments VALUES (?, ?, ?, ?)", (ENV_ID, self.env_status, self.env_workspace, self.env_generation))
         db.execute("INSERT INTO task_environment_repos VALUES ('r1', ?)", (ENV_ID,))
         db.commit()
         db.close()
@@ -142,6 +172,8 @@ class World:
             payload = {"execution_id": EXEC_ID, "environment_id": ENV_ID, "session_id": "sess1"}
             if self.marker_mode == "badkeys":
                 payload["extra"] = 1
+            if self.marker_mode == "othersession":
+                payload["session_id"] = "other-session"
             Path(self.barrier).write_text(json.dumps(payload) + "\n")
 
     def _recover(self):
@@ -150,7 +182,9 @@ class World:
         db.commit()
         db.close()
         mutation = self.recover_mutation
-        if mutation == "job":
+        if mutation == "touch":
+            self.extra_message = True
+        elif mutation == "job":
             self.job_index = 99
         elif mutation == "fence":
             self.fence = "owner:other\n"
@@ -205,9 +239,12 @@ class World:
                 self._create_task()
                 return {"id": "task1", "session_id": "sess1"}
             if path == "/tasks/task1/sessions":
-                return {"sessions": [{"id": "sess1", "state": "CREATED"}]}
+                return {"sessions": [{"id": "sess1", "state": self.session_state}]}
             if path == "/task-sessions/sess1/messages":
-                return {"messages": [{"id": "m1", "type": "status", "author_type": "agent", "turn_id": "t"}]}
+                messages = [{"id": "m1", "type": "status", "author_type": "agent", "turn_id": "t"}]
+                if self.extra_message:
+                    messages.append({"id": "m2", "type": "status", "author_type": "agent", "turn_id": "t2"})
+                return {"messages": messages}
             raise AssertionError(f"unexpected API call {method} {path}")
         return call
 
@@ -217,13 +254,13 @@ class World:
         def call(path):
             self.nomad_paths.append(path)
             if path == f"/v1/node/{NODE}":
-                return {"ID": NODE, "Status": "ready", "SchedulingEligibility": "eligible"}
+                return {"ID": self.node_id_reported, "Status": self.node_status, "SchedulingEligibility": self.node_eligibility}
             if path == f"/v1/job/{JOB}":
-                return {"ID": JOB, "Status": "running", "CreateIndex": 5, "JobModifyIndex": self.job_index}
+                return {"ID": JOB, "Status": self.job_status, "CreateIndex": 5, "JobModifyIndex": self.job_index}
             if path == f"/v1/job/{JOB}/allocations":
-                return [{"ID": ALLOC}]
+                return list(self.allocations)
             if path == f"/v1/allocation/{ALLOC}":
-                return {"ID": ALLOC, "NodeID": NODE, "ClientStatus": self.alloc_status, "TaskStates": {"agentctl": {"State": "running"}}}
+                return {"ID": ALLOC, "NodeID": self.alloc_node, "ClientStatus": self.alloc_status, "TaskStates": {"agentctl": {"State": self.task_state}}}
             raise AssertionError(f"unexpected Nomad read {path}")
         return call
 
@@ -243,10 +280,14 @@ class World:
         def call(command):
             self.ssh_commands.append(command)
             if "active-environment" in command:
+                if self.fence_code is not None:
+                    return self.fence_code, ""
                 return (3, "") if self.fence is None else (0, self.fence)
             if "rev-parse HEAD" in command:
-                return 0, self.checkout_heads
+                return self.head_code, self.checkout_heads
             assert command.startswith("ps -eww")
+            if self.ps_code:
+                return self.ps_code, ""
             if not self.tree_present:
                 return 0, ""
             started = "Sun Oct 25 10:00:00 2026" if self.tree_present is True else "Sun Oct 25 10:09:09 2026"
@@ -268,12 +309,14 @@ class World:
     def kill_group(self, pgid):
         self.killed_groups.append(pgid)
         self.daemon_group_survives = False
+        self.daemon_stop_error = None
 
     def ops(self):
         return fixture.Ops(
             free_port=lambda: next(self.free_ports), git_binary=lambda: "/usr/bin/git", retention_settle=0, kill_group=self.kill_group,
             git_bare_clone=lambda src, dest: self.bare_clones.append((src, dest)), git_head=lambda path, ref: FIXTURE_HEAD, port_open=lambda port: port in self.open_ports, pid_alive=lambda pid: pid in self.alive,
-            listener_pids=lambda port: [r["pid"] for r in self.records if self.record_ports.get(r["pid"]) == port],
+            listener_pids=lambda port: [r["pid"] for r in self.records if self.record_ports.get(r["pid"]) == port] + self.extra_listeners,
+            listener_hosts=lambda port: set(self.listener_hosts_value),
             registry=lambda root: FakeRegistry(self), api_factory=self.api_factory, nomad_factory=self.nomad_factory,
             keyscan=self.keyscan, key_fingerprint=self.key_fingerprint, ssh_factory=self.ssh_factory, ws=self.ws, clock=self.clock.clock, sleep=self.clock.sleep, wall=lambda: "2026-01-01T00:00:00+00:00",
         )
@@ -533,6 +576,10 @@ class CreateFlowTest(FixtureBase):
         self.assertEqual(self.run_flow(), 0, self.err)
         root = self.fixture_root()
         base._verify_backend_launch_manifest(root, root / "home", {"binary": str(self.binary), "port": 43111})
+
+    def test_materialized_identity_copy_is_private_and_exact(self):
+        root = self._dir("materialize-root")
+        fixture._materialize(self.validate(), root, 43111)
         key = root / "home" / ".ssh" / "id_ed25519"
         self.assertEqual(key.stat().st_mode & 0o777, 0o600)
         self.assertEqual(key.read_text(), KEY_BODY + "\n")
@@ -762,6 +809,130 @@ class FailureFlowTest(FixtureBase):
                 self.assertEqual(self.world.ws_calls.count("session-stop"), 1)
                 self.temp.cleanup()
 
+    # -- runner branches: every failure stops the run without retrying or prompting ------------------------------
+    def assertLeft(self, step, message, *, events=(), labels=None):
+        self.assertFailedLeavingFixture(step, message)
+        self.assertEqual(self.world.ws_calls, [])
+        self.assertEqual(self.world.events, list(events))
+        if labels is None:
+            labels = [fixture.GIT_DAEMON_LABEL, fixture.PROCESS_LABEL]
+        self.assertEqual(sorted(r["label"] for r in self.world.records), sorted(labels))
+
+    def test_barrier_marker_for_a_different_session_fails(self):
+        self.world.marker_mode = "othersession"
+        self.assertLeft("await-pre-publish-barrier", "different session")
+
+    def test_inventory_identity_mismatching_the_marker_fails(self):
+        cases = (
+            ("execution_id", {"exec_column": "other-exec"}),
+            ("operation_id", {"state_overrides": {"operation_id": "other-op"}}),
+            ("environment_id", {"state_overrides": {"environment_id": "other-env"}}),
+        )
+        for name, attrs in cases:
+            with self.subTest(name):
+                self.setUp()
+                for key, value in attrs.items():
+                    setattr(self.world, key, value)
+                self.assertLeft("await-pre-publish-barrier", "does not match the barrier marker")
+                self.temp.cleanup()
+
+    def test_environment_not_creating_or_with_a_workspace_fails_before_the_crash(self):
+        for attrs in ({"env_status": "ready"}, {"env_workspace": "/ws/already"}):
+            with self.subTest(attrs):
+                self.setUp()
+                for key, value in attrs.items():
+                    setattr(self.world, key, value)
+                self.assertLeft("snapshot-before-crash", "creating state with an empty workspace path")
+                self.temp.cleanup()
+
+    def test_session_not_created_before_the_crash_fails(self):
+        self.world.session_state = "RUNNING"
+        self.assertLeft("snapshot-before-crash", "not in the CREATED state")
+
+    def test_empty_remote_tree_or_missing_fence_before_the_crash_fails(self):
+        for attrs in ({"tree_present": False}, {"fence": None}):
+            with self.subTest(attrs):
+                self.setUp()
+                for key, value in attrs.items():
+                    setattr(self.world, key, value)
+                self.assertLeft("snapshot-before-crash", "tree or worker fence is missing")
+                self.temp.cleanup()
+
+    def test_ownership_generation_differing_from_the_inventory_fails(self):
+        self.world.env_generation = 2
+        self.assertLeft("snapshot-before-crash", "generation differs")
+
+    def test_nomad_snapshot_negatives_fail_before_the_crash(self):
+        cases = (
+            ("job id pattern", {"state_overrides": {"job_id": "not-a-kandev-job"}}, "kandev-<hash> pattern"),
+            ("node not ready", {"node_status": "down"}, "ready and eligible"),
+            ("node ineligible", {"node_eligibility": "ineligible"}, "ready and eligible"),
+            ("node identity", {"node_id_reported": "99999999-9999-4999-8999-999999999999"}, "ready and eligible"),
+            ("job not running", {"job_status": "dead"}, "not the running job"),
+            ("extra allocation", {"allocations": [{"ID": ALLOC}, {"ID": "other-alloc"}]}, "exactly the inventory allocation"),
+            ("wrong allocation", {"allocations": [{"ID": "other-alloc"}]}, "exactly the inventory allocation"),
+            ("allocation not running", {"alloc_status": "pending"}, "not running on the inventory node"),
+            ("allocation on another node", {"alloc_node": "other-node"}, "not running on the inventory node"),
+            ("agentctl not running", {"task_state": "dead"}, "agentctl task is not running"),
+        )
+        for name, attrs, message in cases:
+            with self.subTest(name):
+                self.setUp()
+                for key, value in attrs.items():
+                    setattr(self.world, key, value)
+                self.assertLeft("snapshot-before-crash", message)
+                self.temp.cleanup()
+
+    def test_crash_not_reported_as_crashed_fails(self):
+        self.world.crash_result = "already_absent"
+        self.assertLeft("crash-backend", "was not crashed through its exact owned process record")
+
+    def test_backend_remnants_after_the_crash_fail_verify_gone(self):
+        cases = (("alive", "still alive"), ("port", "port is still open"), ("record", "was not retired"))
+        for leaves, message in cases:
+            with self.subTest(leaves):
+                self.setUp()
+                self.world.crash_leaves = leaves
+                self.assertFailedLeavingFixture("crash-backend", message)
+                self.assertEqual(self.world.ws_calls, [])
+                self.temp.cleanup()
+
+    def test_restarted_backend_reusing_the_crashed_pid_fails(self):
+        self.world.reuse_pid = True
+        self.assertLeft("restart-backend-without-barrier", "reused the crashed process identity", events=["crashed"], labels=[fixture.GIT_DAEMON_LABEL, fixture.PROCESS_LABEL])
+
+    def test_start_guard_port_already_in_use(self):
+        self.world.open_ports.add(43111)
+        self.assertLeft("start-backend-with-barrier", "already in use", labels=[fixture.GIT_DAEMON_LABEL])
+
+    def test_start_guard_listener_that_is_not_exactly_the_registered_child(self):
+        self.world.extra_listeners = [9999]
+        self.assertLeft("start-backend-with-barrier", "not exactly the registered Kandev child")
+
+    def test_start_guard_refuses_the_live_port_without_starting_anything(self):
+        runner = fixture.Runner.__new__(fixture.Runner)
+        runner.state, runner.ops = {"port": bootstrap.LIVE_KANDEV_PORT}, self.world.ops()
+        with self.assertRaisesRegex(PreflightError, "live Kandev port"):
+            runner.start_backend(None)
+        self.assertEqual(self.world.starts, [])
+
+    def test_session_touched_during_recovery_fails(self):
+        self.world.recover_mutation = "touch"
+        self.assertLeft("await-recovery", "changed the durable message identities", events=["crashed"], labels=[fixture.GIT_DAEMON_LABEL, fixture.PROCESS_LABEL])
+
+    def test_workspace_head_read_with_a_failing_ssh_exit_code_fails(self):
+        self.world.head_code = 1
+        self.assertFailedLeavingFixture("workspace-read-before-any-prompt", "workspace repository HEAD read failed")
+        self.assertEqual(self.world.ws_calls, ["workspace-read"])
+
+    def test_remote_tree_read_error_fails_before_the_crash(self):
+        self.world.ps_code = 255
+        self.assertLeft("snapshot-before-crash", "remote process listing failed")
+
+    def test_remote_fence_read_error_fails_before_the_crash(self):
+        self.world.fence_code = 255
+        self.assertLeft("snapshot-before-crash", "remote fence read failed")
+
     def test_secrets_in_error_text_are_scrubbed(self):
         evidence = fixture.Evidence(self.parent, [TOKEN])
         self.assertNotIn(TOKEN, evidence.scrub(f"boom {TOKEN} boom"))
@@ -865,6 +1036,149 @@ class CleanupFixtureTest(FixtureBase):
         self.assertIn("cleanup-fixture failed before any action", err.getvalue())
         self.assertIn("--create-fixture requires", err.getvalue())
         self.assertIn("config is unreadable", err.getvalue())
+
+
+class LoopbackBindTest(FixtureBase):
+    def test_backend_and_manifest_env_bind_loopback_only(self):
+        self.assertEqual(self.run_flow(), 0, self.err)
+        backends = [item for item in self.world.starts if item["argv"][1:2] == ["__backend"]]
+        self.assertEqual(len(backends), 2)
+        for start in backends:
+            self.assertEqual(start["env"]["KANDEV_SERVER_HOST"], "127.0.0.1")
+        root = self.fixture_root()
+        manifest = json.loads((root / "home" / "supervisor" / "launch.json").read_text())
+        self.assertEqual(manifest["env"]["KANDEV_SERVER_HOST"], "127.0.0.1")
+        base._verify_backend_launch_manifest(root, root / "home", {"binary": str(self.binary), "port": 43111})
+
+    def test_launch_env_overrides_any_other_host(self):
+        runner = SimpleNamespace(state={"manifest_env": {"KANDEV_SERVER_HOST": "0.0.0.0"}, "bundle": "/b"})
+        self.assertEqual(fixture.Runner.launch_env(runner, None)["KANDEV_SERVER_HOST"], "127.0.0.1")
+
+    def test_listener_not_bound_to_loopback_only_fails_the_step(self):
+        for hosts in ({"0.0.0.0"}, {"127.0.0.1", "0.0.0.0"}, {"*"}, set()):
+            with self.subTest(hosts=hosts):
+                self.setUp()
+                self.world.listener_hosts_value = hosts
+                self.assertEqual(self.run_flow(), 2)
+                self.assertEqual(self.evidence()["failed_step"], "start-backend-with-barrier")
+                self.assertIn("loopback", self.evidence()["error"])
+                self.assertEqual(self.world.ws_calls, [])
+                self.temp.cleanup()
+
+    def test_default_listener_hosts_parses_lsof_machine_output(self):
+        original = fixture.subprocess.run
+        output = "p123\nn127.0.0.1:43111\nn[::1]:43111\np123\nn*:43111\n"
+        fixture.subprocess.run = lambda cmd, **kw: SimpleNamespace(returncode=0, stdout=output, stderr="")
+        try:
+            self.assertEqual(fixture._default_listener_hosts(43111), {"127.0.0.1", "::1", "*"})
+        finally:
+            fixture.subprocess.run = original
+
+
+class DaemonStopOwnershipTest(FixtureBase):
+    def test_identity_change_refusal_never_signals_the_group(self):
+        self.world.daemon_stop_error = "PID start identity or process group changed; refusing to signal"
+        self.assertEqual(self.run_flow(), 2)
+        self.assertEqual(self.world.killed_groups, [])
+        self.assertEqual(self.evidence()["failed_step"], "session-stop-and-teardown")
+        self.assertIn("refusing to signal", self.evidence()["error"])
+
+    def test_wait_time_identity_change_never_signals_the_group(self):
+        self.world.daemon_stop_error = "PID identity changed while waiting; retaining ownership record"
+        self.assertEqual(self.run_flow(), 2)
+        self.assertEqual(self.world.killed_groups, [])
+
+    def test_verified_leader_with_surviving_group_or_timeout_kills_the_group_once(self):
+        for message in ("recorded leader is absent but its process group still has members", "owned process did not stop before timeout; retaining ownership record"):
+            with self.subTest(message):
+                self.setUp()
+                self.world.daemon_stop_error = message
+                self.assertEqual(self.run_flow(), 0, self.err)
+                self.assertEqual(len(self.world.killed_groups), 1)
+                self.temp.cleanup()
+
+
+class EarlyFailureStateTest(FixtureBase):
+    def test_host_key_mismatch_during_runner_init_leaves_actionable_state(self):
+        self.world.scanned = ["worker.example ssh-ed25519 OTHER"]
+        self.assertEqual(self.run_flow(), 2)
+        root = self.fixture_root()
+        self.assertEqual((root / "fixture.json").stat().st_mode & 0o777, 0o600)
+        self.assertIn(f"operator cleanup: {fixture.cleanup_command(root)}", self.out)
+        self.world.scanned = None
+        self.out.clear()
+        self.assertEqual(fixture.run_cleanup_fixture(str(root), ops=self.world.ops(), out=self.out.append, err=self.err.append), 0, self.err)
+        self.assertEqual(self.world.records, [])
+        self.assertFalse((root / "home" / ".ssh" / "id_ed25519").exists())
+
+
+class IdentityCopyLifetimeTest(FixtureBase):
+    def key(self):
+        return self.fixture_root() / "home" / ".ssh" / "id_ed25519"
+
+    def test_successful_teardown_deletes_the_copied_identity(self):
+        self.assertEqual(self.run_flow(), 0, self.err)
+        self.assertFalse(self.key().exists())
+        self.assertTrue(self.evidence()["cleanup"]["ssh_identity_removed"])
+
+    def test_failed_run_keeps_the_identity_until_cleanup_fixture_succeeds(self):
+        self.world.recover_mutation = "fence"
+        self.assertEqual(self.run_flow(), 2)
+        self.assertTrue(self.key().exists())
+        self.world.fence = "owner:fence-content\n"
+        self.assertEqual(fixture.run_cleanup_fixture(str(self.fixture_root()), ops=self.world.ops(), out=self.out.append, err=self.err.append), 0, self.err)
+        self.assertFalse(self.key().exists())
+
+    def test_failed_cleanup_keeps_the_identity_for_the_retry(self):
+        self.world.recover_mutation = "tree"
+        self.assertEqual(self.run_flow(), 2)
+        self.world.stop_leaves_alive = True
+        self.assertEqual(fixture.run_cleanup_fixture(str(self.fixture_root()), ops=self.world.ops(), out=self.out.append, err=self.err.append), 2)
+        self.assertTrue(self.key().exists())
+
+
+class NomadRedirectTest(unittest.TestCase):
+    def test_token_is_never_forwarded_on_a_redirect(self):
+        import http.server
+        import threading
+
+        seen = []
+
+        class Target(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                seen.append(self.headers.get("X-Nomad-Token"))
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b"{}")
+
+            def log_message(self, *args):
+                pass
+
+        target = http.server.HTTPServer(("127.0.0.1", 0), Target)
+
+        class Redirector(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(302)
+                self.send_header("Location", f"http://127.0.0.1:{target.server_port}/v1/stolen")
+                self.end_headers()
+
+            def log_message(self, *args):
+                pass
+
+        redirector = http.server.HTTPServer(("127.0.0.1", 0), Redirector)
+        threads = [threading.Thread(target=server.serve_forever, daemon=True) for server in (target, redirector)]
+        for thread in threads:
+            thread.start()
+        self.addCleanup(lambda: [(server.shutdown(), server.server_close()) for server in (target, redirector)])
+        get = fixture._default_nomad_get(f"http://127.0.0.1:{redirector.server_port}", TOKEN, "default", "global")
+        with self.assertRaisesRegex(PreflightError, "status 302"):
+            get("/v1/job/x")
+        self.assertEqual(seen, [])
+
+    def test_redirect_handler_refuses_every_redirect(self):
+        request = fixture.urllib.request.Request("http://127.0.0.1:1/x", headers={"X-Nomad-Token": TOKEN})
+        handler = fixture._NoRedirect()
+        self.assertIsNone(handler.redirect_request(request, None, 307, "Temporary Redirect", {}, "http://evil.example/"))
 
 
 class SharedHelpersTest(unittest.TestCase):

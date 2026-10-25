@@ -62,22 +62,19 @@ func TestPublishRecoveredNomadEnvironmentReady_PostgresRacesCheckpointNomadExecu
 		t.Fatal("publish and checkpoint did not finish: possible deadlock")
 	}
 
-	// A PostgreSQL deadlock abort is a retryable database error, never a
-	// sentinel; every other outcome must be one of the defined results.
-	if publishErr != nil && !published && !errors.Is(publishErr, models.ErrExecutionRotated) && !errors.Is(publishErr, models.ErrWorkspaceReuseUnsafe) {
-		t.Logf("publish returned a database error: %v", publishErr)
+	// The race has exactly two defined outcomes: the publication wins, or the
+	// checkpoint rotated the execution first. Any other error fails the test.
+	if !published && !errors.Is(publishErr, models.ErrExecutionRotated) {
+		t.Fatalf("publish = (%v, %v), want published or models.ErrExecutionRotated", published, publishErr)
 	}
 	if checkpointErr != nil {
 		t.Logf("checkpoint returned: %v", checkpointErr)
 	}
 	env := fx.environment(t)
-	switch {
-	case published:
+	if published {
 		fx.assertPublished(t)
-	case publishErr != nil:
+	} else {
 		fx.assertUnpublished(t)
-	default:
-		t.Fatalf("publish = (false, nil) with environment %+v", env)
 	}
 	if published && len(env.Repos) != 1 {
 		t.Fatalf("repo rows = %d, want 1", len(env.Repos))

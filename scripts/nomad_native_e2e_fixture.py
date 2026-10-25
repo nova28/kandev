@@ -44,6 +44,8 @@ from nomad_profile_payload import build_profile_payload, validate_profile_source
 PROCESS_LABEL = "kandev-fixture"
 BARRIER_ENV = "KANDEV_FIXTURE_NOMAD_PRE_PUBLISH_BARRIER"
 FIXTURE_ONLY_ENV = "KANDEV_FIXTURE_ONLY"
+SERVER_HOST_ENV = "KANDEV_SERVER_HOST"
+LOOPBACK_HOST = "127.0.0.1"
 MARKER_KEYS = {"execution_id", "environment_id", "session_id"}
 MARKER_TIMEOUT = 180.0
 API_READY_TIMEOUT = 60.0
@@ -63,6 +65,7 @@ def cleanup_command(root: Path | str) -> str:
 
 
 GIT_DAEMON_LABEL = "git-daemon"
+_GROUP_KILL_SAFE = ("process group still has members", "did not stop before timeout")
 FIXTURE_REPO_OWNER, FIXTURE_REPO_NAME = "fixture-owner", "fixture-repo"
 INERT_AGENT_NAME = "nomad-fixture-inert"
 INERT_ACP_SCRIPT = Path(__file__).resolve().parent.parent / "apps/backend/internal/agent/nomad/integration/fixtures/inert_acp.py"
@@ -97,6 +100,12 @@ def _default_pid_alive(pid: int) -> bool:
 def _default_listener_pids(port: int) -> list[int]:
     result = subprocess.run(["/usr/sbin/lsof", "-nP", f"-iTCP:{port}", "-sTCP:LISTEN", "-t"], capture_output=True, text=True, timeout=5, check=False)
     return [int(line) for line in result.stdout.splitlines() if line.isdigit()]
+
+
+def _default_listener_hosts(port: int) -> set[str]:
+    """Addresses the TCP listeners on `port` are bound to, as printed by lsof's machine-readable output."""
+    result = subprocess.run(["/usr/sbin/lsof", "-nP", f"-iTCP:{port}", "-sTCP:LISTEN", "-Fn"], capture_output=True, text=True, timeout=5, check=False)
+    return {line[1:].rsplit(":", 1)[0].strip("[]") for line in result.stdout.splitlines() if line.startswith("n") and ":" in line}
 
 
 def _default_registry(root: Path) -> Any:
@@ -142,12 +151,22 @@ def _default_api(port: int) -> Callable[[str, str, Any], Any]:
     return call
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Nomad answers directly; following a redirect would forward X-Nomad-Token to another origin."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_NOMAD_OPENER = urllib.request.build_opener(_NoRedirect)
+
+
 def _default_nomad_get(address: str, token: str, namespace: str, region: str) -> Callable[[str], Any]:
     def call(path: str) -> Any:
         sep = "&" if "?" in path else "?"
         request = urllib.request.Request(f"{address}{path}{sep}namespace={namespace}&region={region}", method="GET", headers={"X-Nomad-Token": token, "Accept": "application/json"})
         try:
-            with urllib.request.urlopen(request, timeout=10) as response:
+            with _NOMAD_OPENER.open(request, timeout=10) as response:
                 return json.loads(response.read())
         except urllib.error.HTTPError as exc:
             raise PreflightError(f"Nomad GET {path.split('?')[0]} failed with status {exc.code}") from None
@@ -236,6 +255,7 @@ class Ops:
     port_open: Callable[[int], bool] = _default_port_open
     pid_alive: Callable[[int], bool] = _default_pid_alive
     listener_pids: Callable[[int], list[int]] = _default_listener_pids
+    listener_hosts: Callable[[int], set[str]] = _default_listener_hosts
     registry: Callable[[Path], Any] = _default_registry
     read_db: Callable[[str, Callable[[sqlite3.Connection], Any]], Any] = _default_read_db
     api_factory: Callable[[int], Callable[[str, str, Any], Any]] = _default_api
@@ -291,6 +311,10 @@ def _mkdir_private(path: Path) -> Path:
     return path
 
 
+def _save_state(root: Path, state: dict[str, Any]) -> None:
+    _write_private(root / STATE_FILE, json.dumps(state, sort_keys=True, indent=2) + "\n")
+
+
 def _remote_state_dir(allocation_root: str, node_id: str) -> str:
     return posixpath.join(posixpath.dirname(posixpath.dirname(allocation_root)), "worker-state", node_id)
 
@@ -314,7 +338,7 @@ class Runner:
     # -- bookkeeping -------------------------------------------------------
     def save_state(self, **updates: Any) -> None:
         self.state.update(updates)
-        _write_private(self.root / STATE_FILE, json.dumps(self.state, sort_keys=True, indent=2) + "\n")
+        _save_state(self.root, self.state)
 
     def step(self, name: str, fn: Callable[[], Any]) -> Any:
         started, begin = self.ops.wall(), self.ops.clock()
@@ -343,7 +367,7 @@ class Runner:
 
     # -- process lifecycle ---------------------------------------------------
     def launch_env(self, barrier: str | None) -> dict[str, str]:
-        env = {**self.state["manifest_env"], "KANDEV_BUNDLE_DIR": self.state["bundle"], "PATH": "/usr/bin:/bin:/usr/sbin:/sbin", FIXTURE_ONLY_ENV: "1"}
+        env = {**self.state["manifest_env"], "KANDEV_BUNDLE_DIR": self.state["bundle"], "PATH": "/usr/bin:/bin:/usr/sbin:/sbin", FIXTURE_ONLY_ENV: "1", SERVER_HOST_ENV: LOOPBACK_HOST}
         if barrier:
             env[BARRIER_ENV] = barrier
         return env
@@ -358,6 +382,8 @@ class Runner:
         self.poll(API_READY_TIMEOUT, 0.25, self._api_ready, "fixture backend did not serve its API before timeout")
         if self.ops.listener_pids(port) != [record["pid"]]:
             raise PreflightError("fixture API listener is not exactly the registered Kandev child")
+        if self.ops.listener_hosts(port) != {LOOPBACK_HOST}:
+            raise PreflightError("fixture API listener is not bound to loopback only")
         return record
 
     def _api_ready(self) -> bool:
@@ -612,6 +638,8 @@ class Runner:
         if daemon is not None:
             self._stop_daemon(daemon)
             report["git_daemon_pid_stopped"] = daemon["pid"]
+        (self.home / ".ssh" / "id_ed25519").unlink(missing_ok=True)
+        report["ssh_identity_removed"] = True
         return report
 
     def _observe_retention(self, strict: bool) -> dict[str, Any]:
@@ -640,8 +668,11 @@ class Runner:
     def _stop_daemon(self, daemon: dict[str, Any]) -> None:
         try:
             result = self.registry.stop(GIT_DAEMON_LABEL, timeout=15)
-        except Exception:
-            # A forked git-daemon child outlives its leader; the recorded group is the owned unit.
+        except Exception as exc:
+            # Only a verified leader identity makes the recorded group safe to signal: a forked
+            # git-daemon child outliving its leader, or a leader that ignored SIGTERM.
+            if not any(marker in str(exc) for marker in _GROUP_KILL_SAFE):
+                raise PreflightError("git daemon ownership could not be verified; refusing to signal its process group") from exc
             self.ops.kill_group(daemon["pgid"])
             self.ops.sleep(0.5)
             result = self.registry.stop(GIT_DAEMON_LABEL, timeout=15)
@@ -669,7 +700,7 @@ def _new_state(cfg: dict[str, Any], root: Path, port: int, token_file: str) -> d
     home = root / "home"
     env = {
         "HOME": str(home), "KANDEV_HOME_DIR": str(home), "KANDEV_DATABASE_PATH": str(home / "data" / "kandev.db"),
-        "KANDEV_SERVER_PORT": str(port), **_git_isolation_env(root),
+        "KANDEV_SERVER_PORT": str(port), SERVER_HOST_ENV: LOOPBACK_HOST, **_git_isolation_env(root),
     }
     return {
         "schema_version": 1, "port": port, "kandev_binary": cfg["kandev_binary"], "bundle": cfg["bundle"], "manifest_env": env,
@@ -689,7 +720,7 @@ def _materialize(cfg: dict[str, Any], root: Path, port: int) -> None:
     fd = os.open(identity, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(fd, "wb") as handle:
         handle.write(Path(cfg["ssh"]["identity_file"]).read_bytes())
-    env = {"HOME": str(home), "KANDEV_HOME_DIR": str(home), "KANDEV_DATABASE_PATH": str(home / "data" / "kandev.db"), "KANDEV_SERVER_PORT": str(port), **_git_isolation_env(root)}
+    env = {"HOME": str(home), "KANDEV_HOME_DIR": str(home), "KANDEV_DATABASE_PATH": str(home / "data" / "kandev.db"), "KANDEV_SERVER_PORT": str(port), SERVER_HOST_ENV: LOOPBACK_HOST, **_git_isolation_env(root)}
     _write_private(root / "gitconfig", "")
     manifest = {"version": 1, "home_dir": str(home), "backend_executable": cfg["kandev_binary"], "argv": ["__backend"], "port": port, "env": env}
     _write_private(home / "supervisor" / "launch.json", json.dumps(manifest, sort_keys=True))
@@ -717,9 +748,9 @@ def run_create_fixture(config: Any, ops: Ops | None = None, out: Callable[[str],
     try:
         _materialize(cfg, root, port)
         state = _new_state(cfg, root, port, cfg["nomad"]["token_file"])
-        runner = Runner(root, state, token, ops, evidence)
-        runner.save_state()
+        _save_state(root, state)
         evidence.save()
+        runner = Runner(root, state, token, ops, evidence)
         report = _drive(runner, cfg, ops, root)
     except Exception as exc:
         steps = evidence.data["steps"]

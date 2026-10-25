@@ -50,3 +50,5 @@ already passed every recovery step and failed only that cleanup expectation.
 Run 9 supersedes run 7 and is the authoritative WO05 evidence. Production whole-job cleanup is work order 07.
 
 The PostgreSQL race test for the publish CAS was not run (no PostgreSQL here).
+
+Run 9 predates the loopback bind, daemon group-kill guard and SSH identity removal hardening in the runner. Those changes affect only the runner's own safety and cleanup, not the recovery path, and run 9 has not been re-run with them.

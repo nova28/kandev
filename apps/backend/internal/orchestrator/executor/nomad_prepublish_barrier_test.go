@@ -177,3 +177,79 @@ func TestPersistTaskEnvironment_NomadBarrierBlocksBeforePublication(t *testing.T
 	require.NoError(t, err)
 	require.Equal(t, "creating", string(stored.Status))
 }
+
+// The "parent not owned by the current user" branch of validateBarrierPath is
+// not tested: it cannot be provoked without root to chown a directory.
+
+func TestNomadPrePublishBarrier_ParentIsRegularFile(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "notadir")
+	require.NoError(t, os.WriteFile(file, []byte("x"), 0o600))
+	marker := filepath.Join(file, "marker")
+	setBarrierEnv(t, "1", marker)
+	b := &nomadPrePublishBarrier{}
+	require.NoError(t, awaitReturnsImmediately(t, b, "nomad"))
+	_, err := os.Stat(marker)
+	require.Error(t, err)
+	require.False(t, b.fired.Load())
+	raw, err := os.ReadFile(file)
+	require.NoError(t, err)
+	require.Equal(t, "x", string(raw))
+}
+
+// An existing marker makes os.Link fail: the hook returns nil without blocking
+// and leaves the file untouched. The once-per-process latch is already
+// consumed by then, so a later call is inert.
+func TestNomadPrePublishBarrier_ExistingMarkerNotOverwritten(t *testing.T) {
+	dir := privateDir(t)
+	marker := filepath.Join(dir, "marker")
+	require.NoError(t, os.WriteFile(marker, []byte("preexisting"), 0o600))
+	setBarrierEnv(t, "1", marker)
+	b := &nomadPrePublishBarrier{}
+	require.NoError(t, awaitReturnsImmediately(t, b, "nomad"))
+	raw, err := os.ReadFile(marker)
+	require.NoError(t, err)
+	require.Equal(t, "preexisting", string(raw))
+	require.True(t, b.fired.Load(), "latch is consumed before the marker write")
+	entries, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	require.Len(t, entries, 1, "no temp files left behind")
+	require.NoError(t, awaitReturnsImmediately(t, b, "nomad"))
+}
+
+// TestPersistTaskEnvironment_DockerIgnoresBarrierEnv: with the fixture env
+// armed but a non-Nomad executor type, no marker is written and publication
+// proceeds normally.
+func TestPersistTaskEnvironment_DockerIgnoresBarrierEnv(t *testing.T) {
+	fx := newNomadReadyFixture(t)
+	ctx := context.Background()
+	env, err := fx.repo.GetTaskEnvironmentByTaskID(ctx, nomadReadyTaskID)
+	require.NoError(t, err)
+	env.Status = "creating"
+	env.MaterializationSessionID = nomadReadySessionID
+	require.NoError(t, fx.repo.UpdateTaskEnvironment(ctx, env))
+	saved := processNomadPrePublishBarrier
+	processNomadPrePublishBarrier = &nomadPrePublishBarrier{}
+	t.Cleanup(func() { processNomadPrePublishBarrier = saved })
+	marker := filepath.Join(privateDir(t), "marker")
+	setBarrierEnv(t, "1", marker)
+	req := fx.launchRequest()
+	req.ExecutorType = "docker"
+
+	exec := newTestExecutor(t, &mockAgentManager{}, fx.repo)
+	existing, _ := fx.repo.GetTaskEnvironmentByTaskID(ctx, nomadReadyTaskID)
+	done := make(chan error, 1)
+	go func() {
+		done <- exec.persistTaskEnvironment(ctx, nomadReadyTaskID, fx.session, existing, req,
+			&LaunchAgentResponse{AgentExecutionID: nomadReadyExecutionID, WorkspacePath: fx.workspacePath},
+			executorConfig{ExecutorID: "exec-nomad-fixture"})
+	}()
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("persist blocked for a non-nomad executor")
+	}
+	_, statErr := os.Stat(marker)
+	require.True(t, os.IsNotExist(statErr))
+	require.False(t, processNomadPrePublishBarrier.fired.Load())
+}

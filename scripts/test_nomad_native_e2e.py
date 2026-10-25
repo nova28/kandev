@@ -7,7 +7,9 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
+import nomad_native_e2e as nne
 from nomad_native_e2e import (
     PreflightError, REQUIRED_SCENARIOS, _fixture_backend_argv, _pre_ready_contract, _recovery_completed_turn,
     _run_attached_session, check_post_ready_environment, check_pre_ready_environment, check_pre_ready_session,
@@ -346,6 +348,161 @@ class NomadNativePreflightTest(unittest.TestCase):
             check_pre_ready_session({"state": "CREATED", "downstream_acp_session_id": "acp"}, [])
         with self.assertRaises(PreflightError):
             check_pre_ready_session({"state": "CREATED"}, [{"author_type": "user"}])
+
+
+class AttachedPreReadyRecoveryTest(unittest.TestCase):
+    """Drives _run_attached_pre_ready_recovery with every external collaborator replaced by a fake."""
+
+    OLD_PID, NEW_PID = 16, 99
+    SNAPSHOT = {"job_id": "job", "allocation_id": "alloc", "node_id": "node", "fence": 7}
+    INVENTORY = {"workspace_path": "/w/g1", "server_identity": "srv"}
+    ROWS = {11: {"p": 1}, 12: {"p": 2}, 13: {"p": 3}, 14: {"p": 4}}
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="nomad-e2e-recovery-")
+        self.addCleanup(self.temp.cleanup)
+        self.home = Path(self.temp.name)
+        (self.home / "supervisor").mkdir()
+        (self.home / "supervisor" / "launch.json").write_text(
+            json.dumps({"backend_executable": "/bin/kandev", "port": 43840, "argv": ["serve"], "env": {}}), encoding="utf-8")
+        self.config = NomadNativePreflightTest._pre_ready_config(self)
+        self.config["session"]["kandev_binary_path"] = "/bin/kandev"
+        self.config["session"]["kandev_backend_pid"] = self.OLD_PID
+        self.config["nomad"] = {"binary": "/bin/nomad"}
+        self.config["fixture_root"] = str(self.home)
+        self.config["kandev_home"] = str(self.home)
+        self.record = {"label": "kandev", "pid": self.OLD_PID}
+        self.registry = mock.Mock()
+        self.registry.read_records.return_value = [self.record]
+        self.registry.stop.return_value = "stopped"
+        self.registry.start.return_value = {"pid": self.NEW_PID}
+        self.connect_ex = 111
+        self.listener_pids = [self.OLD_PID, self.NEW_PID]
+        self.http = mock.Mock(return_value={})
+        self.local_pid = lambda path, pid: {"pid": pid}
+        self.rows = [dict(self.ROWS), dict(self.ROWS)]
+        self.inventories = [dict(self.INVENTORY), dict(self.INVENTORY)]
+        self.snapshots = [dict(self.SNAPSHOT), dict(self.SNAPSHOT)]
+
+    def _run(self):
+        registry_module = SimpleNamespace(OwnedProcessRegistry=lambda root: self.registry)
+        fake_spec = SimpleNamespace(loader=SimpleNamespace(exec_module=lambda module: None))
+        probe = mock.MagicMock()
+        probe.__enter__.return_value = probe
+        probe.connect_ex.return_value = self.connect_ex
+        listeners = list(self.listener_pids)
+        inventory_iter = iter(self.inventories)
+        snapshot_iter = iter(self.snapshots)
+        rows_iter = iter(self.rows)
+        self.workspace_read = mock.Mock(return_value={"ok": True, "contains_expected_file": True})
+        patches = [
+            mock.patch.object(nne, "validate_config"),
+            mock.patch.object(nne, "_owned_private_root", return_value=self.home),
+            mock.patch.object(nne, "_owned_private_directory", return_value=self.home),
+            mock.patch.object(nne, "_fixture_database", return_value=str(self.home / "db")),
+            mock.patch.object(nne.sqlite3, "connect", return_value=mock.Mock()),
+            mock.patch.object(nne, "_pre_ready_messages", return_value=[]),
+            mock.patch.object(nne, "_pre_ready_session_row", return_value={"state": "CREATED"}),
+            mock.patch.object(nne, "check_pre_ready_environment", return_value=1),
+            mock.patch.object(nne, "_nomad_inventory_snapshot", side_effect=lambda *a, **k: next(inventory_iter)),
+            mock.patch.object(nne, "_nomad_recovery_snapshot", side_effect=lambda *a, **k: next(snapshot_iter)),
+            mock.patch.object(nne.importlib.util, "spec_from_file_location", return_value=fake_spec),
+            mock.patch.object(nne.importlib.util, "module_from_spec", return_value=registry_module),
+            mock.patch.object(nne, "_executable", return_value=Path("/bin/kandev")),
+            mock.patch.object(nne, "_local_process", side_effect=lambda path, pid: self.local_pid(path, pid)),
+            mock.patch.object(nne, "_listener_pid", side_effect=lambda port: listeners.pop(0)),
+            mock.patch.object(nne, "_remote_process_rows", side_effect=lambda *a: next(rows_iter)),
+            mock.patch.object(nne.socket, "socket", return_value=probe),
+            mock.patch.object(nne, "_http_json", self.http),
+            mock.patch.object(nne.time, "sleep"),
+            mock.patch.object(nne, "_await_recovered_environment", side_effect=lambda *a, **k: next(inventory_iter)),
+            mock.patch.object(nne, "_workspace_read", self.workspace_read),
+        ]
+        with contextlib.ExitStack() as stack:
+            for patch in patches:
+                stack.enter_context(patch)
+            return nne._run_attached_pre_ready_recovery(self.config)
+
+    def _assert_rejected(self, message):
+        with self.assertRaisesRegex(PreflightError, message):
+            self._run()
+        self.workspace_read.assert_not_called()
+
+    def test_happy_path_reports_recovery_without_prompts(self):
+        report = self._run()
+        self.assertEqual(report["prompts_sent"], 0)
+        self.assertEqual((report["backend_old_pid"], report["backend_new_pid"]), (self.OLD_PID, self.NEW_PID))
+        self.assertEqual(report["allocation_id"], "alloc")
+        self.registry.stop.assert_called_once_with("kandev", timeout=10)
+        self.workspace_read.assert_called_once()
+
+    def test_rejects_backend_record_that_is_not_the_listener_owner(self):
+        self.record["pid"] = 5
+        self._assert_rejected("not the exact fixture listener owner")
+        self.registry.read_records.return_value = []
+        self._assert_rejected("not the exact fixture listener owner")
+
+    def test_rejects_listener_that_is_not_the_registered_child(self):
+        self.listener_pids = [4242, self.NEW_PID]
+        self._assert_rejected("not the registered current Kandev child")
+
+    def test_rejects_incomplete_agentctl_pids(self):
+        self.rows = [{11: {}, 12: {}, 13: {}}, {}]
+        self._assert_rejected("agentctl process identities are incomplete")
+
+    def test_rejects_absent_nomad_client_before_recovery(self):
+        self.local_pid = lambda path, pid: {"pid": pid} if path != "/bin/nomad" else {"pid": 0}
+        self._assert_rejected("Nomad client is absent before recovery")
+        self.registry.stop.assert_not_called()
+
+    def test_rejects_backend_that_did_not_stop(self):
+        self.registry.stop.return_value = "timeout"
+        self._assert_rejected("did not stop through its exact owned process record")
+        self.registry.start.assert_not_called()
+
+    def test_rejects_api_port_left_open(self):
+        self.connect_ex = 0
+        self._assert_rejected("API port remained open")
+        self.registry.start.assert_not_called()
+
+    def test_rejects_api_that_never_recovers(self):
+        self.http.side_effect = OSError("down")
+        clock = iter([0, 0, 30, 61, 62, 63])
+        with mock.patch.object(nne.time, "monotonic", side_effect=lambda: next(clock)):
+            self._assert_rejected("did not recover its API before timeout")
+
+    def test_rejects_restarted_listener_that_is_not_a_new_process(self):
+        self.registry.start.return_value = {"pid": self.OLD_PID}
+        self._assert_rejected("does not belong to a new owned backend process")
+        self.registry.start.return_value = {"pid": self.NEW_PID}
+        self.listener_pids = [self.OLD_PID, 4242]
+        self._assert_rejected("does not belong to a new owned backend process")
+
+    def test_rejects_changed_nomad_inventory(self):
+        self.inventories[1] = {**self.INVENTORY, "server_identity": "other"}
+        self._assert_rejected("changed the retained Nomad operation, allocation, or fence")
+
+    def test_rejects_changed_nomad_allocation_or_fence(self):
+        self.snapshots[1] = {**self.SNAPSHOT, "allocation_id": "alloc-2"}
+        self._assert_rejected("changed the retained Nomad operation, allocation, or fence")
+        self.snapshots[1] = {**self.SNAPSHOT, "fence": 8}
+        self._assert_rejected("changed the retained Nomad operation, allocation, or fence")
+
+    def test_rejects_changed_remote_process_tree(self):
+        self.rows[1] = {**self.ROWS, 14: {"p": "restarted"}}
+        self._assert_rejected("did not preserve the exact remote runtime process tree")
+
+    def test_rejects_changed_nomad_client_identity(self):
+        calls = []
+
+        def local_pid(path, pid):
+            if path == "/bin/nomad":
+                calls.append(pid)
+                return {"pid": pid if len(calls) == 1 else pid + 1}
+            return {"pid": pid}
+
+        self.local_pid = local_pid
+        self._assert_rejected("Nomad client identity changed during Kandev backend recovery")
 
 
 if __name__ == "__main__":
