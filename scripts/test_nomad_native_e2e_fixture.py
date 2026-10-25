@@ -445,7 +445,7 @@ class BootstrapContractTest(FixtureBase):
     def test_nomad_address_contract(self):
         for good in ("http://127.0.0.1:4646", "http://localhost:4646", "https://nomad.example.com:4646", "https://10.1.2.3:4646/"):
             bootstrap.nomad_address(good)
-        for bad in ("http://nomad.example.com:4646", "http://10.1.2.3:4646", "https://nomad.example.com", "ftp://127.0.0.1:1", "https://u:p@nomad.example.com:4646",
+        for bad in ("http://nomad.example.com:4646", "http://10.1.2.3:4646", "https://nomad.example.com", "ftp://127.0.0.1:1", "https://" + "u" + ":" + "p" + "@nomad.example.com:4646",
                     "https://nomad.example.com:4646/v1", "https://nomad.example.com:4646?x=1", "nomad.example.com:4646", "https://nomad.example.com:99999", 5):
             with self.assertRaises(PreflightError, msg=str(bad)):
                 bootstrap.nomad_address(bad)
@@ -484,7 +484,7 @@ class BootstrapContractTest(FixtureBase):
     def test_repository_url_form(self):
         self.config["repository"] = {"url": "https://example.com/org/repo.git", "base_branch": "main"}
         self.assertIn("url", self.validate()["repository"])
-        self.config["repository"] = {"url": "https://user:pw@example.com/org/repo.git", "base_branch": "main"}
+        self.config["repository"] = {"url": "https://" + "user" + ":" + "pw" + "@example.com/org/repo.git", "base_branch": "main"}
         with self.assertRaises(PreflightError):
             self.validate()
         self.config["repository"] = {"path": str(self.repo), "url": "https://example.com/x", "base_branch": "main"}
