@@ -18,6 +18,7 @@ import os
 import posixpath
 import re
 import shlex
+import shutil
 import socket
 import sqlite3
 import stat
@@ -59,6 +60,8 @@ def cleanup_command(root: Path | str) -> str:
     return f"python3 scripts/nomad_native_e2e.py cleanup-fixture --fixture-root {shlex.quote(str(root))}"
 
 
+GIT_DAEMON_LABEL = "git-daemon"
+FIXTURE_REPO_OWNER, FIXTURE_REPO_NAME = "fixture-owner", "fixture-repo"
 INERT_AGENT_NAME = "nomad-fixture-inert"
 INERT_ACP_SCRIPT = Path(__file__).resolve().parent.parent / "apps/backend/internal/agent/nomad/integration/fixtures/inert_acp.py"
 
@@ -113,10 +116,18 @@ def _default_read_db(database: str, fn: Callable[[sqlite3.Connection], Any]) -> 
 
 def _default_api(port: int) -> Callable[[str, str, Any], Any]:
     prefix = f"http://127.0.0.1:{port}/api/v1"
+    interlock: dict[str, str] = {}
 
     def call(method: str, path: str, body: Any = None) -> Any:
         data = None if body is None else json.dumps(body).encode()
-        request = urllib.request.Request(prefix + path, data=data, method=method, headers={"Accept": "application/json", "Content-Type": "application/json"})
+        headers = {"Accept": "application/json", "Content-Type": "application/json"}
+        if method != "GET":
+            # Settings mutations require the per-boot SPA interlock token from the boot payload.
+            if "token" not in interlock:
+                interlock["token"] = call("GET", "/app-state?path=%2Fsettings%2Fagents").get("interimSettingsInterlockToken", "")
+            if interlock["token"]:
+                headers["X-Kandev-Interim-Settings-Interlock"] = interlock["token"]
+        request = urllib.request.Request(prefix + path, data=data, method=method, headers=headers)
         try:
             with urllib.request.urlopen(request, timeout=30) as response:
                 raw = response.read()
@@ -188,6 +199,19 @@ def _default_ws(payload: dict[str, Any]) -> dict[str, Any]:
         raise PreflightError("fixture WebSocket driver result is unreadable") from None
 
 
+def _default_git_binary() -> str:
+    path = shutil.which("git")
+    if not path:
+        raise PreflightError("git is not installed")
+    return os.path.realpath(path)
+
+
+def _default_git_bare_clone(source: str, dest: str) -> None:
+    result = subprocess.run([_default_git_binary(), "clone", "--bare", "--quiet", source, dest], capture_output=True, text=True, timeout=120, check=False)
+    if result.returncode != 0:
+        raise PreflightError("git bare clone of the fixture repository failed")
+
+
 @dataclass
 class Ops:
     """Every external effect, injectable for offline tests."""
@@ -203,6 +227,8 @@ class Ops:
     key_fingerprint: Callable[[str], str] = _default_key_fingerprint
     ssh_factory: Callable[[dict[str, Any]], Callable[[str], tuple[int, str]]] = _default_ssh
     ws: Callable[[dict[str, Any]], dict[str, Any]] = _default_ws
+    git_bare_clone: Callable[[str, str], None] = _default_git_bare_clone
+    git_binary: Callable[[], str] = _default_git_binary
     clock: Callable[[], float] = time.monotonic
     sleep: Callable[[float], Any] = time.sleep
     wall: Callable[[], str] = lambda: datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -415,19 +441,25 @@ class Runner:
             profiles = [self._create_inert_profile(wanted or INERT_AGENT_NAME)]
         if len(profiles) != 1:
             raise PreflightError("expected exactly one matching agent profile on the fresh fixture")
+        self._redirect_git(workspace["id"], profiles[0]["id"])
         secret = api("POST", "/secrets", {"name": "nomad-fixture-token", "value": self.token})
-        executors = api("GET", "/executors", None).get("executors", [])
-        executor = next((item for item in executors if item.get("type") == "nomad"), None) or api("POST", "/executors", {"name": "nomad-fixture", "type": "nomad"})
         nomad = cfg["nomad"]
+        token_ref = f"$kandev-secret:{secret['id']}"
+        nomad_config = {
+            "address": nomad["address"], "namespace": nomad["namespace"], "region": nomad["region"], "datacenter": nomad["datacenter"],
+            "node_id": nomad["node_id"], "platform": nomad["platform"], "ssh_target": cfg["ssh"]["target"], "ssh_port": str(cfg["ssh"]["port"]),
+            "ssh_host_fingerprint": cfg["ssh"]["host_fingerprint"], "workspace_root": cfg["workspace_root"],
+            "allocation_root": cfg["allocation_root"], "cpu_mhz": str(cfg["cpu_mhz"]), "memory_mb": str(cfg["memory_mb"]),
+        }
+        executors = api("GET", "/executors", None).get("executors", [])
+        executor = next((item for item in executors if item.get("type") == "nomad"), None) or api("POST", "/executors", {
+            "name": "nomad-fixture", "type": "nomad", "status": "active", "is_system": False, "resumable": True,
+            "config": {**nomad_config, "nomad_token": token_ref},
+        })
+        executor = executor.get("executor", executor)
         source = validate_profile_source({
             "schema_version": 1, "executor_id": executor["id"], "profile_id": str(uuid.uuid4()), "profile_name": "nomad-fixture-profile",
-            "nomad_token_ref": f"$kandev-secret:{secret['id']}",
-            "config": {
-                "address": nomad["address"], "namespace": nomad["namespace"], "region": nomad["region"], "datacenter": nomad["datacenter"],
-                "node_id": nomad["node_id"], "platform": nomad["platform"], "ssh_target": cfg["ssh"]["target"], "ssh_port": str(cfg["ssh"]["port"]),
-                "ssh_host_fingerprint": cfg["ssh"]["host_fingerprint"], "workspace_root": cfg["workspace_root"],
-                "allocation_root": cfg["allocation_root"], "cpu_mhz": str(cfg["cpu_mhz"]), "memory_mb": str(cfg["memory_mb"]),
-            },
+            "nomad_token_ref": token_ref, "config": nomad_config,
         })
         profile = api("POST", f"/executors/{executor['id']}/profiles", {**build_profile_payload(source), "mcp_policy": "", "prepare_script": "", "cleanup_script": ""})
         profile = profile.get("profile", profile)
@@ -454,10 +486,41 @@ class Runner:
             raise PreflightError("inert ACP agent creation did not return exactly one profile")
         return profiles[0]
 
+    def start_git_daemon(self) -> dict[str, Any] | None:
+        """Serve a bare copy of the fixture repository from a runner-owned loopback git daemon."""
+        repo = self.state["repository"]
+        if "path" not in repo:
+            return None
+        serve = _mkdir_private(self.root / "gitserve")
+        self.ops.git_bare_clone(repo["path"], str(serve / f"{FIXTURE_REPO_NAME}.git"))
+        port = self.ops.free_port()
+        if port == self.state["port"] or self.ops.port_open(port):
+            raise PreflightError("git daemon port is already in use")
+        argv = [self.ops.git_binary(), "daemon", "--reuseaddr", "--listen=127.0.0.1", f"--port={port}", f"--base-path={serve}", "--export-all", str(serve)]
+        record = self.registry.start(GIT_DAEMON_LABEL, argv, cwd=serve, env={"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "HOME": str(self.home)})
+        self.poll(API_READY_TIMEOUT, 0.25, lambda: self.ops.port_open(port), "git daemon did not listen before timeout")
+        self.save_state(git_port=port)
+        return record
+
+    def _redirect_git(self, workspace_id: str, agent_profile_id: str) -> None:
+        """Give the local repository a provider-shaped origin that resolves to the runner's git daemon."""
+        port = self.state.get("git_port")
+        if port is None:
+            return
+        self.api("PUT", "/github/workspace-settings", {"workspace_id": workspace_id, "task_git_credentials_mode": "executor"})
+        self.api("PATCH", f"/agent-profiles/{agent_profile_id}", {"env_vars": [
+            {"key": "GIT_CONFIG_COUNT", "value": "1"},
+            {"key": "GIT_CONFIG_KEY_0", "value": f"url.git://127.0.0.1:{port}/{FIXTURE_REPO_NAME}.git.insteadOf"},
+            {"key": "GIT_CONFIG_VALUE_0", "value": f"https://github.com/{FIXTURE_REPO_OWNER}/{FIXTURE_REPO_NAME}.git"},
+        ]})
+
     def _register_repository(self, cfg: dict[str, Any], workspace_id: str) -> dict[str, Any]:
         repo = cfg["repository"]
         if "path" in repo:
-            body = {"name": Path(repo["path"]).name, "source_type": "local", "local_path": repo["path"], "default_branch": repo["base_branch"]}
+            body = {
+                "name": Path(repo["path"]).name, "source_type": "local", "local_path": repo["path"], "default_branch": repo["base_branch"],
+                "provider": "github", "provider_owner": FIXTURE_REPO_OWNER, "provider_name": FIXTURE_REPO_NAME,
+            }
             return self.api("POST", f"/workspaces/{workspace_id}/repositories", body)
         return self.api("POST", f"/workspaces/{workspace_id}/repositories/remote", {"remote_url": repo["url"], "default_branch": repo["base_branch"]})
 
@@ -527,6 +590,13 @@ class Runner:
             raise PreflightError("fixture backend did not stop through its exact owned process record")
         self.verify_gone(record["pid"])
         report["backend_pid_stopped"] = record["pid"]
+        daemon = next((item for item in self.registry.read_records() if item["label"] == GIT_DAEMON_LABEL), None)
+        if daemon is not None:
+            if self.registry.stop(GIT_DAEMON_LABEL, timeout=15) not in ("stopped", "already_absent"):
+                raise PreflightError("git daemon did not stop through its exact owned process record")
+            if self.ops.pid_alive(daemon["pid"]) or self.ops.port_open(self.state["git_port"]):
+                raise PreflightError("git daemon process or port is still present")
+            report["git_daemon_pid_stopped"] = daemon["pid"]
         if self.state.get("allocation_id"):
             inventory = {key: self.state[key] for key in ("allocation_id", "job_id", "environment_id")}
             if self.remote_tree(inventory):
@@ -535,18 +605,22 @@ class Runner:
         return report
 
 
+def _git_isolation_env(root: Path) -> dict[str, str]:
+    return {"GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": str(root / "gitconfig")}
+
+
 def _new_state(cfg: dict[str, Any], root: Path, port: int, token_file: str) -> dict[str, Any]:
     home = root / "home"
     env = {
         "HOME": str(home), "KANDEV_HOME_DIR": str(home), "KANDEV_DATABASE_PATH": str(home / "data" / "kandev.db"),
-        "KANDEV_SERVER_PORT": str(port),
+        "KANDEV_SERVER_PORT": str(port), **_git_isolation_env(root),
     }
     return {
         "schema_version": 1, "port": port, "kandev_binary": cfg["kandev_binary"], "bundle": cfg["bundle"], "manifest_env": env,
         "allocation_root": cfg["allocation_root"], "node_id": cfg["nomad"]["node_id"],
         "nomad": {"address": cfg["nomad"]["address"], "token_file": token_file, "namespace": cfg["nomad"]["namespace"], "region": cfg["nomad"]["region"], "node_id": cfg["nomad"]["node_id"]},
         "ssh": {"target": cfg["ssh"]["target"], "port": cfg["ssh"]["port"], "host_fingerprint": cfg["ssh"]["host_fingerprint"]},
-        "expected_file": cfg["expected_file"], "expected_repo_count": 1,
+        "expected_file": cfg["expected_file"], "expected_repo_count": 1, "repository": cfg["repository"],
     }
 
 
@@ -559,7 +633,8 @@ def _materialize(cfg: dict[str, Any], root: Path, port: int) -> None:
     fd = os.open(identity, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(fd, "wb") as handle:
         handle.write(Path(cfg["ssh"]["identity_file"]).read_bytes())
-    env = {"HOME": str(home), "KANDEV_HOME_DIR": str(home), "KANDEV_DATABASE_PATH": str(home / "data" / "kandev.db"), "KANDEV_SERVER_PORT": str(port)}
+    env = {"HOME": str(home), "KANDEV_HOME_DIR": str(home), "KANDEV_DATABASE_PATH": str(home / "data" / "kandev.db"), "KANDEV_SERVER_PORT": str(port), **_git_isolation_env(root)}
+    _write_private(root / "gitconfig", "")
     manifest = {"version": 1, "home_dir": str(home), "backend_executable": cfg["kandev_binary"], "argv": ["__backend"], "port": port, "env": env}
     _write_private(home / "supervisor" / "launch.json", json.dumps(manifest, sort_keys=True))
     base._verify_backend_launch_manifest(root, home, {"binary": cfg["kandev_binary"], "port": port})
@@ -610,6 +685,7 @@ def run_create_fixture(config: Any, ops: Ops | None = None, out: Callable[[str],
 def _drive(runner: Runner, cfg: dict[str, Any], ops: Ops, root: Path) -> dict[str, Any]:
     step, state, data = runner.step, runner.state, runner.evidence.data
     marker = root / "barrier-marker.json"
+    step("start-git-daemon", runner.start_git_daemon)
     first = step("start-backend-with-barrier", lambda: runner.start_backend(str(marker)))
     step("create-fixture-objects", lambda: runner.setup_api_objects(cfg))
     inventory = step("await-pre-publish-barrier", lambda: runner.await_barrier(marker))

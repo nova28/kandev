@@ -48,9 +48,12 @@ class FakeRegistry:
         record = {"label": label, "pid": w.pid, "started_at": "t", "pgid": w.pid}
         w.records.append(record)
         w.alive.add(w.pid)
-        w.open_ports.add(int(env["KANDEV_SERVER_PORT"]))
+        port = int(env["KANDEV_SERVER_PORT"]) if "KANDEV_SERVER_PORT" in env else int(next(a for a in argv if a.startswith("--port=")).split("=")[1])
+        w.open_ports.add(port)
+        w.record_ports[w.pid] = port
         w.starts.append({"argv": list(argv), "env": dict(env), "cwd": str(cwd)})
-        w.on_start(env)
+        if label != fixture.GIT_DAEMON_LABEL:
+            w.on_start(env)
         return dict(record)
 
     def _retire(self, label, result):
@@ -59,7 +62,7 @@ class FakeRegistry:
         w.events.append(result)
         if not (w.stop_leaves_alive and result == "stopped"):
             w.alive.discard(record["pid"])
-            w.open_ports.clear()
+            w.open_ports.discard(w.record_ports.pop(record["pid"], None))
             w.records = [item for item in w.records if item["label"] != label]
         return result
 
@@ -88,6 +91,9 @@ class World:
         self.fence = "owner:fence-content\n"
         self.tree_present = True
         self.job_index = 6
+        self.record_ports = {}
+        self.free_ports = iter(range(43111, 43200))
+        self.bare_clones = []
         self.agent_profiles = [{"id": "agent1", "name": "inert"}]
         self.agent_create_profiles = [{"id": "inert-prof", "name": "nomad-fixture-inert"}]
         self.task_created = False
@@ -164,6 +170,12 @@ class World:
                 return {"steps": [{"id": "step1"}]}
             if path == "/agents":
                 return {"agents": [{"profiles": list(self.agent_profiles)}]}
+            if method == "PUT" and path == "/github/workspace-settings":
+                self.git_settings = body
+                return {}
+            if method == "PATCH" and path.startswith("/agent-profiles/"):
+                self.profile_patch = (path, body)
+                return {}
             if path == "/agents/tui":
                 self.agent_created = body
                 return {"id": "agent-inert", "profiles": list(self.agent_create_profiles)}
@@ -177,6 +189,8 @@ class World:
             if path == f"/executors/{EXECUTOR}/profiles":
                 assert body["config"]["nomad_token"] == "$kandev-secret:11111111-aaaa-4aaa-8aaa-111111111111"
                 return {"id": "prof1"}
+            if path == "/workspaces/ws1/repositories/remote":
+                return {"id": "repo1"}
             if path == "/workspaces/ws1/repositories":
                 return {"id": "repo1"}
             if path == "/tasks" and method == "POST":
@@ -244,8 +258,9 @@ class World:
 
     def ops(self):
         return fixture.Ops(
-            free_port=lambda: 43111, port_open=lambda port: port in self.open_ports, pid_alive=lambda pid: pid in self.alive,
-            listener_pids=lambda port: [r["pid"] for r in self.records] if port in self.open_ports else [],
+            free_port=lambda: next(self.free_ports), git_binary=lambda: "/usr/bin/git",
+            git_bare_clone=lambda src, dest: self.bare_clones.append((src, dest)), port_open=lambda port: port in self.open_ports, pid_alive=lambda pid: pid in self.alive,
+            listener_pids=lambda port: [r["pid"] for r in self.records if self.record_ports.get(r["pid"]) == port],
             registry=lambda root: FakeRegistry(self), api_factory=self.api_factory, nomad_factory=self.nomad_factory,
             keyscan=self.keyscan, key_fingerprint=self.key_fingerprint, ssh_factory=self.ssh_factory, ws=self.ws, clock=self.clock.clock, sleep=self.clock.sleep, wall=lambda: "2026-01-01T00:00:00+00:00",
         )
@@ -450,7 +465,7 @@ class CreateFlowTest(FixtureBase):
         self.assertEqual(evidence["status"], "passed")
         self.assertEqual([s["status"] for s in evidence["steps"]], ["passed"] * len(evidence["steps"]))
         self.assertEqual([s["name"] for s in evidence["steps"]], [
-            "start-backend-with-barrier", "create-fixture-objects", "await-pre-publish-barrier", "snapshot-before-crash", "crash-backend",
+            "start-git-daemon", "start-backend-with-barrier", "create-fixture-objects", "await-pre-publish-barrier", "snapshot-before-crash", "crash-backend",
             "restart-backend-without-barrier", "await-recovery", "assert-identity-preserved", "workspace-read-before-any-prompt", "cleanup-production-stop-path",
         ])
         self.assertEqual((evidence["job_id"], evidence["allocation_id"], evidence["node_id"], evidence["execution_id"]), (JOB, ALLOC, NODE, EXEC_ID))
@@ -470,7 +485,7 @@ class CreateFlowTest(FixtureBase):
 
     def test_process_and_port_contract(self):
         self.assertEqual(self.run_flow(), 0, self.err)
-        first, second = self.world.starts
+        first, second = [item for item in self.world.starts if item["argv"][1:2] == ["__backend"]]
         self.assertIn(fixture.BARRIER_ENV, first["env"])
         self.assertTrue(first["env"][fixture.BARRIER_ENV].startswith(str(self.fixture_root())))
         self.assertNotIn(fixture.BARRIER_ENV, second["env"])
@@ -480,7 +495,7 @@ class CreateFlowTest(FixtureBase):
             self.assertNotEqual(start["env"]["KANDEV_SERVER_PORT"], "8817")
             self.assertEqual(start["argv"], [str(self.binary), "__backend"])
             self.assertEqual(start["cwd"], str(self.fixture_root() / "home"))
-        self.assertEqual(self.world.events, ["crashed", "stopped"])
+        self.assertEqual(self.world.events, ["crashed", "stopped", "stopped"])
         self.assertEqual(self.world.records, [])
         self.assertEqual(self.world.open_ports, set())
 
@@ -559,6 +574,56 @@ class AgentProfileSelectionTest(FixtureBase):
         self.assertNotIn(("POST", "/tasks"), self.world.api_calls)
 
 
+class GitProviderRedirectTest(FixtureBase):
+    def test_local_repository_is_registered_with_a_provider_origin_served_by_an_owned_daemon(self):
+        self.assertEqual(self.run_flow(), 0, self.err)
+        root = self.fixture_root()
+        self.assertEqual(self.world.bare_clones, [(str(self.repo), str(root / "gitserve" / "fixture-repo.git"))])
+        daemon = next(item for item in self.world.starts if item["argv"][1:2] == ["daemon"])
+        self.assertEqual(daemon["argv"][0], "/usr/bin/git")
+        self.assertIn("--listen=127.0.0.1", daemon["argv"])
+        self.assertIn("--export-all", daemon["argv"])
+        port = int(next(a for a in daemon["argv"] if a.startswith("--port=")).split("=")[1])
+        repo = json.loads(next(b for b in self.world.bodies if '"local_path"' in b))
+        self.assertEqual((repo["provider"], repo["provider_owner"], repo["provider_name"]), ("github", "fixture-owner", "fixture-repo"))
+        self.assertEqual(self.world.git_settings["task_git_credentials_mode"], "executor")
+        path, body = self.world.profile_patch
+        self.assertEqual(path, "/agent-profiles/agent1")
+        env = {item["key"]: item["value"] for item in body["env_vars"]}
+        self.assertEqual(env, {
+            "GIT_CONFIG_COUNT": "1",
+            "GIT_CONFIG_KEY_0": f"url.git://127.0.0.1:{port}/fixture-repo.git.insteadOf",
+            "GIT_CONFIG_VALUE_0": "https://github.com/fixture-owner/fixture-repo.git",
+        })
+
+    def test_backend_and_manifest_env_isolate_git_config(self):
+        self.assertEqual(self.run_flow(), 0, self.err)
+        root = self.fixture_root()
+        backend = next(item for item in self.world.starts if item["argv"][1:2] == ["__backend"])
+        self.assertEqual(backend["env"]["GIT_CONFIG_NOSYSTEM"], "1")
+        self.assertEqual(backend["env"]["GIT_CONFIG_GLOBAL"], str(root / "gitconfig"))
+        self.assertEqual((root / "gitconfig").read_text(), "")
+        manifest = json.loads((root / "home" / "supervisor" / "launch.json").read_text())
+        self.assertEqual(manifest["env"]["GIT_CONFIG_GLOBAL"], str(root / "gitconfig"))
+
+    def test_daemon_is_stopped_with_the_backend_on_teardown(self):
+        self.assertEqual(self.run_flow(), 0, self.err)
+        self.assertEqual(self.world.records, [])
+        self.assertEqual(self.world.open_ports, set())
+        self.assertEqual(self.world.events.count("stopped"), 2)
+
+    def test_daemon_that_survives_teardown_fails_cleanup(self):
+        self.world.stop_leaves_alive = True
+        self.assertNotEqual(self.run_flow(), 0)
+
+    def test_url_repository_needs_no_daemon_or_redirect(self):
+        self.config["repository"] = {"url": "https://example.invalid/o/r.git", "base_branch": "main"}
+        self.assertEqual(self.run_flow(), 0, self.err)
+        self.assertEqual(self.world.bare_clones, [])
+        self.assertFalse(any(item["argv"][1:2] == ["daemon"] for item in self.world.starts))
+        self.assertFalse(hasattr(self.world, "profile_patch"))
+
+
 class FailureFlowTest(FixtureBase):
     def assertFailedLeavingFixture(self, step, message=None):
         self.assertEqual(self.run_flow(), 2)
@@ -578,7 +643,7 @@ class FailureFlowTest(FixtureBase):
         self.assertLessEqual(self.world.clock.now, fixture.MARKER_TIMEOUT + 1)
         self.assertEqual(self.world.ws_calls, [])
         self.assertEqual(self.world.events, [])
-        self.assertEqual(len(self.world.records), 1)
+        self.assertEqual(sorted(r["label"] for r in self.world.records), [fixture.GIT_DAEMON_LABEL, fixture.PROCESS_LABEL])
 
     def test_malformed_marker_is_a_failure(self):
         self.world.marker_mode = "badkeys"
@@ -602,7 +667,7 @@ class FailureFlowTest(FixtureBase):
                 self.assertFailedLeavingFixture("assert-identity-preserved", message)
                 self.assertEqual(self.world.ws_calls, [])
                 self.assertEqual(self.world.events, ["crashed"])
-                self.assertEqual(len(self.world.records), 1)
+                self.assertEqual(sorted(r["label"] for r in self.world.records), [fixture.GIT_DAEMON_LABEL, fixture.PROCESS_LABEL])
                 self.temp.cleanup()
 
     def test_workspace_read_failure_leaves_the_fixture(self):
