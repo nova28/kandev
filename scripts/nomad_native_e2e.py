@@ -912,6 +912,35 @@ def _workspace_read(session: dict[str, Any], expected_file: str) -> dict[str, An
         raise PreflightError("workspace read result is unreadable") from exc
 
 
+def _await_recovered_environment(
+    read_db: Callable[[Callable[[sqlite3.Connection], Any]], Any],
+    read_inventory: Callable[[], dict[str, Any]],
+    *, environment_id: str, generation_before: int, expected_repo_count: int,
+    timeout: float = 120, clock: Callable[[], float] = time.monotonic, sleep: Callable[[float], Any] = time.sleep,
+) -> dict[str, Any]:
+    """Poll until the recovered environment is ready; returns the final inventory snapshot."""
+    deadline = clock() + timeout
+    while True:
+        inventory = read_inventory()
+        state = read_db(lambda db: check_post_ready_environment(db, environment_id, inventory["workspace_path"], generation_before, expected_repo_count))
+        if state == "ready":
+            return inventory
+        if clock() >= deadline:
+            raise PreflightError("recovered environment did not become ready before timeout")
+        sleep(0.5)
+
+
+def _check_session_untouched(session_row: dict[str, Any], messages_after: list[dict[str, Any]], messages_before: list[dict[str, Any]]) -> None:
+    check_pre_ready_session(session_row, messages_after)
+    if _message_identity_snapshot(messages_after) != _message_identity_snapshot(messages_before):
+        raise PreflightError("pre-ready recovery changed the durable message identities")
+
+
+def _check_workspace_read(read: dict[str, Any]) -> None:
+    if read.get("ok") is not True or read.get("contains_expected_file") is not True:
+        raise PreflightError("normal workspace read did not return the expected file")
+
+
 def _run_attached_pre_ready_recovery(config: dict[str, Any]) -> dict[str, Any]:
     validate_config(config)
     root = _owned_private_root(config["fixture_root"])
@@ -972,21 +1001,13 @@ def _run_attached_pre_ready_recovery(config: dict[str, Any]) -> dict[str, Any]:
     if restarted["pid"] == record["pid"] or _listener_pid(manifest["port"]) != restarted["pid"]:
         raise PreflightError("restarted API listener does not belong to a new owned backend process")
 
-    inventory_after = inventory_before
-    deadline = time.monotonic() + 120
-    while True:
-        inventory_after = _nomad_inventory_snapshot(home, session, expected, require_captured=True)
-        state = read_db(lambda db: check_post_ready_environment(db, session["environment_id"], inventory_after["workspace_path"], generation_before, expected["expected_repo_count"]))
-        if state == "ready":
-            break
-        if time.monotonic() >= deadline:
-            raise PreflightError("recovered environment did not become ready before timeout")
-        time.sleep(0.5)
+    inventory_after = _await_recovered_environment(
+        read_db, lambda: _nomad_inventory_snapshot(home, session, expected, require_captured=True),
+        environment_id=session["environment_id"], generation_before=generation_before,
+        expected_repo_count=expected["expected_repo_count"],
+    )
 
-    messages_after = _pre_ready_messages(session)
-    check_pre_ready_session(_pre_ready_session_row(session), messages_after)
-    if _message_identity_snapshot(messages_after) != _message_identity_snapshot(messages_before):
-        raise PreflightError("pre-ready recovery changed the durable message identities")
+    _check_session_untouched(_pre_ready_session_row(session), _pre_ready_messages(session), messages_before)
     nomad_after = _nomad_recovery_snapshot(config, session, expected)
     if inventory_after != inventory_before or nomad_after != nomad_before:
         raise PreflightError("pre-ready recovery changed the retained Nomad operation, allocation, or fence")
@@ -996,8 +1017,7 @@ def _run_attached_pre_ready_recovery(config: dict[str, Any]) -> dict[str, Any]:
         raise PreflightError("Nomad client identity changed during Kandev backend recovery")
 
     read = _workspace_read(session, expected["expected_file"])
-    if read.get("ok") is not True or read.get("contains_expected_file") is not True:
-        raise PreflightError("normal workspace read did not return the expected file")
+    _check_workspace_read(read)
     check_pre_ready_session(_pre_ready_session_row(session), _pre_ready_messages(session))
     report = {
         "mode": "attached-real-pre-ready-recovery",
@@ -1013,6 +1033,13 @@ def _run_attached_pre_ready_recovery(config: dict[str, Any]) -> dict[str, Any]:
     return report
 
 
+def _fixture_module() -> Any:
+    # The fixture module shares this module's PreflightError and helpers, also when run as __main__.
+    sys.modules.setdefault("nomad_native_e2e", sys.modules[__name__])
+    import nomad_native_e2e_fixture
+    return nomad_native_e2e_fixture
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -1022,7 +1049,17 @@ def main(argv: list[str] | None = None) -> int:
     run_parser.add_argument("--scenario", choices=sorted(REQUIRED_SCENARIOS), required=True)
     run_parser.add_argument("--require-real", action="store_true")
     run_parser.add_argument("--config", required=True)
+    run_parser.add_argument("--create-fixture", action="store_true", help="pre-ready-recovery only: create a fresh fixture from a bootstrap config, crash, recover and clean up")
+    cleanup = commands.add_parser("cleanup-fixture", help="stop the session of an existing created fixture through the production path and verify teardown")
+    cleanup.add_argument("--fixture-root", required=True)
     args = parser.parse_args(argv)
+    if args.command == "cleanup-fixture":
+        return _fixture_module().cleanup_fixture_command(args.fixture_root)
+    if args.command == "run" and args.create_fixture:
+        if args.scenario != "pre-ready-recovery" or not args.require_real:
+            print("--create-fixture requires --require-real --scenario pre-ready-recovery", file=sys.stderr)
+            return 2
+        return _fixture_module().create_fixture_command(args.config)
     if args.command == "run":
         if not args.require_real:
             print("run requires --require-real --scenario session", file=sys.stderr)

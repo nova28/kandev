@@ -86,8 +86,17 @@ async function workspaceRead() {
   });
 }
 
+// Production stop path: the same session.stop action the UI uses.
+async function sessionStop() {
+  return await withApiSocket(async ws => {
+    await request(ws, 'session.stop', { session_id: input.session_id, reason: 'fixture cleanup' }, 90000);
+    console.log(JSON.stringify({ ok: true }));
+  });
+}
+
 async function main() {
   if (input.mode === 'workspace-read') return workspaceRead();
+  if (input.mode === 'session-stop') return sessionStop();
   const result = await withApiSocket(async ws => {
     const prompt = await request(ws, 'message.add', {
       task_id: input.task_id,
