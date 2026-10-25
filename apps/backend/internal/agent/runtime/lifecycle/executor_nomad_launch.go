@@ -169,7 +169,8 @@ func newNomadIntentState(req *ExecutorCreateRequest, id nomadLaunchIdentity) nom
 		SSHHostFingerprint: profile.SSHHostFingerprint, WorkspaceRoot: profile.WorkspaceRoot, WorkspacePath: id.workspacePath,
 		WorkspaceInputPath: req.WorkspacePath, WorkspaceInputCaptured: true,
 		AllocationRoot: profile.AllocationRoot, CPUMHz: profile.CPUMHz, MemoryMB: profile.MemoryMB,
-		Phase: nomadPhaseIntent,
+		DisconnectLostAfterSeconds: int64(profile.DisconnectLostAfter.Seconds()),
+		Phase:                      nomadPhaseIntent,
 	}
 }
 

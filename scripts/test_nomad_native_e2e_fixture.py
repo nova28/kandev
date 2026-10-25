@@ -617,7 +617,9 @@ class AgentProfileSelectionTest(FixtureBase):
         created = self.world.agent_created
         self.assertEqual(created["protocol"], "acp")
         self.assertEqual(created["command"], "python3")
-        self.assertEqual(created["command_args"], [str(fixture.INERT_ACP_SCRIPT)])
+        self.assertEqual(created["command_args"][0], str(fixture.INERT_ACP_SCRIPT))
+        self.assertEqual(created["command_args"][1], "--identity-dir")
+        self.assertTrue(created["command_args"][2].endswith("inert-identity"))
         self.assertTrue(fixture.INERT_ACP_SCRIPT.is_file())
         self.assertEqual(created["display_name"], fixture.INERT_AGENT_NAME)
         self.assertEqual(self.task_body()["agent_profile_id"], "inert-prof")

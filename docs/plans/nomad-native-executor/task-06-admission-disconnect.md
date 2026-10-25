@@ -45,7 +45,8 @@ Prove scheduler capacity and real disconnected-client behavior. Quarantine build
 - Dedicated owner is the profile-pinned NodeID, datacenter and platform matched against the Nomad node record. Nomad node ACLs are not scoped per node; this is recorded as a limitation, not claimed as isolation.
 - Live quarantine triggers are not wired in this task: `quarantineWorker` and `reconcilePendingNomadQuarantine` are offline-tested building blocks. Triggering them on cleanup failure and reconciling `pending` on startup belong to task 07, which also owns operator readmission.
 - The Kandev Nomad client exposes no eligible, drain or marker-delete call. Only the runner, as the fixture operator, restores eligibility.
-- `job.go` needs no change: the disconnect, restart and reschedule policy already exists; a test now pins it.
+- Disconnect window (owner decision after the first live disconnect run): Nomad 2.0.7 treats an absent `lost_after` as zero and marks the original allocation lost as soon as its client is down, so the job now sets `Disconnect.LostAfter` from the profile field `disconnect_lost_after` (Go duration, default 24h, range 1m to 168h), snapshotted in `disconnect_lost_after_seconds`, compared exactly by the response check, with legacy zero preserved for retained states. Replace=false, keep_original and StopOnClientAfter unset are unchanged. The system designs are amended.
+- Disconnect fixture requirements: (1) the throwaway client is a SEPARATE client agent with `servers = [partition.listen]`; a combined server+client agent cannot be partitioned. (2) The throwaway server advertises `rpc = partition.listen`, otherwise the client learns the real server RPC address from heartbeat responses and bypasses the relay. (3) The client `TMPDIR` must exist, or the raw_exec logmon handshake fails and the allocation dies. (4) The runner waits for the client to register through the relay before verifying node identity. (5) The inert ACP agent is registered with `--identity-dir`, and the scenario sends one inert prompt through the normal message API to start the agentctl > acp > child > grandchild tree.
 - Honest capacity statement: count=1 is per job group, not a worker limit; native reservations are scheduler bookkeeping, not hard limits on macOS or on outside processes. Recorded in the evidence `limitations`.
 
 ## Acceptance
@@ -96,7 +97,7 @@ Nomad policy must be tested on 2.0.7; defaults are not guarantees. Closing a Kan
 
 ## Results
 
-Build complete offline (2026-10-25); real-worker proof pending, so this work order is not complete.
+Build complete offline (2026-10-25). Admission has real-worker proof (`docs/evidence/nomad-wo06/`); disconnect is pending its rerun with the bounded `lost_after`, so this work order is not complete.
 
 - Go: `nomad/quarantine.go` (node read, ineligible-only call, create-only Variables marker, dedicated-node check), `EnvironmentState.QuarantineState`, and the lifecycle admission gate (`executor_nomad_admission.go`) running before any launch intent, secret or registration. Quarantine and pending-reconcile are offline-tested building blocks with no production trigger (task 07 wires triggers and operator readmission). `go test -race` over `./internal/agent/nomad` and `./internal/agent/runtime/lifecycle` with `TestNomad` passes; each Verification prefix matches at least one test. One existing test timeout was raised from 30ms to 300ms because admission adds fake round trips; its assertion is unchanged.
 - Runner: `admission` and `disconnect` run only with `--create-fixture` (`scripts/nomad_native_e2e_wo06.py`); 206 offline Python tests pass, covering each assertion failing once, first-failure-keeps-fixture, idempotent `cleanup-fixture`, and a real-socket relay.

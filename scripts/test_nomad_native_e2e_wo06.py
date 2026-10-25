@@ -162,6 +162,9 @@ class Sim(World):
         def call(path):
             self.nomad_paths.append(path)
             if path == f"/v1/node/{NODE}":
+                if self.flags.get("node_unregistered_polls", 0) > getattr(self, "node_404s", 0):
+                    self.node_404s = getattr(self, "node_404s", 0) + 1
+                    raise PreflightError(f"Nomad GET {path} failed with status 404")
                 return json.loads(json.dumps(self.node))
             if path.startswith("/v1/var/"):
                 self.var_reads = getattr(self, "var_reads", []) + [path]
@@ -687,6 +690,13 @@ class ProcessIdentityTest(Wo06Base):
 
 
 class LiveRegressionTest(Wo06Base):
+    def test_node_identity_waits_for_the_client_to_register(self):
+        self.assertEqual(self.run_scn("admission", node_unregistered_polls=3), 0, "\n".join(self.err))
+        self.assertEqual(self.world.node_404s, 3)
+
+    def test_node_that_never_registers_fails_identity_with_a_clear_message(self):
+        self.assert_failed(self.run_scn("admission", node_unregistered_polls=10**6), "did not register its node", "verify-node-identity")
+
     def test_content_addressed_agentctl_name_is_identified(self):
         digest = "ab" * 32
         self.assertTrue(wo06._is_agentctl(f"/alloc/x/local/agentctl-{digest} --job j"))

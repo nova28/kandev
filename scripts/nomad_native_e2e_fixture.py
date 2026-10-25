@@ -619,7 +619,7 @@ class Runner:
     def _create_inert_profile(self, display_name: str) -> dict[str, Any]:
         """Register the repo's model-free inert ACP as a custom agent; a fresh fixture home has no profile."""
         agent = self.api("POST", "/agents/tui", {
-            "display_name": display_name, "command": "python3", "command_args": [str(INERT_ACP_SCRIPT)],
+            "display_name": display_name, "command": "python3", "command_args": [str(INERT_ACP_SCRIPT), "--identity-dir", str(self.root / "inert-identity")],
             "protocol": "acp", "description": "Model-free inert ACP for the Nomad recovery fixture",
         })
         agent = agent.get("agent", agent)

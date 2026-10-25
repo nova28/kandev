@@ -76,6 +76,7 @@ type ReschedulePolicy struct {
 type DisconnectPolicy struct {
 	Replace   bool   `json:"Replace"`
 	Reconcile string `json:"Reconcile"`
+	LostAfter int64  `json:"LostAfter"`
 }
 
 type NetworkResource struct {
@@ -124,6 +125,7 @@ func NativeJobFromState(state EnvironmentState) (Job, error) {
 		Platform: state.Platform, SSHHost: state.SSHHost, SSHUser: state.SSHUser, SSHPort: state.SSHPort,
 		SSHHostFingerprint: state.SSHHostFingerprint, WorkspaceRoot: state.WorkspaceRoot,
 		AllocationRoot: state.AllocationRoot, CPUMHz: state.CPUMHz, MemoryMB: state.MemoryMB,
+		DisconnectLostAfter: time.Duration(state.DisconnectLostAfterSeconds) * time.Second,
 	}
 	return BuildNativeJob(NativeJobInput{Profile: profile, State: state, AgentctlPath: state.AgentctlPath, BootstrapPath: state.BootstrapPath})
 }
@@ -198,7 +200,15 @@ func profileMatchesState(p ProfileConfig, s EnvironmentState) bool {
 	return p.NodeID == s.NodeID && p.Datacenter == s.Datacenter && p.Namespace == s.Namespace && p.Region == s.Region &&
 		p.Platform == s.Platform && p.SSHHost == s.SSHHost && p.SSHUser == s.SSHUser && p.SSHPort == s.SSHPort &&
 		p.SSHHostFingerprint == s.SSHHostFingerprint &&
-		p.AllocationRoot == s.AllocationRoot && p.CPUMHz == s.CPUMHz && p.MemoryMB == s.MemoryMB
+		p.AllocationRoot == s.AllocationRoot && p.CPUMHz == s.CPUMHz && p.MemoryMB == s.MemoryMB &&
+		profileMatchesDisconnectWindow(p, s)
+}
+
+// profileMatchesDisconnectWindow compares the profile with the immutable
+// window snapshot. A retained environment from before the window was
+// configurable carries zero and keeps its original job policy.
+func profileMatchesDisconnectWindow(p ProfileConfig, s EnvironmentState) bool {
+	return s.DisconnectLostAfterSeconds == 0 || p.DisconnectLostAfter == time.Duration(s.DisconnectLostAfterSeconds)*time.Second
 }
 
 func nativeJobMetadata(s EnvironmentState) map[string]string {
@@ -221,7 +231,7 @@ func nativeTaskGroup(p ProfileConfig, s EnvironmentState, agentctlPath, bootstra
 			Attempts: 0, Interval: int64(24 * time.Hour), Delay: int64(5 * time.Second),
 			DelayFunction: "constant", Unlimited: false,
 		},
-		Disconnect: DisconnectPolicy{Replace: false, Reconcile: "keep_original"},
+		Disconnect: DisconnectPolicy{Replace: false, Reconcile: "keep_original", LostAfter: int64(time.Duration(s.DisconnectLostAfterSeconds) * time.Second)},
 		Networks: []NetworkResource{{Mode: "host", DynamicPorts: []Port{
 			{Label: "agentctl_control", Value: 0},
 			{Label: "agentctl_instance", Value: 0},

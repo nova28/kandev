@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 
 	"github.com/kandev/kandev/internal/task/models"
@@ -16,8 +17,16 @@ var profileKeys = map[string]struct{}{
 	"address": {}, "namespace": {}, "region": {}, "datacenter": {}, "node_id": {},
 	"platform": {}, "ssh_target": {}, "ssh_port": {}, "ssh_host_fingerprint": {},
 	"workspace_root": {}, "allocation_root": {}, "cpu_mhz": {}, "memory_mb": {},
-	"nomad_token": {},
+	"nomad_token": {}, "disconnect_lost_after": {},
 }
+
+// Bounds and default for how long Nomad waits for a disconnected client before
+// marking the single original allocation lost.
+const (
+	DefaultDisconnectLostAfter = 24 * time.Hour
+	MinDisconnectLostAfter     = time.Minute
+	MaxDisconnectLostAfter     = 7 * 24 * time.Hour
+)
 
 type ProfileConfig struct {
 	Address            string
@@ -35,6 +44,8 @@ type ProfileConfig struct {
 	CPUMHz             int
 	MemoryMB           int
 	NomadTokenSecretID string
+	// DisconnectLostAfter is the bounded disconnect window of the native job.
+	DisconnectLostAfter time.Duration
 }
 
 var environmentPathIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$`)
@@ -91,6 +102,9 @@ func ParseProfileConfig(config map[string]string) (ProfileConfig, error) {
 		return profile, err
 	}
 	if err := normalizeProfilePaths(&profile); err != nil {
+		return profile, err
+	}
+	if profile.DisconnectLostAfter, err = parseDisconnectLostAfter(config["disconnect_lost_after"]); err != nil {
 		return profile, err
 	}
 	tokenRef, ok := models.ExecutorProfileSecretID(config["nomad_token"])
@@ -158,6 +172,18 @@ func parseSSHTarget(raw string) (string, string, error) {
 		}
 	}
 	return user, host, nil
+}
+
+func parseDisconnectLostAfter(raw string) (time.Duration, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return DefaultDisconnectLostAfter, nil
+	}
+	value, err := time.ParseDuration(raw)
+	if err != nil || value < MinDisconnectLostAfter || value > MaxDisconnectLostAfter {
+		return 0, fmt.Errorf("disconnect_lost_after must be a duration between %s and %s", MinDisconnectLostAfter, MaxDisconnectLostAfter)
+	}
+	return value, nil
 }
 
 func positiveInt(raw string) (int, error) {

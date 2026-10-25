@@ -385,7 +385,7 @@ var persistentMetadataKeys = map[string]bool{
 	nomadMetadataKeyAddress: true, nomadMetadataKeyRegion: true, nomadMetadataKeyDatacenter: true,
 	nomadMetadataKeyNodeID: true, nomadMetadataKeyPlatform: true, nomadMetadataKeySSHTarget: true,
 	nomadMetadataKeyWorkspaceRoot: true, nomadMetadataKeyAllocationRoot: true,
-	nomadMetadataKeyCPUMHz: true, nomadMetadataKeyMemoryMB: true, nomadMetadataKeyToken: true,
+	nomadMetadataKeyCPUMHz: true, nomadMetadataKeyMemoryMB: true, nomadMetadataKeyToken: true, nomadMetadataKeyLostAfter: true,
 
 	// Kubernetes connection and exact resource inventory.
 	MetadataKeyKubernetesAuthMode:               true,

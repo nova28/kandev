@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/kandev/kandev/internal/agent/nomad"
 )
@@ -412,5 +413,31 @@ func TestNomadAdmissionFenceInventoryListerFailsClosedWithoutNomadLister(t *test
 	states, err := manager.listNomadInventoryStates(context.Background())
 	if err == nil || states != nil {
 		t.Fatalf("listNomadInventoryStates() = %v, %v; want fail-closed error", states, err)
+	}
+}
+
+func TestNomadIntentStateSnapshotsDisconnectWindowFromProfile(t *testing.T) {
+	fixture := newNomadCreateFixture(t, false)
+	id, err := resolveNomadLaunchIdentity(fixture.request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id.profile.DisconnectLostAfter = 90 * time.Minute
+	state := newNomadIntentState(fixture.request, id)
+	if state.DisconnectLostAfterSeconds != 5400 {
+		t.Fatalf("DisconnectLostAfterSeconds = %d, want 5400", state.DisconnectLostAfterSeconds)
+	}
+	if err := state.Validate(); err != nil {
+		t.Fatalf("intent state with a configured window is invalid: %v", err)
+	}
+}
+
+func TestNomadCanonicalProfileMetadataCarriesDisconnectWindow(t *testing.T) {
+	profile := nomad.ProfileConfig{DisconnectLostAfter: 2 * time.Hour}
+	if got := nomadCanonicalProfileMetadata(profile)[nomadMetadataKeyLostAfter]; got != "2h0m0s" {
+		t.Fatalf("canonical metadata disconnect_lost_after = %q, want 2h0m0s", got)
+	}
+	if !isTrustedExecutorConfigKey(nomadMetadataKeyLostAfter) {
+		t.Fatal("disconnect_lost_after must be a trusted profile-only key")
 	}
 }

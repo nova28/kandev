@@ -31,6 +31,7 @@ const (
 	nomadMetadataKeyCPUMHz         = "cpu_mhz"
 	nomadMetadataKeyMemoryMB       = "memory_mb"
 	nomadMetadataKeyToken          = "nomad_token"
+	nomadMetadataKeyLostAfter      = "disconnect_lost_after"
 )
 
 // Name prefixes for Nomad agentctl runtime credentials.

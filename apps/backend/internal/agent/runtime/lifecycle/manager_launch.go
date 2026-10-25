@@ -201,7 +201,7 @@ var trustedExecutorConfigKeys = map[string]bool{
 	nomadMetadataKeyAddress: true, nomadMetadataKeyRegion: true, nomadMetadataKeyDatacenter: true,
 	nomadMetadataKeyNodeID: true, nomadMetadataKeyPlatform: true, nomadMetadataKeySSHTarget: true,
 	nomadMetadataKeyWorkspaceRoot: true, nomadMetadataKeyAllocationRoot: true,
-	nomadMetadataKeyCPUMHz: true, nomadMetadataKeyMemoryMB: true, nomadMetadataKeyToken: true,
+	nomadMetadataKeyCPUMHz: true, nomadMetadataKeyMemoryMB: true, nomadMetadataKeyToken: true, nomadMetadataKeyLostAfter: true,
 }
 
 func isTrustedExecutorConfigKey(k string) bool { return trustedExecutorConfigKeys[k] }
@@ -370,6 +370,7 @@ func nomadCanonicalProfileMetadata(parsed nomadexecutor.ProfileConfig) map[strin
 		"ssh_host_fingerprint": parsed.SSHHostFingerprint, nomadMetadataKeyWorkspaceRoot: parsed.WorkspaceRoot,
 		nomadMetadataKeyAllocationRoot: parsed.AllocationRoot, nomadMetadataKeyCPUMHz: fmt.Sprint(parsed.CPUMHz),
 		nomadMetadataKeyMemoryMB: fmt.Sprint(parsed.MemoryMB), nomadMetadataKeyToken: models.ExecutorProfileSecretReference(parsed.NomadTokenSecretID),
+		nomadMetadataKeyLostAfter: parsed.DisconnectLostAfter.String(),
 	}
 }
 

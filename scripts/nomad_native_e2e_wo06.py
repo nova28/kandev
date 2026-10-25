@@ -253,7 +253,7 @@ class Scenario:
 
     def verify_node_identity(self) -> dict[str, Any]:
         """The node must be the configured dedicated worker: same id, datacenter and platform."""
-        node = self.node()
+        node = self.poll(lambda: self.get_or_none(f"/v1/node/{self.nomad_cfg['node_id']}"), "the throwaway Nomad client did not register its node before timeout")
         attrs = node.get("Attributes") or {}
         platform = f"{attrs.get('kernel.name')}/{attrs.get('cpu.arch')}"
         if node.get("ID") != self.nomad_cfg["node_id"] or node.get("Datacenter") != self.cfg["nomad"]["datacenter"]:

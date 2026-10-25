@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 )
 
 var digestPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
@@ -54,6 +55,9 @@ type EnvironmentState struct {
 	DrainReceiptDigest     string `json:"drain_receipt_digest,omitempty"`
 	DrainReceiptGeneration int64  `json:"drain_receipt_generation,omitempty"`
 	QuarantineState        string `json:"quarantine_state,omitempty"`
+	// DisconnectLostAfterSeconds is the immutable disconnect window of the job.
+	// Zero is a retained environment created before the window was configurable.
+	DisconnectLostAfterSeconds int64 `json:"disconnect_lost_after_seconds,omitempty"`
 }
 
 func (s EnvironmentState) Validate() error {
@@ -85,6 +89,9 @@ func (s EnvironmentState) hasSSHIdentity() bool {
 func (s EnvironmentState) validateWorkspaceAndEvidence() error {
 	if s.WorkspaceRoot == "" || s.WorkspacePath == "" || s.AllocationRoot == "" || s.CPUMHz <= 0 || s.MemoryMB <= 0 {
 		return fmt.Errorf("nomad environment state has incomplete resource identity")
+	}
+	if s.DisconnectLostAfterSeconds != 0 && (s.DisconnectLostAfterSeconds < int64(MinDisconnectLostAfter/time.Second) || s.DisconnectLostAfterSeconds > int64(MaxDisconnectLostAfter/time.Second)) {
+		return fmt.Errorf("nomad environment state has an out-of-range disconnect window")
 	}
 	if !s.WorkspaceInputCaptured && s.WorkspaceInputPath != "" {
 		return fmt.Errorf("nomad environment state has workspace input without capture evidence")

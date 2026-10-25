@@ -293,6 +293,8 @@ a replacement after loss, fail verification and revisit this bounded policy;
 never silently take defaults or add a scheduler. The exact node pin and durable
 admission interlock remain required through disconnected/lost states.
 
+`Disconnect.LostAfter` is profile-set (see job-identity).
+
 The raw_exec task first acquires the durable worker start fence, then runs a
 finite bootstrap shell and `exec`s agentctl; no custom
 supervising loop remains. Nomad reserves dynamic native control and instance
