@@ -221,6 +221,22 @@ and terminal allocation, exact process/port absence and fence release were
 verified. This establishes fixture cleanup only; it does not prove automatic
 recovery or the unfinished production cleanup path in work order 07.
 
+Deliberate deviation (work order 05). The startup-continuation design has no
+`task_environments` `creating`→`ready` write. Work order 05 adds one, owned by
+`PublishRecoveredNomadEnvironmentReady`, for `nomad` environments only, plus a
+Nomad-only re-election live-evidence guard and a typed recovery-guard code on
+workspace reads. Specs are frozen on this card, so the owed follow-up is an
+amendment of the startup-continuation design (step 4) adding the environment
+publication, the re-election rule and the error mapping. The PR body names the
+deviation, and the amendment blocks marking work order 05 complete.
+
+Work order 05 real proof passed on 2026-10-25 (run 7, local throwaway Nomad
+2.0.7 fixture): a pre-ready crash at the fixture-only barrier, an automatic
+restart, environment `ready` and a normal workspace read before any prompt with
+the same execution, job, allocation and fence. Evidence is in
+`docs/evidence/nomad-wo05/`. Its cleanup was an operator teardown; production
+whole-job stop remains work order 07's.
+
 Documentation catalog/specification checks have passed during implementation;
 they do not establish runtime behavior. Capacity, actual client/server
 partition, production cleanup/quarantine and the complete fresh built-runtime
