@@ -21,9 +21,13 @@ Evidence: [`admission-run3.json`](admission-run3.json). Backend built from `1972
   allocation, on the same node with a new allocation id and its own fence owner, afterwards.
 - `production_cleanup` is false: release of A is the runner's operator teardown.
 
-## Disconnect: pending
+## Disconnect: passed (exit 0, 17 steps)
 
-Runs 1 to 5 exposed runner defects (fixed) and one product finding: with the then-default `LostAfter=0`, Nomad 2.0.7 marked the
-original allocation lost while its node was down. The job now carries a bounded,
-profile-configurable `lost_after` (default 24h); the pass is recorded here once the rerun
-succeeds.
+Reported by the owner's laptop run against the local throwaway fixture (server and client split, server `rpc = partition.listen`). Backend and agentctl built from `49d9be918b` (kandev sha256 `37c19ee227348453cf37c67c15c4d15ed81bc40d8aaac51bbd2ce5bdaa2976a1`, agentctl-darwin-arm64 sha256 `9d3dd33054a85aadec534667a506a8bfe0b9a706d0585d07f574f41e09786b4c`).
+
+- All 17 steps passed, including `partition-and-assert-nothing-changes`, `heal-and-assert-original-allocation-survives` and `await-b-start-fence-rejection`.
+- The runner's own teardown left the cluster clean: jobs stopped, no fence, no processes.
+- Earlier runs 1 to 5 exposed runner defects (fixed) and one product finding: with the then-default `LostAfter=0`, Nomad 2.0.7 marked the original allocation lost while its node was down. The job now carries a bounded, profile-configurable `lost_after` (default 24h).
+- Runner note: replacing a signed macOS binary in place gets it SIGKILLed (rc 137), so a bundle refresh must remove the old file before copying.
+
+The sanitized `disconnect-run.json` is added when the owner's session sends the full evidence.json.
