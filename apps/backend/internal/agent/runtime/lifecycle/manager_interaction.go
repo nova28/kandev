@@ -1477,7 +1477,7 @@ func (m *Manager) StopAgentWithReason(ctx context.Context, executionID string, r
 	// environment recovery cannot mistake a stopped resumable session for a
 	// live consumer. A passthrough TUI also needs its stopped execution ID to
 	// resume the same conversation after a graceful backend restart.
-	if execution.Owner.Kind == ExecutionOwnerRun || preservePassthroughConversation {
+	if execution.Owner.Kind == ExecutionOwnerRun || preservePassthroughConversation || execution.RuntimeName == executor.NameNomad {
 		if err := m.persistExecutorRunningResult(ctx, execution); err != nil {
 			return err
 		}
@@ -1486,7 +1486,7 @@ func (m *Manager) StopAgentWithReason(ctx context.Context, executionID string, r
 	execution.EndSessionSpan()
 
 	m.RemoveExecution(executionID)
-	if execution.Owner.Kind != ExecutionOwnerRun && !preservePassthroughConversation {
+	if execution.Owner.Kind != ExecutionOwnerRun && !preservePassthroughConversation && execution.RuntimeName != executor.NameNomad {
 		m.deleteExecutorRunning(ctx, executionInventorySessionID(execution), execution.ID)
 	}
 	if pendingRecovery != nil {

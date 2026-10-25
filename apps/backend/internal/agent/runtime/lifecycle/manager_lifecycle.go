@@ -117,9 +117,13 @@ func (m *Manager) Start(ctx context.Context) error {
 	startup.BeginStep(ctx, startup.StepSessionsRecovery)
 	standaloneRecords, listErr := m.ListLiveStandaloneExecutorsRunning(ctx)
 	pluginRecords, pluginListErr := m.ListLivePluginExecutorsRunning(ctx)
+	nomadRecords, nomadListErr := m.ListLiveNomadExecutorsRunning(ctx)
 	remoteRecords, remoteListErr := m.ListLiveRemoteExecutorsRunning(ctx)
 	if listErr == nil && pluginListErr != nil {
 		listErr = pluginListErr
+	}
+	if listErr == nil && nomadListErr != nil {
+		listErr = nomadListErr
 	}
 	if remoteListErr != nil {
 		m.logger.Warn("remote execution recovery inventory could not be read; remote owners remain untouched",
@@ -128,7 +132,7 @@ func (m *Manager) Start(ctx context.Context) error {
 	records := append([]*models.ExecutorRunning(nil), standaloneRecords...)
 	remoteRecordsForRecovery := make([]*models.ExecutorRunning, 0, len(remoteRecords)+len(pluginRecords))
 	if listErr == nil && !deferRemote {
-		remoteRecordsForRecovery = m.initialRemoteRecoveryRecords(ctx, pluginRecords, remoteRecords)
+		remoteRecordsForRecovery = m.initialRemoteRecoveryRecords(ctx, pluginRecords, remoteRecords, nomadRecords)
 		records = append(records, remoteRecordsForRecovery...)
 	}
 
@@ -169,6 +173,7 @@ func (m *Manager) Start(ctx context.Context) error {
 	}
 	guardInventory := append([]*models.ExecutorRunning(nil), records...)
 	guardInventory = append(guardInventory, remoteRecords...)
+	guardInventory = append(guardInventory, nomadRecords...)
 	guardedSessions := SessionsToGuard(ctx, sessionIDsFromExecutorRunning(guardInventory), passthroughLookup)
 	guardedSet := make(map[string]struct{}, len(guardedSessions))
 	for _, sessionID := range guardedSessions {

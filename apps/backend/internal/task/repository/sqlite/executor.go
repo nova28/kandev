@@ -431,6 +431,27 @@ func (r *Repository) ListExecutorsRunningPluginRemote(ctx context.Context) ([]*m
 	return scanExecutorRunningRows(rows)
 }
 
+// ListExecutorsRunningNomad returns all retained Nomad inventory rows,
+// including stopped/failed sessions whose allocation cleanup still needs
+// reconciliation. The typed state phase, not row status alone, determines
+// whether the built-in runtime may release a worker fence.
+func (r *Repository) ListExecutorsRunningNomad(ctx context.Context) ([]*models.ExecutorRunning, error) {
+	rows, err := r.ro.QueryContext(ctx, r.ro.Rebind(`
+		SELECT id, session_id, task_id, execution_profile_id, executor_id, runtime, status, idle_suspension_state, idle_suspension_policy_updated_at, resumable, resume_token,
+			last_message_uuid, agent_execution_id, container_id, agentctl_url, agentctl_port, pid, local_pid,
+			worktree_id, worktree_path, worktree_branch, last_seen_at, error_message, metadata,
+			created_at, updated_at
+		FROM executors_running
+		WHERE runtime = ?
+		ORDER BY updated_at DESC
+	`), agentruntime.RuntimeNomad)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	return scanExecutorRunningRows(rows)
+}
+
 func (r *Repository) ListExecutorsRunningByTaskID(ctx context.Context, taskID string) ([]*models.ExecutorRunning, error) {
 	if taskID == "" {
 		return nil, fmt.Errorf("task_id is required")

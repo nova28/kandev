@@ -2832,6 +2832,7 @@ const (
 	ExecutorTypeSprites      ExecutorType = "sprites"
 	ExecutorTypeSSH          ExecutorType = "ssh"
 	ExecutorTypeKubernetes   ExecutorType = "k8s"
+	ExecutorTypeNomad        ExecutorType = "nomad"
 	ExecutorTypeMockRemote   ExecutorType = "mock_remote"
 	ExecutorTypePluginRemote ExecutorType = "plugin_remote"
 )
@@ -2841,7 +2842,7 @@ const (
 // These environments run shells inside the container/VM, not on the host.
 func IsRemoteExecutorType(t ExecutorType) bool {
 	switch t {
-	case ExecutorTypeSprites, ExecutorTypeRemoteDocker, ExecutorTypeLocalDocker, ExecutorTypeSSH, ExecutorTypeKubernetes, ExecutorTypeMockRemote, ExecutorTypePluginRemote:
+	case ExecutorTypeSprites, ExecutorTypeRemoteDocker, ExecutorTypeLocalDocker, ExecutorTypeSSH, ExecutorTypeKubernetes, ExecutorTypeNomad, ExecutorTypeMockRemote, ExecutorTypePluginRemote:
 		return true
 	default:
 		return false
@@ -2867,6 +2868,8 @@ func (t ExecutorType) Runtime() agentruntime.Runtime {
 		return agentruntime.RuntimeSSH
 	case ExecutorTypeKubernetes:
 		return agentruntime.RuntimeKubernetes
+	case ExecutorTypeNomad:
+		return agentruntime.RuntimeNomad
 	case ExecutorTypePluginRemote:
 		return agentruntime.RuntimePluginRemote
 	default:
@@ -2886,7 +2889,7 @@ func IsContainerizedExecutorType(t ExecutorType) bool {
 // IsAlwaysResumableRuntime reports whether the given runtime represents
 // an executor that can always be resumed even without an explicit resume token.
 func IsAlwaysResumableRuntime(runtime agentruntime.Runtime) bool {
-	return runtime == agentruntime.RuntimeSprites || runtime == agentruntime.RuntimeSSH || runtime == agentruntime.RuntimeKubernetes
+	return runtime == agentruntime.RuntimeSprites || runtime == agentruntime.RuntimeSSH || runtime == agentruntime.RuntimeKubernetes || runtime == agentruntime.RuntimeNomad
 }
 
 const (
@@ -2937,6 +2940,9 @@ type ExecutorRunning struct {
 	ResumeToken                   string               `json:"resume_token,omitempty"`
 	LastMessageUUID               string               `json:"last_message_uuid,omitempty"`
 	AgentExecutionID              string               `json:"agent_execution_id,omitempty"`
+	// ExpectedNomadExecutorRevision fences one Nomad metadata checkpoint against
+	// the envelope revision read by the lifecycle owner. It is transient only.
+	ExpectedNomadExecutorRevision uint64 `json:"-" db:"-"`
 	// TransientAuthToken carries a decrypted agentctl token only between the
 	// lifecycle recovery inventory read and the matching remote runtime. It is
 	// excluded from JSON and database persistence.
