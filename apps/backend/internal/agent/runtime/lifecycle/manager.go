@@ -224,8 +224,15 @@ type Manager struct {
 	remoteRecoveryMu         sync.Mutex
 	remoteRecoveryPending    map[string]*remoteRecoveryRetry
 	remoteRecoveryCursor     string
-	stopContext              context.Context
-	cancelStop               context.CancelFunc
+	// nomadReadyPublisher publishes a recovered Nomad environment ready. Wired
+	// by the backend; nil fails recovery closed.
+	nomadReadyPublisher NomadEnvironmentReadyPublisher
+	// Zero values use remoteRecoveryAttemptTimeout and
+	// nomadRecoveryReconcileTimeout; tests shorten them.
+	remoteAttemptBudget          time.Duration
+	nomadRecoveryReconcileBudget time.Duration
+	stopContext                  context.Context
+	cancelStop                   context.CancelFunc
 	// Bounds the non-mutating contribution push check before agent launch.
 	// A zero value uses the production default and keeps test Manager literals safe.
 	remoteContributionPreflightTimeout time.Duration

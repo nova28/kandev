@@ -30,26 +30,37 @@ func (m *Manager) ensureWorkspaceSessionAdmittedForCreatedNomadRecovery(
 	info *WorkspaceInfo,
 	entry *remoteRecoveryRetry,
 ) error {
-	if !createdNomadRecoveryOwnerMatches(taskID, info, entry) {
-		return fmt.Errorf("%w: pre-ACP Nomad recovery owner is unavailable", ErrSessionWorkspaceNotReady)
-	}
-	if !m.createdNomadRecoveryEntryActive(entry) || !m.createdNomadRecoveryAttemptAllowed(entry) {
-		return fmt.Errorf("%w: pre-ACP Nomad recovery is not the active guarded owner", ErrSessionWorkspaceNotReady)
-	}
-	state, ok := createdNomadRecoveryState(entry.record)
-	if !ok || state.EnvironmentID != info.TaskEnvironmentID ||
-		state.Generation != info.ValidatedTaskEnvironmentGeneration ||
-		state.ExecutionID != info.AgentExecutionID {
-		return fmt.Errorf("%w: pre-ACP Nomad recovery identity changed", ErrSessionWorkspaceNotReady)
-	}
-	if !createdNomadRecoverySnapshotEligible(entry, state) {
-		return fmt.Errorf("%w: pre-ACP Nomad recovery snapshot is not eligible", ErrSessionWorkspaceNotReady)
+	state, err := m.createdNomadInFlightOwner(taskID, info, entry)
+	if err != nil {
+		return err
 	}
 	infoState, err := nomad.EnvironmentStateFromMetadata(info.Metadata)
 	if err != nil || infoState != state {
 		return fmt.Errorf("%w: pre-ACP Nomad workspace state changed", ErrSessionWorkspaceNotReady)
 	}
 	return m.ensureWorkspaceSessionAdmittedMode(ctx, taskID, info, true)
+}
+
+// createdNomadInFlightOwner proves the entry is the exact in-flight, guarded
+// owner of the workspace's original Nomad operation and returns that operation's
+// pinned inventory state.
+func (m *Manager) createdNomadInFlightOwner(taskID string, info *WorkspaceInfo, entry *remoteRecoveryRetry) (nomad.EnvironmentState, error) {
+	if !createdNomadRecoveryOwnerMatches(taskID, info, entry) {
+		return nomad.EnvironmentState{}, fmt.Errorf("%w: pre-ACP Nomad recovery owner is unavailable", ErrSessionWorkspaceNotReady)
+	}
+	if !m.createdNomadRecoveryEntryActive(entry) || !m.createdNomadRecoveryAttemptAllowed(entry) {
+		return nomad.EnvironmentState{}, fmt.Errorf("%w: pre-ACP Nomad recovery is not the active guarded owner", ErrSessionWorkspaceNotReady)
+	}
+	state, ok := createdNomadRecoveryState(entry.record)
+	if !ok || state.EnvironmentID != info.TaskEnvironmentID ||
+		state.Generation != info.ValidatedTaskEnvironmentGeneration ||
+		state.ExecutionID != info.AgentExecutionID {
+		return nomad.EnvironmentState{}, fmt.Errorf("%w: pre-ACP Nomad recovery identity changed", ErrSessionWorkspaceNotReady)
+	}
+	if !createdNomadRecoverySnapshotEligible(entry, state) {
+		return nomad.EnvironmentState{}, fmt.Errorf("%w: pre-ACP Nomad recovery snapshot is not eligible", ErrSessionWorkspaceNotReady)
+	}
+	return state, nil
 }
 
 func createdNomadRecoveryOwnerMatches(taskID string, info *WorkspaceInfo, entry *remoteRecoveryRetry) bool {

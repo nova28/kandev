@@ -33,6 +33,9 @@ type remoteRecoveryRetry struct {
 	stopReason           string
 	stopForce            bool
 	stopRuntimeCompleted bool
+	// nomadClass is the in-memory outcome class of the last Created-session
+	// Nomad recovery attempt. It is cleared by a backend restart.
+	nomadClass string
 }
 
 func isRemoteRecoveryRuntime(runtime agentruntime.Runtime) bool {
@@ -116,7 +119,7 @@ func (m *Manager) rejectWorkspaceDuringCreatedNomadRecovery(sessionID string) er
 		return nil
 	}
 	if entry.snapshot == nil || entry.snapshot.SessionState == models.TaskSessionStateCreated {
-		return ErrSessionRecoveryGuarded
+		return &NomadRecoveryGuardError{Code: nomadRecoveryGuardCode(m.createdNomadRecoveryClass(entry))}
 	}
 	return nil
 }
@@ -211,7 +214,7 @@ func (m *Manager) retryRemoteRecovery(parent context.Context, entry *remoteRecov
 		return
 	}
 	defer m.finishRemoteRecoveryAttempt(entry)
-	ctx, cancel := m.remoteAttemptContext(parent)
+	ctx, cancel := m.remoteRetryAttemptContext(parent, entry)
 	defer cancel()
 	if ctx.Err() != nil {
 		return
@@ -221,6 +224,9 @@ func (m *Manager) retryRemoteRecovery(parent context.Context, entry *remoteRecov
 		return
 	}
 	if m.retryPendingRemoteStop(ctx, entry) {
+		return
+	}
+	if isCreatedNomadRecoveryEntry(entry) && m.createdNomadRecoveryClass(entry) == nomadRecoveryClassOperatorAction {
 		return
 	}
 	m.attachRemoteRecovery(ctx, entry, current)
@@ -396,10 +402,29 @@ func (m *Manager) continueCreatedNomadRecovery(
 	}
 }
 
-// attemptCreatedNomadRecovery re-proves the owner, workspace and execution
-// identity, publishes (or adopts) the pre-ACP execution, and completes the
-// pending recovery only when the final snapshot is still the same owner.
+// attemptCreatedNomadRecovery runs one recovery attempt and records its outcome
+// class on the entry: success clears it, every failure is starting or
+// operator_action.
 func (m *Manager) attemptCreatedNomadRecovery(
+	sharedCtx context.Context,
+	entry *remoteRecoveryRetry,
+	initialSnapshot *RemoteRecoverySnapshot,
+	initialState nomad.EnvironmentState,
+) (*AgentExecution, error) {
+	execution, err := m.runCreatedNomadRecoveryAttempt(sharedCtx, entry, initialSnapshot, initialState)
+	if err != nil {
+		m.recordCreatedNomadRecoveryClass(entry, m.classifyCreatedNomadRecoveryError(entry, err, sharedCtx.Err()))
+		return nil, err
+	}
+	m.recordCreatedNomadRecoveryClass(entry, "")
+	return execution, nil
+}
+
+// runCreatedNomadRecoveryAttempt re-proves the owner, workspace and execution
+// identity, adopts or creates the pre-ACP execution, reconciles repositories,
+// publishes the environment ready, and completes the pending recovery only when
+// the final snapshot is still the same owner.
+func (m *Manager) runCreatedNomadRecoveryAttempt(
 	sharedCtx context.Context,
 	entry *remoteRecoveryRetry,
 	initialSnapshot *RemoteRecoverySnapshot,
@@ -408,18 +433,9 @@ func (m *Manager) attemptCreatedNomadRecovery(
 	if !m.createdNomadRecoveryAttemptAllowed(entry) {
 		return nil, errRemoteRecoveryFenced
 	}
-	currentSnapshot, err := m.remoteRecoverySnapshot(sharedCtx, entry.record.SessionID)
+	currentSnapshot, err := m.createdNomadAttemptSnapshot(sharedCtx, entry, initialSnapshot, initialState)
 	if err != nil {
-		return nil, fmt.Errorf("pre-ACP Nomad recovery snapshot read failed: %w", err)
-	}
-	if !sameRemoteRecoveryOwner(initialSnapshot, currentSnapshot, entry.record) {
-		return nil, errors.New("pre-ACP Nomad recovery snapshot owner changed")
-	}
-	if err := validateCreatedNomadRecoverySnapshot(currentSnapshot, entry.record, initialState); err != nil {
-		return nil, fmt.Errorf("pre-ACP Nomad recovery snapshot is ineligible: %w", err)
-	}
-	if currentSnapshot.SessionState != models.TaskSessionStateCreated || currentSnapshot.RecoverySourcePresent {
-		return nil, errors.New("pre-ACP Nomad recovery snapshot is no longer an uninitialized Created session")
+		return nil, err
 	}
 	attemptRecord, err := m.currentNomadPreACPRecoveryRecord(sharedCtx, entry, initialState)
 	if err != nil {
@@ -434,19 +450,56 @@ func (m *Manager) attemptCreatedNomadRecovery(
 		return nil, fmt.Errorf("pre-ACP Nomad workspace snapshot read failed: %w", err)
 	}
 	if fields := createdNomadWorkspaceMismatchFields(currentInfo, attemptRecord, currentSnapshot, attemptState); len(fields) != 0 {
-		return nil, fmt.Errorf("pre-ACP Nomad workspace snapshot does not match retained operation (fields: %s)", strings.Join(fields, ","))
+		return nil, operatorActionRecoveryError(fmt.Errorf("pre-ACP Nomad workspace snapshot does not match retained operation (fields: %s)", strings.Join(fields, ",")))
 	}
 	execution, err := m.createdNomadRecoveryExecution(sharedCtx, entry, currentInfo, attemptState)
 	if err != nil {
 		return nil, err
 	}
-	if err := m.verifyCreatedNomadRecoveryFinal(sharedCtx, entry, initialSnapshot, attemptState); err != nil {
+	if err := m.reconcileCreatedNomadRepositories(sharedCtx, execution, currentInfo); err != nil {
+		return nil, err
+	}
+	readyState, err := m.createdNomadReadyInventory(sharedCtx, entry, initialState)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := m.publishCreatedNomadRecoveredEnvironment(sharedCtx, entry, currentInfo, readyState); err != nil {
+		return nil, err
+	}
+	if err := m.requireCreatedNomadEnvironmentReady(sharedCtx, currentInfo, readyState); err != nil {
+		return nil, err
+	}
+	if err := m.verifyCreatedNomadRecoveryFinal(sharedCtx, entry, initialSnapshot, readyState); err != nil {
 		return nil, err
 	}
 	if !m.completeCreatedNomadRecovery(entry) {
 		return nil, errors.New("pre-ACP Nomad pending recovery ownership changed before completion")
 	}
 	return execution, nil
+}
+
+// createdNomadAttemptSnapshot re-reads the owner snapshot and proves it is still
+// the same uninitialized Created session.
+func (m *Manager) createdNomadAttemptSnapshot(
+	ctx context.Context,
+	entry *remoteRecoveryRetry,
+	initialSnapshot *RemoteRecoverySnapshot,
+	initialState nomad.EnvironmentState,
+) (*RemoteRecoverySnapshot, error) {
+	currentSnapshot, err := m.remoteRecoverySnapshot(ctx, entry.record.SessionID)
+	if err != nil {
+		return nil, fmt.Errorf("pre-ACP Nomad recovery snapshot read failed: %w", err)
+	}
+	if !sameRemoteRecoveryOwner(initialSnapshot, currentSnapshot, entry.record) {
+		return nil, operatorActionRecoveryError(errors.New("pre-ACP Nomad recovery snapshot owner changed"))
+	}
+	if err := validateCreatedNomadRecoverySnapshot(currentSnapshot, entry.record, initialState); err != nil {
+		return nil, operatorActionRecoveryError(fmt.Errorf("pre-ACP Nomad recovery snapshot is ineligible: %w", err))
+	}
+	if currentSnapshot.SessionState != models.TaskSessionStateCreated || currentSnapshot.RecoverySourcePresent {
+		return nil, operatorActionRecoveryError(errors.New("pre-ACP Nomad recovery snapshot is no longer an uninitialized Created session"))
+	}
+	return currentSnapshot, nil
 }
 
 // createdNomadRecoveryExecution adopts the exact tracked pre-ACP execution or
@@ -613,9 +666,12 @@ func (m *Manager) currentNomadPreACPRecoveryRecord(
 		return nil, errors.New("pre-ACP Nomad continuation requires a durable inventory reader")
 	}
 	current, err := reader.GetExecutorRunningBySessionID(ctx, entry.record.SessionID)
-	if err != nil || current == nil || current.SessionID != entry.record.SessionID || current.TaskID != entry.record.TaskID ||
+	if err != nil || current == nil {
+		return nil, fmt.Errorf("pre-ACP Nomad inventory read failed: %w", errors.Join(errors.New("inventory unavailable"), err))
+	}
+	if current.SessionID != entry.record.SessionID || current.TaskID != entry.record.TaskID ||
 		current.AgentExecutionID != entry.record.AgentExecutionID || current.Runtime != agentruntime.RuntimeNomad {
-		return nil, errors.New("pre-ACP Nomad inventory owner is unavailable or changed")
+		return nil, operatorActionRecoveryError(errors.New("pre-ACP Nomad inventory owner changed"))
 	}
 	state, ok := createdNomadRecoveryState(current)
 	if !ok || !sameNomadPreACPOperation(initial, state) || state.Revision < initial.Revision ||
@@ -627,7 +683,7 @@ func (m *Manager) currentNomadPreACPRecoveryRecord(
 		getMetadataString(entry.record.Metadata, MetadataKeyAuthTokenSecret),
 		getMetadataString(current.Metadata, MetadataKeyAuthTokenSecret),
 	) {
-		return nil, errors.New("pre-ACP Nomad inventory operation or phase changed")
+		return nil, operatorActionRecoveryError(errors.New("pre-ACP Nomad inventory operation or phase changed"))
 	}
 	return current, nil
 }
@@ -1238,7 +1294,24 @@ func (m *Manager) remoteAttemptContext(parent context.Context) (context.Context,
 	if parent == nil {
 		parent = context.Background()
 	}
-	ctx, cancel := context.WithTimeout(parent, remoteRecoveryAttemptTimeout)
+	return m.remoteAttemptContextFor(parent, m.remoteAttemptTimeout())
+}
+
+// remoteRetryAttemptContext bounds a ticker attempt. A Created-session Nomad
+// attempt also covers the repository reconcile window.
+func (m *Manager) remoteRetryAttemptContext(parent context.Context, entry *remoteRecoveryRetry) (context.Context, context.CancelFunc) {
+	timeout := m.remoteAttemptTimeout()
+	if isCreatedNomadRecoveryEntry(entry) {
+		timeout += m.nomadReconcileTimeout() + m.remoteAttemptTimeout()
+	}
+	return m.remoteAttemptContextFor(parent, timeout)
+}
+
+func (m *Manager) remoteAttemptContextFor(parent context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(parent, timeout)
 	stopCtx, stopCancel := context.WithCancel(ctx)
 	managerStop := m.stopContext
 	if managerStop == nil {

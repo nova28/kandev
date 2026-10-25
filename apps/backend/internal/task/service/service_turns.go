@@ -1182,11 +1182,27 @@ func (s *Service) populateWorkspaceRepositorySpecs(ctx context.Context, taskID s
 	}
 	branchPlans := worktree.BuildBranchIdentityPlans(workspaceBranchIdentityInputs(projections))
 	for index, projection := range projections {
-		info.WorkspaceRepositories = append(info.WorkspaceRepositories, s.workspaceRepositorySpec(
+		spec := s.workspaceRepositorySpec(
 			projection, branchPlans[index].IdentitySlug, worktreesByIdentity, worktreesByRepository, projectionCounts,
-		))
+		)
+		if info.ExecutorType == string(models.ExecutorTypeNomad) {
+			s.applyNomadRecoveryRepositoryFields(&spec, projection.repository, branchPlans[index].IdentitySlug)
+		}
+		info.WorkspaceRepositories = append(info.WorkspaceRepositories, spec)
 	}
 	return repositories, nil
+}
+
+// applyNomadRecoveryRepositoryFields fills what Created-session Nomad recovery
+// needs to rebuild the repository reconcile input and the environment rows: the
+// clone locator and the branch identity, even when no worktree row selected it.
+func (s *Service) applyNomadRecoveryRepositoryFields(spec *lifecycle.WorkspaceRepositorySpec, repository *models.Repository, identitySlug string) {
+	if s.repoCloneURLResolver != nil && repository != nil {
+		spec.RepositoryURL = s.repoCloneURLResolver(repository)
+	}
+	if spec.BranchIdentitySlug == "" {
+		spec.BranchIdentitySlug = identitySlug
+	}
 }
 
 func (s *Service) populateWorkspaceTaskMetadata(ctx context.Context, taskID string, info *lifecycle.WorkspaceInfo) error {
