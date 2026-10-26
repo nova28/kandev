@@ -943,12 +943,26 @@ func (m *Manager) StopAllAgents(ctx context.Context) error {
 		}(exec)
 	}
 
-	wg.Wait()
-	close(errCh)
-
+	// A stop can block on per-execution locks held by another stop, so the wait
+	// itself must honor the shutdown deadline.
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
 	var errs []error
-	for err := range errCh {
-		errs = append(errs, err)
+	select {
+	case <-done:
+	case <-ctx.Done():
+		errs = append(errs, fmt.Errorf("stop agents during shutdown: %w", ctx.Err()))
+	}
+	for drained := false; !drained; {
+		select {
+		case err := <-errCh:
+			errs = append(errs, err)
+		default:
+			drained = true
+		}
 	}
 	return errors.Join(errs...)
 }

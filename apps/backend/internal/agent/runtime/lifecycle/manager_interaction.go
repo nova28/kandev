@@ -1550,6 +1550,12 @@ func (m *Manager) detachAgentExecution(executionID string, execution *AgentExecu
 	return nil
 }
 
+// nomadAgentctlStopTimeout bounds the agentctl stop call on a Nomad worker. A
+// frozen or unreachable worker must cost a bounded wait, never the client's
+// default timeout, because the stop runs under the execution's lifecycle locks.
+// Package-level so tests can shorten it.
+var nomadAgentctlStopTimeout = 10 * time.Second
+
 func (m *Manager) stopExecutionAgentctl(
 	ctx context.Context,
 	executionID string,
@@ -1565,6 +1571,11 @@ func (m *Manager) stopExecutionAgentctl(
 	defer client.Close()
 	if force {
 		return false
+	}
+	if execution.RuntimeName == executor.NameNomad {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, nomadAgentctlStopTimeout)
+		defer cancel()
 	}
 	if err := client.Stop(ctx); err != nil {
 		// During shutdown the instance may already be stopping through another

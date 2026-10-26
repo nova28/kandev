@@ -224,6 +224,26 @@ def _default_ws(payload: dict[str, Any]) -> dict[str, Any]:
         raise PreflightError("fixture WebSocket driver result is unreadable") from None
 
 
+def stop_owned_process(registry: Any, ops: Any, label: str) -> str:
+    """Stop one owned process: SIGTERM within a bound, then SIGKILL of its recorded group.
+
+    The group is signalled only after the registry verified the recorded leader identity and reported that the
+    leader outlived the bound or its group still has members; any other refusal leaves the process untouched.
+    """
+    try:
+        return registry.stop(label, timeout=15)
+    except Exception as exc:
+        record = next((item for item in registry.read_records() if item["label"] == label), None)
+        if record is None or not any(marker in str(exc) for marker in _GROUP_KILL_SAFE):
+            return "unverified"
+    try:
+        ops.kill_group(record["pgid"])
+        ops.sleep(0.5)
+        return registry.stop(label, timeout=15)
+    except Exception:
+        return "unverified"
+
+
 def _default_kill_group(pgid: int) -> None:
     if pgid == os.getpgrp() or pgid == os.getpgid(os.getppid()):
         raise PreflightError("refusing to signal the process group of this runner or its caller")
@@ -801,13 +821,7 @@ class Runner:
         The Nomad job, its agentctl and the node state stay for cleanup-fixture; only processes this runner started
         end here, so a failed run never leaves a headless Kandev behind.
         """
-        outcome: dict[str, str] = {}
-        for label in (PROCESS_LABEL, GIT_DAEMON_LABEL):
-            try:
-                outcome[label] = self.registry.stop(label, timeout=15)
-            except Exception:
-                outcome[label] = "unverified"
-        return outcome
+        return {label: stop_owned_process(self.registry, self.ops, label) for label in (PROCESS_LABEL, GIT_DAEMON_LABEL)}
 
     def _stop_daemon(self, daemon: dict[str, Any]) -> None:
         try:

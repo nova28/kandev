@@ -90,6 +90,8 @@ class FakeRegistry:
         return result
 
     def stop(self, label, timeout=5):
+        if label == fixture.PROCESS_LABEL and self.world.backend_stop_error:
+            raise RuntimeError(self.world.backend_stop_error)
         if label == fixture.GIT_DAEMON_LABEL and self.world.daemon_group_survives:
             raise RuntimeError("leader stopped but process group still has members")
         if label == fixture.GIT_DAEMON_LABEL and self.world.daemon_stop_error:
@@ -110,6 +112,7 @@ class World:
         self.stop_effect = False
         self.fence_survives_stop = True
         self.daemon_group_survives = False
+        self.backend_stop_error = None
         self.killed_groups = []
         self.ws_failure = None
         self.workspace_read = {"ok": True, "contains_expected_file": True, "snapshots": []}
@@ -310,6 +313,7 @@ class World:
         self.killed_groups.append(pgid)
         self.daemon_group_survives = False
         self.daemon_stop_error = None
+        self.backend_stop_error = None
 
     def ops(self):
         return fixture.Ops(
@@ -1098,6 +1102,31 @@ class DaemonStopOwnershipTest(FixtureBase):
                 self.assertEqual(self.run_flow(), 0, self.err)
                 self.assertEqual(len(self.world.killed_groups), 1)
                 self.temp.cleanup()
+
+
+class OwnedProcessStopTest(FixtureBase):
+    def stop_backend(self):
+        registry = FakeRegistry(self.world)
+        self.world.pid += 1
+        self.world.records.append({"label": fixture.PROCESS_LABEL, "pid": self.world.pid, "started_at": "t", "pgid": self.world.pid})
+        self.world.alive.add(self.world.pid)
+        self.world.record_ports[self.world.pid] = 43111
+        return fixture.stop_owned_process(registry, self.world.ops(), fixture.PROCESS_LABEL)
+
+    def test_a_backend_that_ignores_sigterm_is_killed_through_its_recorded_group(self):
+        self.world.backend_stop_error = "owned process did not stop before timeout; retaining ownership record"
+        self.assertEqual(self.stop_backend(), "stopped")
+        self.assertEqual(self.world.killed_groups, [self.world.pid])
+        self.assertEqual(self.world.records, [])
+
+    def test_a_stop_that_succeeds_never_signals_the_group(self):
+        self.assertEqual(self.stop_backend(), "stopped")
+        self.assertEqual(self.world.killed_groups, [])
+
+    def test_an_identity_refusal_is_unverified_and_never_signals_the_group(self):
+        self.world.backend_stop_error = "PID start identity or process group changed; refusing to signal"
+        self.assertEqual(self.stop_backend(), "unverified")
+        self.assertEqual(self.world.killed_groups, [])
 
 
 class EarlyFailureStateTest(FixtureBase):
