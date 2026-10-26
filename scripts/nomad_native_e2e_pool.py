@@ -45,6 +45,15 @@ def job_named_node(job: dict[str, Any]) -> bool:
 
 
 class PoolScenario(wo07.Wo07Scenario):
+    def verify_node_identity(self) -> dict[str, Any]:
+        """Pool paths come from the node's own kandev.state_root; they are recorded so cleanup-fixture uses the same ones."""
+        identity = super().verify_node_identity()
+        problems = contract_problems(self.node().get("Meta") or {})
+        if problems:
+            raise PreflightError(f"the fixture node does not carry the Kandev node contract: {', '.join(problems)}")
+        self.r.save_state(pool_state_root=self.node()["Meta"]["kandev.state_root"])
+        return {**identity, "pool_state_root": self.r.state["pool_state_root"]}
+
     def assert_placement(self, env: dict[str, Any]) -> dict[str, Any]:
         pool = self.cfg["pool"]
         job = self.r.nomad(f"/v1/job/{env['job_id']}")

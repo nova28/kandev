@@ -44,7 +44,7 @@ func (c *Client) PreflightPool(ctx context.Context, profile ProfileConfig) error
 		return fmt.Errorf("pool preflight: scheduler configuration is not readable: %w", err)
 	}
 	if profile.MemoryMaxMB > profile.MemoryMB && !scheduler.SchedulerConfig.MemoryOversubscriptionEnabled {
-		return errors.New("pool preflight: memory oversubscription is disabled in the Nomad scheduler configuration")
+		return errors.New("pool preflight: memory oversubscription is disabled in the Nomad scheduler configuration; enable it with `nomad operator scheduler set-config -memory-oversubscription=true` or set memory_max_mb equal to memory_mb")
 	}
 	if profile.Placement == PlacementBinpack {
 		algorithm := scheduler.SchedulerConfig.SchedulerAlgorithm
@@ -52,7 +52,7 @@ func (c *Client) PreflightPool(ctx context.Context, profile ProfileConfig) error
 			algorithm = pool.SchedulerConfiguration.SchedulerAlgorithm
 		}
 		if algorithm != schedulerAlgorithmBinpack {
-			return fmt.Errorf("pool preflight: placement %q needs a binpack scheduler for node pool %q", PlacementBinpack, profile.NodePool)
+			return fmt.Errorf("pool preflight: placement %q needs a binpack scheduler for node pool %q; set the node pool or cluster scheduler algorithm to binpack, or use placement spread", PlacementBinpack, profile.NodePool)
 		}
 	}
 	return nil

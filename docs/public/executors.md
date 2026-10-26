@@ -663,7 +663,9 @@ scripts/nomad-pool-onboard ssh /srv/kandev 10.0.0.12 22 SHA256:<fingerprint from
 scripts/nomad-pool-onboard local "$HOME/kandev-worker-state"
 ```
 
-Paste the block into the node's Nomad client configuration and restart the client. If the metadata changes between launch and recovery, Kandev refuses to reattach to that environment.
+Before the first launch, check the two cluster prerequisites. Memory oversubscription must be enabled when `memory_max_mb` is above `memory_mb` (`nomad operator scheduler set-config -memory-oversubscription=true`). A `binpack` profile needs the node pool or cluster scheduler algorithm set to `binpack`; `spread` needs no algorithm change. Kandev refuses the launch with a message naming the missing prerequisite.
+
+Paste the block into the node's Nomad client configuration, add `node_pool` to the client stanza, create the pool with `nomad node pool apply`, and restart the client. If the metadata changes between launch and recovery, Kandev refuses to reattach to that environment.
 
 ## Nomad worker quarantine and readmission
 

@@ -462,6 +462,9 @@ def _remote_state_dir(allocation_root: str, node_id: str) -> str:
 
 
 def _fence_path(state: dict[str, Any]) -> str:
+    """The node-wide fence. A pool node keeps it under its kandev.state_root, recorded once the node metadata is read."""
+    if state.get("pool_state_root"):
+        return posixpath.join(state["pool_state_root"], "worker-state", state["node_id"], "active-environment")
     return posixpath.join(_remote_state_dir(state["allocation_root"], state["node_id"]), "active-environment")
 
 

@@ -474,8 +474,10 @@ class Scenario:
         nomad = self.r.nomad_snapshot(inventory)
         tree = self.stable_tree(env)
         fence = self.r.fence()
-        if not tree or fence is None:
-            raise PreflightError(f"environment {label} has no remote process tree or worker fence")
+        if not tree:
+            raise PreflightError(f"environment {label} has no remote process tree")
+        if fence is None:
+            raise PreflightError(f"environment {label} has no worker fence at {fx._fence_path(self.r.state)}")
         if not any(item["role"] == "agentctl" and item["depth"] == 0 for item in tree):
             raise PreflightError(f"environment {label} has no identifiable agentctl root process (argv[0] agentctl); the process tree is not trustworthy")
         env.update(fence_sha256=fence, tree=tree)
@@ -552,7 +554,7 @@ class Scenario:
             raise
         self.poll(watched(lambda: not self.alive(rows)), f"recorded processes of {label} are still present on the worker")
         out["processes_gone"] = True
-        expected = env.get("fence_sha256")
+        expected = env.get("fence_sha256") or (self.owned_fence_sha(env) if self.cleanup_mode else None)
         if expected:
             try:
                 out["fence"] = self.remove_fence(expected)
@@ -565,6 +567,13 @@ class Scenario:
         env["released"] = True
         self.save_envs()
         return out
+
+    def owned_fence_sha(self, env: dict[str, Any]) -> str | None:
+        """Hash of the current fence when its owner names this environment's job; a run that failed before recording it still releases it."""
+        owner = self.r.fence_owner()
+        if owner is None or env["job_id"] not in owner:
+            return None
+        return hashlib.sha256(owner.encode()).hexdigest()
 
     def assert_jobs_ended(self) -> dict[str, str]:
         statuses: dict[str, str] = {}

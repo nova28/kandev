@@ -94,5 +94,29 @@ class NodeContractTest(unittest.TestCase):
         self.assertTrue(pool.job_named_node({"TaskGroups": [{"Tasks": [{"Constraints": [pin]}]}]}))
 
 
+class PoolFencePathTest(unittest.TestCase):
+    STATE = {"allocation_root": "/fx/alloc/a", "node_id": "n1"}
+
+    def test_pool_fence_path_uses_node_state_root(self):
+        self.assertEqual(fixture._fence_path({**self.STATE, "pool_state_root": "/fx/worker"}), "/fx/worker/worker-state/n1/active-environment")
+
+    def test_legacy_fence_path_is_unchanged(self):
+        self.assertEqual(fixture._fence_path(self.STATE), "/fx/worker-state/n1/active-environment")
+
+
+class OwnedFenceTest(unittest.TestCase):
+    def sha(self, owner):
+        import nomad_native_e2e_wo06 as wo06
+        scn = wo06.Scenario.__new__(wo06.Scenario)
+        scn.r = type("R", (), {"fence_owner": lambda self: owner})()
+        return scn.owned_fence_sha({"job_id": "kandev-job-1"})
+
+    def test_only_a_fence_naming_the_job_is_released(self):
+        import hashlib
+        self.assertEqual(self.sha("env kandev-job-1\n"), hashlib.sha256(b"env kandev-job-1\n").hexdigest())
+        self.assertIsNone(self.sha("env kandev-job-2\n"))
+        self.assertIsNone(self.sha(None))
+
+
 if __name__ == "__main__":
     unittest.main()
