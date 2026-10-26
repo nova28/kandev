@@ -545,6 +545,8 @@ class Runner:
             raise PreflightError("refusing to use the live Kandev port")
         if self.ops.port_open(port):
             raise PreflightError("fixture API port is already in use")
+        if "baseline_jobs" not in self.state:
+            self.save_state(baseline_jobs=sorted(item["ID"] for item in self.nomad("/v1/jobs?prefix=kandev-") if isinstance(item, dict) and "ID" in item))
         record = self.registry.start(PROCESS_LABEL, _fixture_argv(self.state["kandev_binary"]), cwd=self.home, env=self.launch_env(barrier))
         self.poll(API_READY_TIMEOUT, 0.25, self._api_ready, "fixture backend did not serve its API before timeout")
         if self.ops.listener_pids(port) != [record["pid"]]:

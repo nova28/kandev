@@ -199,6 +199,9 @@ def _self_and_ancestors(rows: list[dict[str, Any]]) -> set[int]:
     return out
 
 
+_SAFE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
+
+
 def _needles(env: dict[str, Any]) -> list[str]:
     return [value for value in (env.get("allocation_id"), env.get("job_id"), env.get("environment_id")) if value]
 
@@ -361,6 +364,10 @@ class Scenario:
 
     def focus(self, env: dict[str, Any]) -> None:
         """Point worker commands and fence paths at the node a two-node pool environment was placed on."""
+        if not env.get("attach") and env.get("node_id") and getattr(self.r, "nomad", None) and self.r.state.get("pool_state_root"):
+            meta = self.soft(lambda: self.r.nomad(f"/v1/node/{env['node_id']}").get("Meta")) or {}
+            if meta.get("kandev.attach") and meta.get("kandev.state_root"):
+                env = {**env, "attach": meta["kandev.attach"], "state_root": meta["kandev.state_root"]}
         if env.get("attach") and env.get("state_root"):
             self.r.use_node(env["attach"], env["state_root"])
             if env.get("environment_id"):
@@ -376,7 +383,13 @@ class Scenario:
         needles = _needles(env)
         protected = _self_and_ancestors(self.ps_rows())
         rows = [row for row in self.ps_rows() if row["pid"] not in protected]
-        members = {row["pid"]: row for row in rows if any(needle in row["command"] for needle in needles)}
+        if getattr(self.r, "active_attach", "ssh") == "local":
+            # The Kandev backend shares this host and runs short-lived git commands whose paths name the environment;
+            # only a process started from the allocation's own directory roots the environment's tree.
+            roots = [value for value in (env.get("allocation_id"), env.get("job_id")) if value]
+            members = {row["pid"]: row for row in rows if row["command"].split(None, 1)[:1] and any(r in row["command"].split(None, 1)[0] for r in roots)}
+        else:
+            members = {row["pid"]: row for row in rows if any(needle in row["command"] for needle in needles)}
         matched = set(members)
         grew = True
         while grew:
@@ -573,11 +586,45 @@ class Scenario:
                 if strict:
                     raise
                 out["fence"] = f"left in place: {exc}"
+        if self.cleanup_mode and env.get("environment_id") and self.pool_node_root(env):
+            out["pool_leftovers"] = self.remove_pool_leftovers(env, strict)
         if watch:
             watch()
         env["released"] = True
         self.save_envs()
         return out
+
+    def pool_node_root(self, env: dict[str, Any]) -> str | None:
+        """The state root of the node the environment ran on: recorded, else from the node's metadata, else the pinned pool root."""
+        if env.get("state_root"):
+            return env["state_root"]
+        if env.get("node_id") and self.r.state.get("pool_state_root"):
+            meta = self.soft(lambda: self.r.nomad(f"/v1/node/{env['node_id']}").get("Meta")) or {}
+            return meta.get("kandev.state_root") or self.r.state["pool_state_root"]
+        return self.r.state.get("pool_state_root")
+
+    def remove_pool_leftovers(self, env: dict[str, Any], strict: bool) -> dict[str, Any]:
+        """Operator teardown of a placed environment's node files once its job is dead: the git worktree and its
+        per-environment branch, the workspace, the fence directory and the allocation directory."""
+        root, env_id, job_id = self.pool_node_root(env), env["environment_id"], env["job_id"]
+        if not root.startswith("/") or not _SAFE_ID.fullmatch(env_id) or not _SAFE_ID.fullmatch(job_id) or ".." in root:
+            raise PreflightError("recorded pool paths are not safe to remove")
+        ws, fence, alloc = (f"{root}/workspaces/environments/{env_id}", f"{root}/environments/{env_id}", f"{root}/pool/allocations/{job_id}")
+        q = shlex.quote
+        branch = f"kandev/pool/{env_id}"
+        script = (f'for d in {q(ws)}/*/*/; do [ -f "${{d}}.git" ] || continue; '
+                  f'common=$(git -C "$d" rev-parse --path-format=absolute --git-common-dir) || continue; '
+                  f'git -C "$d" worktree remove --force "$d"; '
+                  f'git --git-dir="$common" branch -D {q(branch)}; git --git-dir="$common" worktree prune; done; '
+                  f'rm -rf {q(ws)} {q(fence)} {q(alloc)}')
+        self.r.ssh(script)
+        remaining = [path for path in (ws, fence, alloc) if self.r.ssh(f"[ -e {q(path)} ] || [ -L {q(path)} ]")[0] == 0]
+        report = {"removed": not remaining, "branch": branch}
+        if remaining:
+            report["remaining"] = remaining
+            if strict:
+                raise PreflightError(f"pool leftovers of {env['label']} could not be removed: {', '.join(remaining)}")
+        return report
 
     def owned_fence_sha(self, env: dict[str, Any]) -> str | None:
         """Hash of the current fence when its owner names this environment's job; a run that failed before recording it still releases it."""
@@ -626,6 +673,37 @@ class Scenario:
         return report
 
 
+def stop_stray_jobs(scn: "Scenario") -> list[dict[str, Any]]:
+    """Stops every Kandev job created since the fixture started that no recorded environment owns and that is not dead.
+
+    A launch that failed before its runtime identity was recorded leaves a running job the runner never saw. The job
+    is stopped with purge off, its allocations are awaited, and a remaining worker process is a failure.
+    """
+    runner = scn.r
+    baseline = set(runner.state.get("baseline_jobs") or [])
+    known = {env["job_id"] for env in scn.envs.values() if env.get("job_id")}
+    stopped: list[dict[str, Any]] = []
+    for job_id in sorted(scn.kandev_jobs() - baseline - known):
+        status = scn.job_status(job_id)
+        if status in (None, "dead"):
+            continue
+        allocs = scn.job_allocs(job_id)
+        scn.ops.nomad_stop(scn.nomad_cfg["address"], runner.token, scn.nomad_cfg["namespace"], job_id)
+        scn.poll(lambda j=job_id: all(item.get("ClientStatus") in fx.TERMINAL_ALLOCATION_STATES for item in scn.job_allocs(j)),
+                 f"allocations of stray job {job_id} did not become terminal after it was stopped")
+        remaining: list[dict[str, Any]] = []
+        for alloc in allocs:
+            meta = scn.r.nomad(f"/v1/node/{alloc['NodeID']}").get("Meta") or {}
+            probe = {"label": f"stray-{job_id}", "job_id": job_id, "allocation_id": alloc["ID"]}
+            if meta.get("kandev.attach") and meta.get("kandev.state_root"):
+                probe.update(attach=meta["kandev.attach"], state_root=meta["kandev.state_root"])
+            remaining += scn.tree(probe)
+        if remaining:
+            raise PreflightError(f"stray job {job_id} still has worker processes after it was stopped")
+        stopped.append({"job_id": job_id, "previous_status": status, "allocations": len(allocs), "purged": False})
+    return stopped
+
+
 def cleanup_fixture(runner: fx.Runner) -> dict[str, Any]:
     """Idempotent operator teardown of every recorded environment of an admission or disconnect fixture."""
     scn = Scenario(runner, None, runner.state["scenario"])
@@ -637,6 +715,7 @@ def cleanup_fixture(runner: fx.Runner) -> dict[str, Any]:
     for label in sorted(scn.envs, reverse=True):
         if scn.envs[label].get("job_id"):
             report["released"].append(scn.release(label, kill_first=True, strict=False))
+    report["stray_jobs"] = stop_stray_jobs(scn)
     if runner.state.get("relay"):
         report["relay"] = "gone: the relay lived in the runner process that has exited"
     return scn.finish(report)

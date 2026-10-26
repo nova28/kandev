@@ -35,6 +35,9 @@ client {
   }
   reserved { cpu = 1000  memory = 2048 }
 }
+# Apple Silicon: Nomad fingerprints ~48 MHz, below the reservation. Pin the total
+# (top level of the client config) and keep reserved well under it:
+# cpu_total_compute = 4000
 plugin "raw_exec" { config { enabled = true } }
 ```
 

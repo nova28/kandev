@@ -107,7 +107,7 @@ func completeNomadQuarantine(ctx context.Context, req *ExecutorCreateRequest, pr
 	if err != nil {
 		return fmt.Errorf("nomad quarantine pending: read node: %w", err)
 	}
-	if err := nomad.CheckDedicatedNode(profile, node); err != nil {
+	if err := checkQuarantineTarget(profile, node); err != nil {
 		return fmt.Errorf("nomad quarantine pending: refusing to mutate a non-dedicated node: %w", err)
 	}
 	if node.SchedulingEligibility != nomadNodeIneligible {
@@ -126,6 +126,18 @@ func completeNomadQuarantine(ctx context.Context, req *ExecutorCreateRequest, pr
 	state.Revision++
 	if err := checkpointNomadState(ctx, req, state); err != nil {
 		return fmt.Errorf("persist Nomad quarantine marked state: %w", err)
+	}
+	return nil
+}
+
+// checkQuarantineTarget proves the node about to be made ineligible is the one
+// the profile names: the dedicated worker, or a member of the profile's pool.
+func checkQuarantineTarget(profile nomad.ProfileConfig, node *nomad.NodeRecord) error {
+	if profile.Mode != nomad.ModePool {
+		return nomad.CheckDedicatedNode(profile, node)
+	}
+	if node == nil || profile.NodeID == "" || node.ID != profile.NodeID || node.NodePool != profile.NodePool {
+		return errors.New("nomad node is not the pool node named by the profile")
 	}
 	return nil
 }

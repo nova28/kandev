@@ -264,6 +264,8 @@ class World:
                 return list(self.allocations)
             if path == f"/v1/allocation/{ALLOC}":
                 return {"ID": ALLOC, "NodeID": self.alloc_node, "ClientStatus": self.alloc_status, "TaskStates": {"agentctl": {"State": self.task_state}}}
+            if path == "/v1/jobs?prefix=kandev-":
+                return []
             raise AssertionError(f"unexpected Nomad read {path}")
         return call
 

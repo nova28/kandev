@@ -194,10 +194,37 @@ func (c *nomadCleanup) retained(reason string) error {
 // fail quarantines the worker before reporting a retained cleanup. The
 // pending interlock is persisted first; a control failure leaves it pending.
 func (c *nomadCleanup) fail(ctx context.Context, reason string) error {
+	c.bindUnplacedQuarantineNode(ctx)
 	if err := c.exec.quarantineWorker(ctx, c.req, c.profile, c.client, &c.state, reason); err != nil {
 		return c.retained(reason + "; quarantine_incomplete")
 	}
 	return c.retained(reason)
+}
+
+// bindUnplacedQuarantineNode names the node a pool job runs on when the launch
+// failed before the state recorded one, so the quarantine still lands on the
+// node whose slot the job holds. Allocations on more than one node, or none,
+// leave the node unnamed and the quarantine reports itself incomplete.
+func (c *nomadCleanup) bindUnplacedQuarantineNode(ctx context.Context) {
+	if c.profile.Mode != nomad.ModePool || c.profile.NodeID != "" || c.state.JobID == "" {
+		return
+	}
+	allocs, err := c.client.ListAllocations(ctx, c.state.Namespace, c.state.JobID)
+	if err != nil {
+		return
+	}
+	c.profile.NodeID = soleAllocationNode(allocs)
+}
+
+func soleAllocationNode(allocs []nomad.AllocationRecord) string {
+	node := ""
+	for _, alloc := range allocs {
+		if alloc.NodeID == "" || (node != "" && alloc.NodeID != node) {
+			return ""
+		}
+		node = alloc.NodeID
+	}
+	return node
 }
 
 func (c *nomadCleanup) markCleanupPending(ctx context.Context) error {

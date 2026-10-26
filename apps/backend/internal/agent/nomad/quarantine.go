@@ -29,6 +29,17 @@ type NodeRecord struct {
 	Meta                  map[string]string     `json:"Meta"`
 	NodePool              string                `json:"NodePool"`
 	ReservedResources     NodeReservedResources `json:"ReservedResources"`
+	NodeResources         NodeTotalResources    `json:"NodeResources"`
+}
+
+// NodeTotalResources is the CPU and memory a node's client fingerprinted.
+type NodeTotalResources struct {
+	CPU struct {
+		CPUShares int `json:"CpuShares"`
+	} `json:"Cpu"`
+	Memory struct {
+		MemoryMB int `json:"MemoryMB"`
+	} `json:"Memory"`
 }
 
 // NodeReservedResources is the client-reserved CPU and memory of a node.

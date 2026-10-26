@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"strings"
 )
 
 // nodePoolRecord is the part of a Nomad node pool preflight reads.
@@ -55,5 +56,38 @@ func (c *Client) PreflightPool(ctx context.Context, profile ProfileConfig) error
 			return fmt.Errorf("pool preflight: placement %q needs a binpack scheduler for node pool %q; set the node pool or cluster scheduler algorithm to binpack, or use placement spread", PlacementBinpack, profile.NodePool)
 		}
 	}
-	return nil
+	return c.preflightPoolCapacity(ctx, profile)
+}
+
+// preflightPoolCapacity refuses a profile no eligible pool node can ever hold.
+// A node whose reserved resources reach or exceed its fingerprinted total has
+// no schedulable capacity, which is how a wrong CPU fingerprint (Apple Silicon
+// reports a few dozen MHz) shows up.
+func (c *Client) preflightPoolCapacity(ctx context.Context, profile ProfileConfig) error {
+	var nodes []NodeRecord
+	path := "/v1/nodes?resources=true&node_pool=" + url.QueryEscape(profile.NodePool)
+	if err := c.getJSON(ctx, path, &nodes); err != nil {
+		return fmt.Errorf("pool preflight: nodes of pool %q are not readable: %w", profile.NodePool, err)
+	}
+	var unfit []string
+	eligible := 0
+	for i := range nodes {
+		n := &nodes[i]
+		if n.NodePool != profile.NodePool || n.Status != "ready" || n.SchedulingEligibility != "eligible" {
+			continue
+		}
+		eligible++
+		freeCPU := n.NodeResources.CPU.CPUShares - n.ReservedResources.CPU.CPUShares
+		freeMem := n.NodeResources.Memory.MemoryMB - n.ReservedResources.Memory.MemoryMB
+		if freeCPU >= profile.CPUMHz && freeMem >= profile.MemoryMB {
+			return nil
+		}
+		unfit = append(unfit, fmt.Sprintf("%s (cpu %d total, %d reserved; memory %d total, %d reserved MB)", n.ID,
+			n.NodeResources.CPU.CPUShares, n.ReservedResources.CPU.CPUShares, n.NodeResources.Memory.MemoryMB, n.ReservedResources.Memory.MemoryMB))
+	}
+	if eligible == 0 {
+		return fmt.Errorf("pool preflight: node pool %q has no ready, eligible node; start a worker client or check for a quarantined node", profile.NodePool)
+	}
+	return fmt.Errorf("pool preflight: no eligible node in pool %q has %d MHz CPU and %d MB memory free: %s; where the client fingerprints too little CPU (Apple Silicon reports a few dozen MHz) set cpu_total_compute in the Nomad client configuration and size reserved relative to it, otherwise lower the profile's cpu_mhz or the node's reserved resources",
+		profile.NodePool, profile.CPUMHz, profile.MemoryMB, strings.Join(unfit, "; "))
 }

@@ -1,4 +1,6 @@
+import os
 import unittest
+import os
 import unittest.mock
 
 import nomad_native_e2e_fixture as fixture
@@ -201,6 +203,39 @@ class FocusTest(unittest.TestCase):
         self.assertIn("pool-two-node", pool.DRIVERS)
 
 
+class StrayJobTest(unittest.TestCase):
+    def scenario(self, jobs, baseline=(), known=(), remaining=()):
+        import nomad_native_e2e_wo06 as wo06
+        stops = []
+        scn = wo06.Scenario.__new__(wo06.Scenario)
+        scn.nomad_cfg = {"address": "http://127.0.0.1:4646", "namespace": "default"}
+        scn.envs = {"A": {"job_id": j} for j in known}
+        status = {j: s for j, s in jobs.items()}
+        scn.kandev_jobs = lambda: set(jobs)
+        scn.job_status = lambda j: status.get(j)
+        scn.job_allocs = lambda j: [{"ID": "al-" + j, "NodeID": "n1", "ClientStatus": "complete" if j in [s[2] for s in stops] else "running"}]
+        scn.poll = lambda probe, failure, timeout=None: probe() or (_ for _ in ()).throw(PreflightError(failure))
+        scn.tree = lambda probe: list(remaining)
+        scn.ops = type("O", (), {"nomad_stop": lambda self, a, t, n, j: stops.append((a, n, j))})()
+        scn.r = type("R", (), {"token": "t", "state": {"baseline_jobs": list(baseline)},
+                               "nomad": lambda self, path: {"Meta": {"kandev.attach": "ssh", "kandev.state_root": "/n"}}})()
+        return scn, stops
+
+    def test_stops_running_unrecorded_job_with_purge_off_and_skips_known_dead_and_baseline(self):
+        import nomad_native_e2e_wo06 as wo06
+        scn, stops = self.scenario({"kandev-old": "running", "kandev-known": "running", "kandev-dead": "dead", "kandev-stray": "running"},
+                                   baseline=["kandev-old"], known=["kandev-known"])
+        stopped = wo06.stop_stray_jobs(scn)
+        self.assertEqual([s[2] for s in stops], ["kandev-stray"])
+        self.assertEqual(stopped, [{"job_id": "kandev-stray", "previous_status": "running", "allocations": 1, "purged": False}])
+
+    def test_remaining_worker_process_fails_cleanup(self):
+        import nomad_native_e2e_wo06 as wo06
+        scn, _ = self.scenario({"kandev-stray": "running"}, remaining=[{"pid": 1}])
+        with self.assertRaises(PreflightError):
+            wo06.stop_stray_jobs(scn)
+
+
 class ActiveNodeRoutingTest(unittest.TestCase):
     def test_commands_follow_the_node_in_use(self):
         runner = fixture.Runner.__new__(fixture.Runner)
@@ -247,3 +282,56 @@ class PoolSettledTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LocalNodeTreeAndLeftoversTest(unittest.TestCase):
+    def scenario(self, rows, attach="local"):
+        import nomad_native_e2e_wo06 as wo06
+        scn = wo06.Scenario.__new__(wo06.Scenario)
+        scn.r = type("R", (), {"state": {}, "active_attach": attach, "use_node": lambda self, a, r: None})()
+        scn.ps_rows = lambda: rows
+        return scn
+
+    def row(self, pid, ppid, command):
+        return {"pid": pid, "ppid": ppid, "pgid": pid, "started": "Mon Oct 26 15:17:24 2026", "command": command}
+
+    def test_local_tree_roots_at_the_allocation_binary_and_ignores_backend_git_commands(self):
+        env = {"job_id": "kandev-job1", "allocation_id": "al1", "environment_id": "env1"}
+        rows = [self.row(10, 1, "/s/pool/allocations/kandev-job1/agentctl-" + "a" * 64), self.row(11, 10, "/bin/zsh -l"),
+                self.row(20, 1, "git -C /s/workspaces/environments/env1/g1/repo-main status"),
+                self.row(21, 1, "/usr/bin/nomad executor {\"alloc\":\"al1\"}")]
+        tree = self.scenario(rows).tree(env)
+        self.assertEqual([item["pid"] for item in tree], [10, 11])
+        self.assertEqual(tree[0]["role"], "agentctl")
+
+    def test_ssh_tree_still_matches_the_environment_id(self):
+        rows = [self.row(20, 1, "git -C /s/workspaces/environments/env1/g1 status")]
+        tree = self.scenario(rows, "ssh").tree({"job_id": "kandev-job1", "environment_id": "env1"})
+        self.assertEqual([item["pid"] for item in tree], [20])
+
+    def test_pool_leftovers_remove_worktree_branch_and_directories(self):
+        import subprocess, tempfile, nomad_native_e2e_wo06 as wo06
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = os.path.realpath(tmp)
+            src, root = f"{tmp}/src", f"{tmp}/state"
+            def sh(cmd):
+                return subprocess.run(["/bin/sh", "-c", cmd], capture_output=True, text=True, check=False)
+            ws = f"{root}/workspaces/environments/env1/g1"
+            for cmd in (f"git init -q -b main {src} && git -C {src} -c user.email=a@b -c user.name=a commit -q --allow-empty -m i",
+                        f"mkdir -p {ws} {root}/environments/env1 {root}/pool/allocations/kandev-job1",
+                        f"git -C {src} worktree add -q -b kandev/pool/env1 {ws}/repo-main main"):
+                self.assertEqual(sh(cmd).returncode, 0, cmd)
+            scn = wo06.Scenario.__new__(wo06.Scenario)
+            scn.r = type("R", (), {"state": {}, "ssh": lambda self, c: (lambda p: (p.returncode, p.stdout))(sh(c))})()
+            report = scn.remove_pool_leftovers({"label": "A", "state_root": root, "environment_id": "env1", "job_id": "kandev-job1"}, True)
+            self.assertTrue(report["removed"])
+            self.assertNotEqual(sh(f"git -C {src} show-ref --verify --quiet refs/heads/kandev/pool/env1").returncode, 0)
+            self.assertNotIn("env1", sh(f"git -C {src} worktree list --porcelain").stdout)
+            self.assertFalse(os.path.exists(f"{root}/environments/env1") or os.path.exists(ws))
+
+    def test_pool_leftovers_refuse_unsafe_paths(self):
+        import nomad_native_e2e_wo06 as wo06
+        scn = wo06.Scenario.__new__(wo06.Scenario)
+        scn.r = type("R", (), {"state": {}})()
+        with self.assertRaises(PreflightError):
+            scn.remove_pool_leftovers({"label": "A", "state_root": "/s", "environment_id": "../x", "job_id": "j"}, True)

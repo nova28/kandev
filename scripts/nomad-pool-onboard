@@ -50,7 +50,19 @@ local)
   fi
   chmod 600 "$token_file"
   digest=$(tr -d ' \n\r\t' <"$token_file" | shasum -a 256 | cut -d' ' -f1)
+  # Nomad fingerprints CPU itself; on Apple Silicon it reports only a few dozen
+  # MHz, which leaves nothing after the reservation below. Set NOMAD_CPU_TOTAL_MHZ
+  # to pin cpu_total_compute and size the reservation relative to it (a quarter).
+  cpu_total=${NOMAD_CPU_TOTAL_MHZ:-}
+  reserved_cpu=1000
+  total_line="# cpu_total_compute is not set; check \`nomad node status -self -verbose\` reports enough CPU"
+  if [ -n "$cpu_total" ]; then
+    case $cpu_total in *[!0-9]*|'') echo "NOMAD_CPU_TOTAL_MHZ must be a number of MHz" >&2; exit 2 ;; esac
+    reserved_cpu=$((cpu_total / 4))
+    total_line="cpu_total_compute = $cpu_total"
+  fi
   cat <<BLOCK
+$total_line
 client {
   meta {
     "kandev.attach"                = "local"
@@ -59,7 +71,7 @@ client {
   }
   # Reserve headroom for Kandev itself; a local node without it is refused.
   reserved {
-    cpu    = 1000
+    cpu    = $reserved_cpu
     memory = 2048
   }
 }

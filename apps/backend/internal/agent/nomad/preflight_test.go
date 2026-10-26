@@ -4,11 +4,18 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 )
 
+const healthyPreflightNodes = `[{"ID":"n1","NodePool":"kandev","Status":"ready","SchedulingEligibility":"eligible","NodeResources":{"Cpu":{"CpuShares":4000},"Memory":{"MemoryMB":8192}},"ReservedResources":{"Cpu":{"CpuShares":1000},"Memory":{"MemoryMB":2048}}}]`
+
 func preflightServer(t *testing.T, pool, scheduler string, poolStatus int) *Client {
+	return preflightServerNodes(t, pool, scheduler, poolStatus, "")
+}
+
+func preflightServerNodes(t *testing.T, pool, scheduler string, poolStatus int, preflightNodes string) *Client {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -18,6 +25,12 @@ func preflightServer(t *testing.T, pool, scheduler string, poolStatus int) *Clie
 				return
 			}
 			_, _ = w.Write([]byte(pool))
+		case r.URL.Path == "/v1/nodes":
+			nodes := preflightNodes
+			if nodes == "" {
+				nodes = healthyPreflightNodes
+			}
+			_, _ = w.Write([]byte(nodes))
 		case r.URL.Path == "/v1/operator/scheduler/configuration":
 			_, _ = w.Write([]byte(scheduler))
 		default:
@@ -81,3 +94,41 @@ func TestPreflightPoolRejectsLegacyProfile(t *testing.T) {
 		t.Fatal("legacy profile must be rejected")
 	}
 }
+
+func TestPreflightPoolCapacityRefusals(t *testing.T) {
+	enabled := `{"SchedulerConfig":{"SchedulerAlgorithm":"spread","MemoryOversubscriptionEnabled":true}}`
+	node := func(status, elig string, cpu, reservedCPU int) string {
+		return `[{"ID":"n1","NodePool":"kandev","Status":"` + status + `","SchedulingEligibility":"` + elig + `","NodeResources":{"Cpu":{"CpuShares":` + itoa(cpu) + `},"Memory":{"MemoryMB":8192}},"ReservedResources":{"Cpu":{"CpuShares":` + itoa(reservedCPU) + `},"Memory":{"MemoryMB":2048}}}]`
+	}
+	cases := []struct{ name, nodes, want string }{
+		{"reserved exceeds fingerprinted total", node("ready", "eligible", 48, 1000), "cpu_total_compute"},
+		{"free below request", node("ready", "eligible", 1050, 1000), "no eligible node"},
+		{"only ineligible node", node("ready", "ineligible", 4000, 1000), "no ready, eligible node"},
+		{"only down node", node("down", "eligible", 4000, 1000), "no ready, eligible node"},
+		{"no nodes", `[]`, "no ready, eligible node"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := preflightServerNodes(t, `{"Name":"kandev"}`, enabled, 0, tc.nodes)
+			p := poolPreflightProfile(PlacementSpread, 2048)
+			p.CPUMHz = 100
+			err := c.PreflightPool(context.Background(), p)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestPreflightPoolCapacityAcceptsOneFitNodeAmongMisfits(t *testing.T) {
+	enabled := `{"SchedulerConfig":{"SchedulerAlgorithm":"spread","MemoryOversubscriptionEnabled":true}}`
+	nodes := `[{"ID":"small","NodePool":"kandev","Status":"ready","SchedulingEligibility":"eligible","NodeResources":{"Cpu":{"CpuShares":48},"Memory":{"MemoryMB":8192}},"ReservedResources":{"Cpu":{"CpuShares":1000},"Memory":{"MemoryMB":2048}}},
+	{"ID":"big","NodePool":"kandev","Status":"ready","SchedulingEligibility":"eligible","NodeResources":{"Cpu":{"CpuShares":4000},"Memory":{"MemoryMB":8192}},"ReservedResources":{"Cpu":{"CpuShares":1000},"Memory":{"MemoryMB":2048}}}]`
+	p := poolPreflightProfile(PlacementSpread, 2048)
+	p.CPUMHz = 100
+	if err := preflightServerNodes(t, `{"Name":"kandev"}`, enabled, 0, nodes).PreflightPool(context.Background(), p); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func itoa(n int) string { return strconv.Itoa(n) }
