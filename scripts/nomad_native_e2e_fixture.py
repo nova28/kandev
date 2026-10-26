@@ -291,18 +291,27 @@ def _default_kill_exact(ssh: Callable[[str], tuple[int, str]], identity: dict[st
     pid = identity.get("pid")
     if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 1:
         raise PreflightError("refusing to signal a process without a recorded pid")
-    code, out = ssh(f"ps -p {pid} -ww -o pid=,ppid=,pgid=,lstart=,command=")
-    rows = [match for match in (_PS_ROW.match(line) for line in out.splitlines()) if match and int(match.group(1)) == pid]
-    if not rows:
+
+    def present() -> bool:
+        """True while the pid still carries the recorded identity; False once it is gone; a different identity raises."""
+        _, out = ssh(f"ps -p {pid} -ww -o pid=,ppid=,pgid=,lstart=,command=")
+        rows = [match for match in (_PS_ROW.match(line) for line in out.splitlines()) if match and int(match.group(1)) == pid]
+        if not rows:
+            return False
+        command = rows[0].group(5)
+        started = " ".join(rows[0].group(4).split())
+        matches = any(needle and needle in command for needle in needles) or (identity.get("cmd_sha256") and hashlib.sha256(command.encode()).hexdigest() == identity["cmd_sha256"])
+        if started != identity.get("started") or not matches:
+            raise PreflightError(f"process {pid} no longer matches its recorded identity; refusing to signal it")
+        return True
+
+    if not present():
         return "already_gone"
-    row = rows[0]
-    command = row.group(5)
-    started = " ".join(row.group(4).split())
-    matches = any(needle and needle in command for needle in needles) or (identity.get("cmd_sha256") and hashlib.sha256(command.encode()).hexdigest() == identity["cmd_sha256"])
-    if started != identity.get("started") or not matches:
-        raise PreflightError(f"process {pid} no longer matches its recorded identity; refusing to signal it")
     code, _ = ssh(f"kill -KILL {pid}")
     if code != 0:
+        # The process can exit between the identity check and the signal, for example when its parent was killed first.
+        if not present():
+            return "already_gone"
         raise PreflightError(f"signalling process {pid} failed")
     return "killed"
 

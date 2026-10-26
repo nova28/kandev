@@ -976,6 +976,33 @@ class OpsDefaultsTest(unittest.TestCase):
             with self.assertRaises(PreflightError):
                 fixture._default_kill_exact(ssh, {"pid": pid, "started": STARTED_A}, [ALLOC])
 
+    def failing_kill(self, rows_after):
+        """ps shows the recorded identity first; `kill` fails; the recheck then sees rows_after."""
+        row = f"  200  1  200 {STARTED_A} /alloc/{ALLOC}/agentctl\n"
+        seen = []
+
+        def call(command):
+            if command.startswith("ps -p"):
+                seen.append(command)
+                return 0, row if len(seen) == 1 else rows_after
+            return 1, ""
+
+        return call
+
+    def test_kill_exact_that_loses_the_race_to_a_process_exit_is_already_gone(self):
+        ssh = self.failing_kill("")
+        self.assertEqual(fixture._default_kill_exact(ssh, {"pid": 200, "started": STARTED_A}, [ALLOC]), "already_gone")
+
+    def test_kill_exact_failing_on_a_still_present_process_raises(self):
+        ssh = self.failing_kill(f"  200  1  200 {STARTED_A} /alloc/{ALLOC}/agentctl\n")
+        with self.assertRaisesRegex(PreflightError, "signalling process 200 failed"):
+            fixture._default_kill_exact(ssh, {"pid": 200, "started": STARTED_A}, [ALLOC])
+
+    def test_kill_exact_failing_then_seeing_a_reused_pid_raises_a_mismatch(self):
+        ssh = self.failing_kill("  200  1  200 Mon Oct 26 10:00:00 2026 /usr/bin/other\n")
+        with self.assertRaisesRegex(PreflightError, "no longer matches"):
+            fixture._default_kill_exact(ssh, {"pid": 200, "started": STARTED_A}, [ALLOC])
+
 
 class TcpRelayTest(unittest.TestCase):
     def setUp(self):
