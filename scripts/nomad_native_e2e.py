@@ -39,6 +39,7 @@ REQUIRED_SCENARIOS = {
     "cleanup-negative",
     "pool-placement",
     "pool-two-node",
+    "pool-node-quarantine",
     "recovery",
     "pre-ready-recovery",
     "distribution",
@@ -1088,10 +1089,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "cleanup-fixture":
         return _fixture_module().cleanup_fixture_command(args.fixture_root)
     if args.command == "run" and args.create_fixture:
-        if args.scenario not in ("pre-ready-recovery", "admission", "disconnect", "cleanup-positive", "cleanup-negative", "pool-placement", "pool-two-node") or not args.require_real:
-            print("--create-fixture requires --require-real --scenario pre-ready-recovery|admission|disconnect|cleanup-positive|cleanup-negative|pool-placement|pool-two-node", file=sys.stderr)
+        if args.scenario not in ("pre-ready-recovery", "admission", "disconnect", "cleanup-positive", "cleanup-negative", "pool-placement", "pool-two-node", "pool-node-quarantine") or not args.require_real:
+            print("--create-fixture requires --require-real --scenario pre-ready-recovery|admission|disconnect|cleanup-positive|cleanup-negative|pool-placement|pool-two-node|pool-node-quarantine", file=sys.stderr)
             return 2
-        if args.scenario in ("pool-placement", "pool-two-node"):
+        if args.scenario in ("pool-placement", "pool-two-node", "pool-node-quarantine"):
             return _pool_module().create_fixture_command(args.config, args.scenario)
         if args.scenario in ("cleanup-positive", "cleanup-negative"):
             return _wo07_module().create_fixture_command(args.config, args.scenario)

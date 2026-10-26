@@ -184,6 +184,23 @@ class TwoNodeLayoutTest(unittest.TestCase):
             registered.assert_pool_cleaned(self.env("local"), layout)
 
 
+class FocusTest(unittest.TestCase):
+    def test_focus_points_commands_and_fence_at_the_environment_node(self):
+        import nomad_native_e2e_wo06 as wo06
+        calls = []
+        scn = wo06.Scenario.__new__(wo06.Scenario)
+        scn.r = type("R", (), {"state": {}, "use_node": lambda self, a, r: calls.append((a, r))})()
+        scn.focus({"attach": "local", "state_root": "/l", "environment_id": "e9"})
+        scn.focus({"label": "legacy"})
+        self.assertEqual(calls, [("local", "/l")])
+        self.assertEqual(scn.r.state["fence_environment_id"], "e9")
+
+    def test_quarantine_scenario_is_registered(self):
+        self.assertIn("pool-node-quarantine", pool.SCENARIOS)
+        self.assertIn("pool-node-quarantine", pool.DRIVERS)
+        self.assertIn("pool-two-node", pool.DRIVERS)
+
+
 class ActiveNodeRoutingTest(unittest.TestCase):
     def test_commands_follow_the_node_in_use(self):
         runner = fixture.Runner.__new__(fixture.Runner)

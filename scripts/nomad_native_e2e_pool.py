@@ -19,7 +19,7 @@ import nomad_native_e2e_wo06 as wo06
 import nomad_native_e2e_wo07 as wo07
 from nomad_native_e2e import PreflightError
 
-SCENARIOS = ("pool-placement", "pool-two-node")
+SCENARIOS = ("pool-placement", "pool-two-node", "pool-node-quarantine")
 CONTRACT_KEYS = ("kandev.attach", "kandev.state_root")
 NODE_ID_TARGET = "${node.unique.id}"
 
@@ -224,6 +224,70 @@ def drive_pool_two_node(runner: fx.Runner, cfg: dict[str, Any], ops: fx.Ops, roo
             "release": "none", "cleanup": cleanup, "environments": wo07._env_report(scn)}
 
 
+def drive_pool_node_quarantine(runner: fx.Runner, cfg: dict[str, Any], ops: fx.Ops, root: Path) -> dict[str, Any]:
+    """A drain failure on one node quarantines that node only: the next environment is placed on the other node."""
+    guard = wo07.OperatorGuard(ops)
+    scn = TwoNodeScenario(runner, cfg, "pool-node-quarantine", guard)
+    step = runner.step
+    try:
+        scn.data["node"] = step("verify-node-identity", scn.verify_node_identity)
+        step("poll-node-ready", lambda: scn.poll(scn.node_ready, "Nomad node is not ready and eligible"))
+        scn.data["nodes"] = step("verify-two-nodes", scn.verify_two_nodes)
+        step("start-git-daemon", runner.start_git_daemon)
+        step("start-backend", lambda: runner.start_backend(None))
+        step("create-fixture-objects", lambda: runner.setup_api_objects(cfg))
+        task_a = {"id": runner.state["task_id"], "session_id": runner.state["session_id"]}
+        snapshot = step("await-a-running", lambda: scn.await_placed("A", task_a))
+        env_a = scn.envs["A"]
+        node_x = env_a["node_id"]
+        scn.nomad_cfg = {**scn.nomad_cfg, "node_id": node_x}
+        step("start-managed-process-tree", lambda: scn.start_managed_tree(env_a, task_a, snapshot))
+        leader = next((item for item in snapshot["tree"] if item["depth"] == 0 and item["role"] == "agentctl"), None)
+        if leader is None:
+            raise PreflightError("environment A has no agentctl leader")
+        scn.known_jobs = scn.kandev_jobs()
+        window = scn.record_eligibility_original()
+
+        def stop_leader() -> None:
+            scn.focus(env_a)
+            scn.verify_agentctl(leader)
+            ops.signal_pid(runner.ssh, leader["pid"], "STOP")
+
+        step("induce-drain-failure-sigstop-leader", stop_leader)
+        step("archive-task-a", lambda: scn.archive(task_a))
+
+        def await_quarantine() -> dict[str, Any]:
+            scn.focus(env_a)
+            pending: list[str] = []
+            return scn.settle_note(pending, "environment A did not reach cleanup_pending with a quarantine marker before timeout")(
+                lambda: wo07._quarantine_assertions(scn, env_a, snapshot, pending))
+
+        scn.data["quarantined"] = step("assert-a-retained-and-quarantined", await_quarantine)
+
+        def b_placed_elsewhere() -> dict[str, Any]:
+            task_b = runner.create_task("Nomad pool fixture B (other node)")
+            scn.await_placed("B", task_b)
+            env_b = scn.envs["B"]
+            if env_b["node_id"] == node_x:
+                raise PreflightError("B was placed on the quarantined node")
+            marker_b = scn.get_or_none(wo06.quarantine_marker_path(env_b["node_id"], scn.nomad_cfg["namespace"]))
+            if marker_b is not None:
+                raise PreflightError("the other node carries a quarantine marker")
+            return {"node_a": node_x, "node_b": env_b["node_id"], "b_attach": env_b["attach"], "other_node_marker": False}
+
+        scn.data["continued_placement"] = step("assert-b-placed-on-the-other-node", b_placed_elsewhere)
+        scn.focus(env_a)
+        readmitted = wo07._readmit(runner, ops, step, scn, env_a, leader, snapshot, node_x, window)
+        released = [scn.release("B", kill_first=False)]
+        env_a["released"] = True
+        scn.save_envs()
+        cleanup = step("teardown", lambda: scn.finish({"released": released}))
+    finally:
+        guard.restore()
+    return {"scenario": scn.name, "pool": True, "per_node_quarantine": True, "production_cleanup": False, "release": "operator-teardown",
+            "readmission": readmitted, "cleanup": cleanup, "environments": wo07._env_report(scn)}
+
+
 def drive_pool_placement(runner: fx.Runner, cfg: dict[str, Any], ops: fx.Ops, root: Path) -> dict[str, Any]:
     guard = wo07.OperatorGuard(ops)
     scn = PoolScenario(runner, cfg, "pool-placement", guard)
@@ -244,7 +308,7 @@ def check_scenario_config(cfg: dict[str, Any], scenario: str) -> None:
         raise PreflightError("the pool scenarios mutate Nomad: nomad.address must be a loopback http address")
 
 
-DRIVERS = {"pool-placement": drive_pool_placement, "pool-two-node": drive_pool_two_node}
+DRIVERS = {"pool-placement": drive_pool_placement, "pool-two-node": drive_pool_two_node, "pool-node-quarantine": drive_pool_node_quarantine}
 
 
 def run_scenario(config: Any, scenario: str, ops: fx.Ops | None = None, **kwargs: Any) -> int:

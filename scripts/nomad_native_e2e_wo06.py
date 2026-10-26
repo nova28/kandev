@@ -359,7 +359,15 @@ class Scenario:
                              "started": " ".join(match.group(4).split()), "command": match.group(5)})
         return rows
 
+    def focus(self, env: dict[str, Any]) -> None:
+        """Point worker commands and fence paths at the node a two-node pool environment was placed on."""
+        if env.get("attach") and env.get("state_root"):
+            self.r.use_node(env["attach"], env["state_root"])
+            if env.get("environment_id"):
+                self.r.state["fence_environment_id"] = env["environment_id"]
+
     def tree(self, env: dict[str, Any]) -> list[dict[str, Any]]:
+        self.focus(env)
         """Fixture runtime processes naming the environment's allocation, job or environment id, plus all their descendants.
 
         Nomad's own executor, logmon and docklog processes are excluded. Only a root whose argv[0] is agentctl is labelled
@@ -521,6 +529,7 @@ class Scenario:
     # -- operator release ------------------------------------------------------------------------
     def release(self, label: str, kill_first: bool, strict: bool = True, watch: Callable[[], Any] | None = None) -> dict[str, Any]:
         env = self.envs[label]
+        self.focus(env)
         job_id = env["job_id"]
         out: dict[str, Any] = {"label": label, "job_id": job_id, "production_cleanup": False, "release": "operator-teardown"}
         merged = {(item["pid"], item["started"]): item for item in (env.get("tree") or [])}
