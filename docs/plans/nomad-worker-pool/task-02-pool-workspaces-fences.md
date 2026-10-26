@@ -1,7 +1,7 @@
 ---
 id: "02-pool-workspaces-fences"
 title: "Pool workspaces, fences and quarantine"
-status: pending
+status: done
 wave: 2
 depends_on:
   - "01-pool-placement-transport"
@@ -78,4 +78,4 @@ None.
 
 ## Results
 
-In progress. Offline and ssh-node live proof done (`docs/evidence/nomad-pool-p2/`, build a1c7afce42): per-environment fence, TMPDIR scratch, workspace removal on proven cleanup, per-node quarantine scope. Local-node git worktree (REQ-003.1) is implemented with offline tests (`workspace_local_worktree.go`, `WorkspaceRemoveCommand`); its live proof is in P3's two-node run.
+Complete (2026-10-26). Offline and ssh-node live proof done (`docs/evidence/nomad-pool-p2/`, build a1c7afce42): per-environment fence, TMPDIR scratch, workspace removal on proven cleanup, per-node quarantine scope. Local-node git worktree (REQ-003.1) is implemented with offline tests (`workspace_local_worktree.go`, `WorkspaceRemoveCommand`); its live proof is in P3's two-node run.
