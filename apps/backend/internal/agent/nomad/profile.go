@@ -13,12 +13,52 @@ import (
 	"github.com/kandev/kandev/internal/task/models"
 )
 
+const (
+	keyNamespace      = "namespace"
+	keySSHFingerprint = "ssh_host_fingerprint"
+	keyWorkspaceRoot  = "workspace_root"
+	keyRegion         = "region"
+	keyAddress        = "address"
+	keyCPUMHz         = "cpu_mhz"
+	keyMemoryMB       = "memory_mb"
+	keyDatacenter     = "datacenter"
+	keyPlatform       = "platform"
+	keyAllocationRoot = "allocation_root"
+	keyMemoryMaxMB    = "memory_max_mb"
+	// WorkerPlatform is the only supported worker platform.
+	WorkerPlatform = "darwin/arm64"
+)
+
 var profileKeys = map[string]struct{}{
-	"address": {}, "namespace": {}, "region": {}, "datacenter": {}, "node_id": {},
-	"platform": {}, "ssh_target": {}, "ssh_port": {}, "ssh_host_fingerprint": {},
-	"workspace_root": {}, "allocation_root": {}, "cpu_mhz": {}, "memory_mb": {},
+	keyAddress: {}, keyNamespace: {}, keyRegion: {}, keyDatacenter: {}, "node_id": {},
+	keyPlatform: {}, "ssh_target": {}, "ssh_port": {}, keySSHFingerprint: {},
+	keyWorkspaceRoot: {}, keyAllocationRoot: {}, keyCPUMHz: {}, keyMemoryMB: {},
 	"nomad_token": {}, "disconnect_lost_after": {},
+	"node_pool": {}, "placement": {}, "pin_node_id": {}, "exclude_local": {}, "prefer_local": {},
+	"ssh_user": {}, keyMemoryMaxMB: {},
 }
+
+// Profile modes. A profile naming node_id or ssh_target is a legacy pinned
+// worker; every other profile places onto a node pool.
+const (
+	ModeLegacyPinned = "legacy_pinned"
+	ModePool         = "pool"
+)
+
+// Pool placement algorithms and defaults.
+const (
+	PlacementSpread  = "spread"
+	PlacementBinpack = "binpack"
+
+	DefaultNodePool      = "kandev"
+	DefaultPoolCPUMHz    = 100
+	DefaultPoolMemoryMB  = 256
+	DefaultPoolMemoryMax = 2048
+)
+
+var poolOnlyKeys = []string{"node_pool", "placement", "pin_node_id", "exclude_local", "prefer_local", "ssh_user", keyMemoryMaxMB}
+
+var poolRejectedKeys = []string{"ssh_target", "ssh_port", keySSHFingerprint, keyWorkspaceRoot, keyAllocationRoot}
 
 // Bounds and default for how long Nomad waits for a disconnected client before
 // marking the single original allocation lost.
@@ -46,6 +86,15 @@ type ProfileConfig struct {
 	NomadTokenSecretID string
 	// DisconnectLostAfter is the bounded disconnect window of the native job.
 	DisconnectLostAfter time.Duration
+	// Mode is ModeLegacyPinned or ModePool.
+	Mode string
+	// Pool placement fields; empty for legacy profiles.
+	NodePool     string
+	Placement    string
+	PinNodeID    string
+	ExcludeLocal bool
+	PreferLocal  bool
+	MemoryMaxMB  int
 }
 
 var environmentPathIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$`)
@@ -70,6 +119,20 @@ func ParseProfileConfig(config map[string]string) (ProfileConfig, error) {
 			return ProfileConfig{}, fmt.Errorf("unsupported Nomad profile field %q", key)
 		}
 	}
+	_, hasNodeID := config["node_id"]
+	_, hasSSHTarget := config["ssh_target"]
+	if !hasNodeID && !hasSSHTarget {
+		return parsePoolProfile(config)
+	}
+	for _, key := range poolOnlyKeys {
+		if _, ok := config[key]; ok {
+			return ProfileConfig{}, fmt.Errorf("nomad profile field %q is only valid for pool profiles", key)
+		}
+	}
+	return parseLegacyProfile(config)
+}
+
+func parseLegacyProfile(config map[string]string) (ProfileConfig, error) {
 	get := func(key string) (string, error) {
 		value := strings.TrimSpace(config[key])
 		if value == "" {
@@ -79,23 +142,23 @@ func ParseProfileConfig(config map[string]string) (ProfileConfig, error) {
 	}
 	var profile ProfileConfig
 	var err error
-	if profile.Address, err = get("address"); err != nil {
+	if profile.Address, err = get(keyAddress); err != nil {
 		return profile, err
 	}
 	if err := validateAddress(profile.Address); err != nil {
 		return profile, err
 	}
 	for key, target := range map[string]*string{
-		"namespace": &profile.Namespace, "region": &profile.Region, "datacenter": &profile.Datacenter,
-		"node_id": &profile.NodeID, "platform": &profile.Platform,
-		"ssh_host_fingerprint": &profile.SSHHostFingerprint,
-		"workspace_root":       &profile.WorkspaceRoot, "allocation_root": &profile.AllocationRoot,
+		keyNamespace: &profile.Namespace, keyRegion: &profile.Region, keyDatacenter: &profile.Datacenter,
+		"node_id": &profile.NodeID, keyPlatform: &profile.Platform,
+		keySSHFingerprint: &profile.SSHHostFingerprint,
+		keyWorkspaceRoot:  &profile.WorkspaceRoot, keyAllocationRoot: &profile.AllocationRoot,
 	} {
 		if *target, err = get(key); err != nil {
 			return profile, err
 		}
 	}
-	if profile.Platform != "darwin/arm64" {
+	if profile.Platform != WorkerPlatform {
 		return profile, fmt.Errorf("unsupported Nomad worker platform %q", profile.Platform)
 	}
 	if err := parseProfileSSHAndSizing(&profile, config); err != nil {
@@ -112,6 +175,7 @@ func ParseProfileConfig(config map[string]string) (ProfileConfig, error) {
 		return profile, fmt.Errorf("nomad_token must be a Kandev secret reference")
 	}
 	profile.NomadTokenSecretID = tokenRef
+	profile.Mode = ModeLegacyPinned
 	return profile, nil
 }
 
@@ -123,10 +187,10 @@ func parseProfileSSHAndSizing(profile *ProfileConfig, config map[string]string) 
 	if profile.SSHPort, err = positiveInt(config["ssh_port"]); err != nil {
 		return fmt.Errorf("ssh_port: %w", err)
 	}
-	if profile.CPUMHz, err = positiveInt(config["cpu_mhz"]); err != nil {
+	if profile.CPUMHz, err = positiveInt(config[keyCPUMHz]); err != nil {
 		return fmt.Errorf("cpu_mhz: %w", err)
 	}
-	if profile.MemoryMB, err = positiveInt(config["memory_mb"]); err != nil {
+	if profile.MemoryMB, err = positiveInt(config[keyMemoryMB]); err != nil {
 		return fmt.Errorf("memory_mb: %w", err)
 	}
 	return nil
@@ -200,4 +264,121 @@ func cleanAbsolutePath(raw string) (string, error) {
 		return "", fmt.Errorf("must be a normalized absolute path")
 	}
 	return cleaned, nil
+}
+
+func parsePoolProfile(config map[string]string) (ProfileConfig, error) {
+	for _, key := range poolRejectedKeys {
+		if _, ok := config[key]; ok {
+			return ProfileConfig{}, fmt.Errorf("nomad pool profile field %q is not allowed: host, port and host key now come from node metadata", key)
+		}
+	}
+	profile := ProfileConfig{Mode: ModePool}
+	var err error
+	if err = parsePoolRequired(&profile, config); err != nil {
+		return profile, err
+	}
+	if err = parsePoolPlacement(&profile, config); err != nil {
+		return profile, err
+	}
+	if err = parsePoolSizing(&profile, config); err != nil {
+		return profile, err
+	}
+	if profile.DisconnectLostAfter, err = parseDisconnectLostAfter(config["disconnect_lost_after"]); err != nil {
+		return profile, err
+	}
+	tokenRef, ok := models.ExecutorProfileSecretID(config["nomad_token"])
+	if !ok || strings.TrimSpace(tokenRef) == "" {
+		return profile, fmt.Errorf("nomad_token must be a Kandev secret reference")
+	}
+	profile.NomadTokenSecretID = tokenRef
+	return profile, nil
+}
+
+func parsePoolRequired(profile *ProfileConfig, config map[string]string) error {
+	for key, target := range map[string]*string{
+		keyAddress: &profile.Address, keyNamespace: &profile.Namespace, keyRegion: &profile.Region,
+		keyDatacenter: &profile.Datacenter, keyPlatform: &profile.Platform,
+	} {
+		value := strings.TrimSpace(config[key])
+		if value == "" {
+			return fmt.Errorf("nomad profile field %q is required", key)
+		}
+		*target = value
+	}
+	if err := validateAddress(profile.Address); err != nil {
+		return err
+	}
+	if profile.Platform != WorkerPlatform {
+		return fmt.Errorf("unsupported Nomad worker platform %q", profile.Platform)
+	}
+	return nil
+}
+
+func parsePoolPlacement(profile *ProfileConfig, config map[string]string) error {
+	var err error
+	profile.NodePool = strings.TrimSpace(config["node_pool"])
+	if profile.NodePool == "" {
+		profile.NodePool = DefaultNodePool
+	}
+	if !safeNodeID.MatchString(profile.NodePool) {
+		return fmt.Errorf("node_pool must be a safe Nomad node pool name")
+	}
+	switch profile.Placement = strings.TrimSpace(config["placement"]); profile.Placement {
+	case "":
+		profile.Placement = PlacementSpread
+	case PlacementSpread, PlacementBinpack:
+	default:
+		return fmt.Errorf("placement must be %q or %q", PlacementSpread, PlacementBinpack)
+	}
+	if profile.PinNodeID = strings.TrimSpace(config["pin_node_id"]); profile.PinNodeID != "" && !safeNodeID.MatchString(profile.PinNodeID) {
+		return fmt.Errorf("pin_node_id must be a safe node ID")
+	}
+	if profile.ExcludeLocal, err = parseOptionalBool(config["exclude_local"]); err != nil {
+		return fmt.Errorf("exclude_local: %w", err)
+	}
+	if profile.PreferLocal, err = parseOptionalBool(config["prefer_local"]); err != nil {
+		return fmt.Errorf("prefer_local: %w", err)
+	}
+	if profile.ExcludeLocal && profile.PreferLocal {
+		return fmt.Errorf("exclude_local and prefer_local are mutually exclusive")
+	}
+	if profile.SSHUser = strings.TrimSpace(config["ssh_user"]); strings.IndexFunc(profile.SSHUser, func(r rune) bool {
+		return unicode.IsControl(r) || unicode.IsSpace(r) || r == '@'
+	}) >= 0 {
+		return fmt.Errorf("ssh_user contains invalid characters")
+	}
+	return nil
+}
+
+func parsePoolSizing(profile *ProfileConfig, config map[string]string) error {
+	var err error
+	for key, spec := range map[string]struct {
+		target *int
+		def    int
+	}{
+		keyCPUMHz: {&profile.CPUMHz, DefaultPoolCPUMHz}, keyMemoryMB: {&profile.MemoryMB, DefaultPoolMemoryMB},
+		keyMemoryMaxMB: {&profile.MemoryMaxMB, DefaultPoolMemoryMax},
+	} {
+		if strings.TrimSpace(config[key]) == "" {
+			*spec.target = spec.def
+			continue
+		}
+		if *spec.target, err = positiveInt(config[key]); err != nil {
+			return fmt.Errorf("%s: %w", key, err)
+		}
+	}
+	if profile.MemoryMaxMB < profile.MemoryMB {
+		return fmt.Errorf("memory_max_mb must be at least memory_mb")
+	}
+	return nil
+}
+
+func parseOptionalBool(raw string) (bool, error) {
+	switch strings.TrimSpace(raw) {
+	case "", "false":
+		return false, nil
+	case "true":
+		return true, nil
+	}
+	return false, fmt.Errorf("must be true or false")
 }

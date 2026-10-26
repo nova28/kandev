@@ -12,6 +12,11 @@ import (
 	"time"
 )
 
+const (
+	phaseAllocated = "allocated"
+	phaseReady     = "ready"
+)
+
 // PhaseOperatorReleased is the terminal phase of a retained environment whose
 // absence an operator attested by hand. It is never proof of absence.
 const PhaseOperatorReleased = "operator_released"
@@ -88,9 +93,25 @@ type EnvironmentState struct {
 	// DisconnectLostAfterSeconds is the immutable disconnect window of the job.
 	// Zero is a retained environment created before the window was configurable.
 	DisconnectLostAfterSeconds int64 `json:"disconnect_lost_after_seconds,omitempty"`
+	// PlacementMode is ModePool for pool-placed environments; empty is legacy.
+	PlacementMode string `json:"placement_mode,omitempty"`
+	// NodeContractSHA256 binds the placed node's kandev.* metadata at attach time.
+	NodeContractSHA256 string `json:"node_contract_sha256,omitempty"`
+	NodeAttach         string `json:"node_attach,omitempty"`
+	StateRoot          string `json:"state_root,omitempty"`
 }
 
 func (s EnvironmentState) Validate() error {
+	switch s.PlacementMode {
+	case "":
+		if s.NodeContractSHA256 != "" || s.NodeAttach != "" || s.StateRoot != "" {
+			return fmt.Errorf("nomad legacy environment state carries pool placement fields")
+		}
+	case ModePool:
+		return s.validatePool()
+	default:
+		return fmt.Errorf("nomad environment state has invalid placement mode")
+	}
 	if !s.hasOperationIdentity() {
 		return fmt.Errorf("nomad environment state has invalid immutable operation identity")
 	}
@@ -109,7 +130,7 @@ func (s EnvironmentState) hasOperationIdentity() bool {
 }
 
 func (s EnvironmentState) hasWorkerIdentity() bool {
-	return s.Namespace != "" && s.Region != "" && s.Datacenter != "" && s.NodeID != "" && s.Platform == "darwin/arm64"
+	return s.Namespace != "" && s.Region != "" && s.Datacenter != "" && s.NodeID != "" && s.Platform == WorkerPlatform
 }
 
 func (s EnvironmentState) hasSSHIdentity() bool {
@@ -154,8 +175,8 @@ func (s EnvironmentState) validateJobEvidence() error {
 		agentctlPath, agentctlErr := normalizedAbsolutePath(s.AgentctlPath)
 		bootstrapPath, bootstrapErr := normalizedAbsolutePath(s.BootstrapPath)
 		if agentctlErr != nil || bootstrapErr != nil ||
-			!strings.HasPrefix(agentctlPath, s.AllocationRoot+string(filepath.Separator)) ||
-			!strings.HasPrefix(bootstrapPath, s.AllocationRoot+string(filepath.Separator)) ||
+			(s.AllocationRoot != "" && (!strings.HasPrefix(agentctlPath, s.AllocationRoot+string(filepath.Separator)) ||
+				!strings.HasPrefix(bootstrapPath, s.AllocationRoot+string(filepath.Separator)))) ||
 			!strings.HasSuffix(bootstrapPath, ".sh") {
 			return fmt.Errorf("nomad environment state has invalid staged artifact paths")
 		}
@@ -165,7 +186,7 @@ func (s EnvironmentState) validateJobEvidence() error {
 
 func (s EnvironmentState) validatePhaseAndIndexes() error {
 	switch s.Phase {
-	case "intent", "registered", "allocated", "ready", "cleanup_pending", "quarantined", "absent", PhaseOperatorReleased:
+	case "intent", "registered", phaseAllocated, phaseReady, "cleanup_pending", "quarantined", "absent", PhaseOperatorReleased:
 	default:
 		return fmt.Errorf("nomad environment state has invalid phase")
 	}
@@ -287,4 +308,95 @@ func StableJobID(identity JobIdentity) (string, error) {
 	canonical := fmt.Sprintf("%s\x00%d\x00%s\x00%s", identity.EnvironmentID, identity.Generation, identity.OperationID, identity.InstallationID)
 	digest := sha256.Sum256([]byte(canonical))
 	return "kandev-" + hex.EncodeToString(digest[:16]), nil
+}
+
+// poolNodeRequired reports whether the placed node must be recorded: from the
+// allocated phase onward, or once an allocation exists.
+func (s EnvironmentState) poolNodeRequired() bool {
+	return s.Phase == phaseAllocated || s.Phase == phaseReady || s.AllocationID != ""
+}
+
+func (s EnvironmentState) validatePool() error {
+	if !s.hasOperationIdentity() {
+		return fmt.Errorf("nomad environment state has invalid immutable operation identity")
+	}
+	if s.Namespace == "" || s.Region == "" || s.Datacenter == "" || s.Platform != WorkerPlatform || s.CPUMHz <= 0 || s.MemoryMB <= 0 {
+		return fmt.Errorf("nomad pool environment state has incomplete resource identity")
+	}
+	if s.DisconnectLostAfterSeconds != 0 && (s.DisconnectLostAfterSeconds < int64(MinDisconnectLostAfter/time.Second) || s.DisconnectLostAfterSeconds > int64(MaxDisconnectLostAfter/time.Second)) {
+		return fmt.Errorf("nomad environment state has an out-of-range disconnect window")
+	}
+	if !s.WorkspaceInputCaptured && s.WorkspaceInputPath != "" {
+		return fmt.Errorf("nomad environment state has workspace input without capture evidence")
+	}
+	if err := s.validatePoolNode(); err != nil {
+		return err
+	}
+	if err := s.validateJobEvidence(); err != nil {
+		return err
+	}
+	return s.validatePhaseAndIndexes()
+}
+
+func (s EnvironmentState) validatePoolNode() error {
+	recorded := s.NodeID != ""
+	if !recorded {
+		if s.poolNodeRequired() {
+			return fmt.Errorf("nomad pool environment state requires the placed node once allocated")
+		}
+		if s.NodeContractSHA256 != "" || s.NodeAttach != "" || s.StateRoot != "" || s.SSHHost != "" || s.SSHPort != 0 ||
+			s.SSHHostFingerprint != "" || s.WorkspaceRoot != "" || s.WorkspacePath != "" {
+			return fmt.Errorf("nomad pool environment state has node details without a placed node")
+		}
+		return nil
+	}
+	return s.validateRecordedPoolNode()
+}
+
+func (s EnvironmentState) validateRecordedPoolNode() error {
+	if !safeNodeID.MatchString(s.NodeID) || !digestPattern.MatchString(s.NodeContractSHA256) {
+		return fmt.Errorf("nomad pool environment state has an invalid node identity")
+	}
+	if _, err := normalizedAbsolutePath(s.StateRoot); err != nil {
+		return fmt.Errorf("nomad pool environment state has an invalid state root")
+	}
+	switch s.NodeAttach {
+	case AttachLocal:
+		if s.SSHHost != "" || s.SSHPort != 0 || s.SSHHostFingerprint != "" {
+			return fmt.Errorf("nomad pool environment state has SSH identity on a local node")
+		}
+	case AttachSSH:
+		if !s.hasSSHIdentityWithoutUser() {
+			return fmt.Errorf("nomad environment state has incomplete SSH identity")
+		}
+	default:
+		return fmt.Errorf("nomad pool environment state has invalid node attach")
+	}
+	expected, err := EnvironmentWorkspacePath(s.WorkspaceRoot, s.EnvironmentID, s.Generation)
+	if err != nil || expected != s.WorkspacePath {
+		return fmt.Errorf("nomad environment state workspace does not match its owner and generation")
+	}
+	return nil
+}
+
+func (s EnvironmentState) hasSSHIdentityWithoutUser() bool {
+	return s.SSHHost != "" && s.SSHPort >= 1 && s.SSHPort <= 65535 && strings.HasPrefix(s.SSHHostFingerprint, "SHA256:")
+}
+
+// ValidatePoolStateTransition rejects a change to the node, transport or
+// workspace identity of a pool environment once the node was recorded.
+func ValidatePoolStateTransition(prev, next EnvironmentState) error {
+	if prev.PlacementMode != next.PlacementMode {
+		return fmt.Errorf("nomad environment placement mode is immutable")
+	}
+	if prev.PlacementMode != ModePool || prev.NodeID == "" {
+		return nil
+	}
+	if prev.NodeID != next.NodeID || prev.NodeContractSHA256 != next.NodeContractSHA256 || prev.NodeAttach != next.NodeAttach ||
+		prev.StateRoot != next.StateRoot || prev.SSHHost != next.SSHHost || prev.SSHPort != next.SSHPort ||
+		prev.SSHHostFingerprint != next.SSHHostFingerprint || prev.WorkspaceRoot != next.WorkspaceRoot ||
+		prev.WorkspacePath != next.WorkspacePath {
+		return fmt.Errorf("nomad pool environment node identity is immutable once recorded")
+	}
+	return nil
 }

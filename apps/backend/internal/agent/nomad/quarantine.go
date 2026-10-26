@@ -21,11 +21,24 @@ const quarantineMarkerItem = "marker"
 
 // NodeRecord is the subset of a Nomad node needed to prove a dedicated worker.
 type NodeRecord struct {
-	ID                    string            `json:"ID"`
-	Datacenter            string            `json:"Datacenter"`
-	Status                string            `json:"Status"`
-	SchedulingEligibility string            `json:"SchedulingEligibility"`
-	Attributes            map[string]string `json:"Attributes"`
+	ID                    string                `json:"ID"`
+	Datacenter            string                `json:"Datacenter"`
+	Status                string                `json:"Status"`
+	SchedulingEligibility string                `json:"SchedulingEligibility"`
+	Attributes            map[string]string     `json:"Attributes"`
+	Meta                  map[string]string     `json:"Meta"`
+	NodePool              string                `json:"NodePool"`
+	ReservedResources     NodeReservedResources `json:"ReservedResources"`
+}
+
+// NodeReservedResources is the client-reserved CPU and memory of a node.
+type NodeReservedResources struct {
+	CPU struct {
+		CPUShares int `json:"CpuShares"`
+	} `json:"Cpu"`
+	Memory struct {
+		MemoryMB int `json:"MemoryMB"`
+	} `json:"Memory"`
 }
 
 // QuarantineMarker records why a dedicated node must not receive new work.
