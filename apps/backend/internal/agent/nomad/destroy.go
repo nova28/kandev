@@ -153,6 +153,23 @@ func WorkspaceRemoveCommand(state EnvironmentState) (string, error) {
 		`rm -rf -- "$d" && { rmdir "$(dirname "$d")" 2>/dev/null || true; }`, nil
 }
 
+// AllocationDirRemoveCommand returns a POSIX shell command that deletes a pool
+// environment's staged job directory (bootstrap script and environment file,
+// ready marker, agentctl copy). It refuses a symlink and any path other than
+// the environment's own job directory. Legacy pinned workers keep their
+// allocation directory; it returns an empty command for them.
+func AllocationDirRemoveCommand(state EnvironmentState) (string, error) {
+	if state.PlacementMode != ModePool {
+		return "", nil
+	}
+	if state.JobID == "" || filepath.Base(state.JobID) != state.JobID || state.JobID == "." || state.JobID == ".." ||
+		state.AllocationRoot == "" || !filepath.IsAbs(state.AllocationRoot) {
+		return "", errors.New("remove Nomad pool allocation directory: job identity or allocation root is unsafe")
+	}
+	return "d=" + shellQuote(filepath.Join(state.AllocationRoot, state.JobID)) +
+		`; [ -L "$d" ] && exit 1; [ -e "$d" ] || exit 0; rm -rf -- "$d"`, nil
+}
+
 // PoolWorktreeBranch is the per-environment branch a local pool node creates
 // in each repository checkout it worktrees from.
 func PoolWorktreeBranch(environmentID string) string {

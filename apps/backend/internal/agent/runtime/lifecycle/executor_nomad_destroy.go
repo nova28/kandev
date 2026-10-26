@@ -50,6 +50,7 @@ const (
 	nomadCleanupReasonReceiptMissing       = "receipt_missing"
 	nomadCleanupReasonFenceReleaseFailed   = "fence_release_failed"
 	nomadCleanupReasonWorkspaceRemove      = "workspace_remove_failed"
+	nomadCleanupReasonAllocationDirRemove  = "allocation_dir_remove_failed"
 	nomadCleanupReasonInventoryRelease     = "inventory_release_failed"
 	nomadCleanupReasonAbsentCheckpoint     = "absence_checkpoint_failed"
 	nomadCleanupReasonInterrupted          = "cleanup_interrupted"
@@ -439,6 +440,9 @@ func (c *nomadCleanup) finish(ctx context.Context) error {
 	if err := c.removeWorkspace(ctx); err != nil {
 		return c.retained(nomadCleanupReasonWorkspaceRemove)
 	}
+	if err := c.removeAllocationDir(ctx); err != nil {
+		return c.retained(nomadCleanupReasonAllocationDirRemove)
+	}
 	if err := c.releaseFence(ctx); err != nil {
 		return c.retained(nomadCleanupReasonFenceReleaseFailed)
 	}
@@ -457,6 +461,21 @@ func (c *nomadCleanup) finish(ctx context.Context) error {
 // environment retained with its workspace.
 func (c *nomadCleanup) removeWorkspace(ctx context.Context) error {
 	command, err := nomad.WorkspaceRemoveCommand(c.state)
+	if err != nil || command == "" {
+		return err
+	}
+	if err := c.ensureWorker(ctx); err != nil {
+		return err
+	}
+	_, _, err = c.worker.Run(ctx, command)
+	return err
+}
+
+// removeAllocationDir deletes a pool environment's staged job directory (which
+// holds the bootstrap environment file) once the runtime is proven absent. A
+// failure keeps the environment retained with the directory.
+func (c *nomadCleanup) removeAllocationDir(ctx context.Context) error {
+	command, err := nomad.AllocationDirRemoveCommand(c.state)
 	if err != nil || command == "" {
 		return err
 	}
