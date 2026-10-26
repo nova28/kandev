@@ -121,8 +121,8 @@ func CheckDedicatedNode(profile ProfileConfig, node *NodeRecord) error {
 
 func normalizeArch(arch string) string {
 	switch arch {
-	case "aarch64", "arm64":
-		return "arm64"
+	case "aarch64", archARM64:
+		return archARM64
 	case "x86_64", "amd64":
 		return "amd64"
 	}

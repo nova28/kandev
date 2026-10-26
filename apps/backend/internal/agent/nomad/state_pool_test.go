@@ -10,6 +10,7 @@ func poolState(phase string) EnvironmentState {
 		Version: 1, EnvironmentID: "env-1", Generation: 1, OperationID: "op-1", InstallationID: "i-1", ExecutionID: "x-1",
 		InputDigest: strings.Repeat("a", 64), JobID: "job-1", Namespace: "default", Region: "global", Datacenter: "dc1",
 		Platform: "darwin/arm64", CPUMHz: 100, MemoryMB: 256, Phase: phase, PlacementMode: ModePool,
+		NodePool: "kandev", Placement: PlacementSpread, MemoryMaxMB: 2048,
 	}
 }
 
@@ -17,7 +18,7 @@ func placePool(s EnvironmentState) EnvironmentState {
 	s.NodeID, s.NodeAttach, s.StateRoot = "node-1", AttachSSH, "/var/kandev"
 	s.NodeContractSHA256 = strings.Repeat("b", 64)
 	s.SSHHost, s.SSHPort, s.SSHHostFingerprint = "neo.internal", 22, testHostKey
-	s.WorkspaceRoot = "/var/kandev/workspaces"
+	s.WorkspaceRoot, s.AllocationRoot = "/var/kandev/workspaces", "/var/kandev/pool/allocations"
 	s.WorkspacePath = "/var/kandev/workspaces/environments/env-1/g1"
 	return s
 }

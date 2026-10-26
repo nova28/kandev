@@ -223,27 +223,29 @@ func consumeJSONArray(decoder *json.Decoder, depth int) error {
 }
 
 var jobResponseFields = map[string]map[string]struct{}{
-	"$":                                                           fields("ID Name Type Priority AllAtOnce NodePool Stop ParentID Dispatched Payload Namespace Region Datacenters Meta Constraints Affinities Spreads TaskGroups Update Multiregion Periodic ParameterizedJob DispatchIdempotencyToken ConsulNamespace VaultNamespace NomadTokenID Status StatusDescription Stable Version SubmitTime CreateIndex ModifyIndex JobModifyIndex UI VersionTag"),
-	"$.Constraints[]":                                             fields("LTarget Operand RTarget"),
-	"$.TaskGroups[].Constraints[]":                                fields("LTarget Operand RTarget"),
-	"$.TaskGroups[].Tasks[].Constraints[]":                        fields("LTarget Operand RTarget"),
-	pathTaskGroup:                                                 fields("Name Count Update Migrate Constraints Scaling RestartPolicy Disconnect Tasks EphemeralDisk Meta ReschedulePolicy Affinities Spreads Networks Consul Services Volumes HasPerAllocVolumes ShutdownDelay MaxRunDuration StopAfterClientDisconnect MaxClientDisconnect PreventRescheduleOnLost"),
-	pathTask:                                                      fields("Name Driver User Config Env Services Vault Secrets Consul Templates Constraints Affinities Resources RestartPolicy DispatchPayload Lifecycle Meta LogConfig Artifacts Leader ShutdownDelay VolumeMounts ScalingPolicies KillSignal Kind CSIPluginConfig Identity Identities Actions Schedule KillTimeout"),
-	"$.TaskGroups[].RestartPolicy":                                fields("Attempts Interval Delay Mode RenderTemplates"),
-	"$.TaskGroups[].ReschedulePolicy":                             fields("Attempts Interval Delay DelayFunction MaxDelay Unlimited"),
-	"$.TaskGroups[].Disconnect":                                   fields("Replace Reconcile LostAfter StopOnClientAfter"),
-	"$.TaskGroups[].EphemeralDisk":                                fields("SizeMB Sticky Migrate"),
-	"$.Update":                                                    fields("AutoPromote AutoRevert Canary HealthCheck HealthyDeadline MaxParallel MinHealthyTime ProgressDeadline Stagger"),
-	"$.TaskGroups[].Networks[]":                                   fields("Mode Device CIDR IP Hostname MBits DNS ReservedPorts DynamicPorts CNI"),
-	"$.TaskGroups[].Networks[].ReservedPorts[]":                   fields("Label Value To HostNetwork IgnoreCollision"),
-	pathDynamicPorts:                                              fields("Label Value To HostNetwork IgnoreCollision"),
-	"$.TaskGroups[].Tasks[].Resources":                            fields("CPU Cores MemoryMB MemoryMaxMB DiskMB IOPS Networks Devices NUMA SecretsMB"),
-	"$.TaskGroups[].Tasks[].RestartPolicy":                        fields("Attempts Interval Delay Mode RenderTemplates"),
-	"$.TaskGroups[].Tasks[].LogConfig":                            fields("MaxFiles MaxFileSizeMB Disabled"),
-	"$.TaskGroups[].Tasks[].Identity":                             fields("Name Audience ChangeMode ChangeSignal Env File Filepath ServiceName TTL ExtraClaims"),
-	"$.TaskGroups[].Tasks[].Identities[]":                         fields("Name Audience ChangeMode ChangeSignal Env File Filepath ServiceName TTL ExtraClaims"),
-	"$.TaskGroups[].Networks[].DNS":                               fields("Servers Searches Options"),
-	"$.TaskGroups[].Tasks[].Resources.Networks[]":                 fields("Mode Device CIDR IP Hostname MBits DNS ReservedPorts DynamicPorts CNI"),
+	"$":                                           fields("ID Name Type Priority AllAtOnce NodePool Stop ParentID Dispatched Payload Namespace Region Datacenters Meta Constraints Affinities Spreads TaskGroups Update Multiregion Periodic ParameterizedJob DispatchIdempotencyToken ConsulNamespace VaultNamespace NomadTokenID Status StatusDescription Stable Version SubmitTime CreateIndex ModifyIndex JobModifyIndex UI VersionTag"),
+	"$.Constraints[]":                             fields("LTarget Operand RTarget"),
+	"$.Affinities[]":                              fields("LTarget Operand RTarget Weight"),
+	"$.Spreads[]":                                 fields("Attribute Weight SpreadTarget"),
+	"$.TaskGroups[].Constraints[]":                fields("LTarget Operand RTarget"),
+	"$.TaskGroups[].Tasks[].Constraints[]":        fields("LTarget Operand RTarget"),
+	pathTaskGroup:                                 fields("Name Count Update Migrate Constraints Scaling RestartPolicy Disconnect Tasks EphemeralDisk Meta ReschedulePolicy Affinities Spreads Networks Consul Services Volumes HasPerAllocVolumes ShutdownDelay MaxRunDuration StopAfterClientDisconnect MaxClientDisconnect PreventRescheduleOnLost"),
+	pathTask:                                      fields("Name Driver User Config Env Services Vault Secrets Consul Templates Constraints Affinities Resources RestartPolicy DispatchPayload Lifecycle Meta LogConfig Artifacts Leader ShutdownDelay VolumeMounts ScalingPolicies KillSignal Kind CSIPluginConfig Identity Identities Actions Schedule KillTimeout"),
+	"$.TaskGroups[].RestartPolicy":                fields("Attempts Interval Delay Mode RenderTemplates"),
+	"$.TaskGroups[].ReschedulePolicy":             fields("Attempts Interval Delay DelayFunction MaxDelay Unlimited"),
+	"$.TaskGroups[].Disconnect":                   fields("Replace Reconcile LostAfter StopOnClientAfter"),
+	"$.TaskGroups[].EphemeralDisk":                fields("SizeMB Sticky Migrate"),
+	"$.Update":                                    fields("AutoPromote AutoRevert Canary HealthCheck HealthyDeadline MaxParallel MinHealthyTime ProgressDeadline Stagger"),
+	"$.TaskGroups[].Networks[]":                   fields("Mode Device CIDR IP Hostname MBits DNS ReservedPorts DynamicPorts CNI"),
+	"$.TaskGroups[].Networks[].ReservedPorts[]":   fields("Label Value To HostNetwork IgnoreCollision"),
+	pathDynamicPorts:                              fields("Label Value To HostNetwork IgnoreCollision"),
+	"$.TaskGroups[].Tasks[].Resources":            fields("CPU Cores MemoryMB MemoryMaxMB DiskMB IOPS Networks Devices NUMA SecretsMB"),
+	"$.TaskGroups[].Tasks[].RestartPolicy":        fields("Attempts Interval Delay Mode RenderTemplates"),
+	"$.TaskGroups[].Tasks[].LogConfig":            fields("MaxFiles MaxFileSizeMB Disabled"),
+	"$.TaskGroups[].Tasks[].Identity":             fields("Name Audience ChangeMode ChangeSignal Env File Filepath ServiceName TTL ExtraClaims"),
+	"$.TaskGroups[].Tasks[].Identities[]":         fields("Name Audience ChangeMode ChangeSignal Env File Filepath ServiceName TTL ExtraClaims"),
+	"$.TaskGroups[].Networks[].DNS":               fields("Servers Searches Options"),
+	"$.TaskGroups[].Tasks[].Resources.Networks[]": fields("Mode Device CIDR IP Hostname MBits DNS ReservedPorts DynamicPorts CNI"),
 	"$.TaskGroups[].Tasks[].Resources.Networks[].DynamicPorts[]":  fields("Label Value To HostNetwork IgnoreCollision"),
 	"$.TaskGroups[].Tasks[].Resources.Networks[].ReservedPorts[]": fields("Label Value To HostNetwork IgnoreCollision"),
 	"$.TaskGroups[].Tasks[].Resources.Networks[].DNS":             fields("Servers Searches Options"),
@@ -387,10 +389,18 @@ func isReviewedJobDefault(parent, key string, value any) bool {
 		return isReviewedTaskDefault(key, value)
 	case "$.TaskGroups[].Tasks[].Resources":
 		return isReviewedResourcesDefault(key, value)
+	}
+	return isReviewedNestedDefault(parent, key, value)
+}
+
+func isReviewedNestedDefault(parent, key string, value any) bool {
+	switch parent {
 	case "$.TaskGroups[].RestartPolicy", "$.TaskGroups[].Tasks[].RestartPolicy":
 		return key == "RenderTemplates" && value == false
 	case pathDynamicPorts:
 		return (key == "HostNetwork" && value == reviewedDefaultName) || (key == "IgnoreCollision" && value == false)
+	case "$.Spreads[]":
+		return key == "SpreadTarget" && (value == nil || isEmptyMapOrArray(value))
 	case "$.TaskGroups[].Disconnect":
 		return (key == "LostAfter" && value == json.Number("0")) || (key == "StopOnClientAfter" && value == nil)
 	}
