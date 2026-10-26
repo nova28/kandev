@@ -658,6 +658,8 @@ A node is usable only when it publishes the Kandev node contract as Nomad client
 
 Workspaces differ by node. On an `ssh` node agentctl makes a fresh checkout of each repository under the node's state root. On a `local` node (the Kandev host) Kandev adds a git worktree of its own checkout for each repository that has one, on the branch `kandev/pool/<environment-id>`; repositories without a local checkout still get a fresh checkout. Proven cleanup removes the worktree, deletes that branch and prunes the source repository. If any of those steps fails, the workspace and the branch stay in place and the node remains quarantined.
 
+Trust boundary: a node that can register in the pool's node pool, or whose `kandev.*` metadata can be edited (`node:write`), is trusted with file operations on the machine that runs it. A node that advertises `kandev.attach=local` and the Kandev host's identity digest is treated as the Kandev host: Kandev then runs commands and writes the staged files, workspace and cleanup under its advertised `kandev.state_root` on its own host. Restrict who can register nodes in the pool and who can write node metadata to the people who already administer the Kandev host.
+
 `scripts/nomad-pool-onboard` prints the client block for a node. It creates the local token when needed and never edits Nomad configuration:
 
 ```bash

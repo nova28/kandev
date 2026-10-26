@@ -246,6 +246,9 @@ func (c *nomadCleanup) drainAndSettle(ctx context.Context) error {
 		return c.retained(nomadCleanupReasonCheckpoint)
 	}
 	if !c.runtimeIdentityRecorded() {
+		if c.state.RefusedBeforeStage {
+			return c.settleRefusedLaunch(ctx)
+		}
 		return c.fail(ctx, nomadCleanupReasonIdentityUnrecorded)
 	}
 	receipt, reason := c.drain(ctx)
@@ -259,6 +262,19 @@ func (c *nomadCleanup) drainAndSettle(ctx context.Context) error {
 		return c.fail(ctx, nomadCleanupReasonReceiptCheckpoint)
 	}
 	c.removeBootstrapEnvironment(ctx)
+	return c.settle(ctx)
+}
+
+// settleRefusedLaunch finishes a launch that placement admission refused before
+// any worker file was staged. No runtime exists, so there is nothing to drain
+// and the node is not fenced; the absence receipt records an empty drain.
+func (c *nomadCleanup) settleRefusedLaunch(ctx context.Context) error {
+	c.state.DrainReceiptDigest = nomad.ReceiptDigest(c.state, agentctl.RuntimeDrainReceipt{}, c.claimID)
+	c.state.DrainReceiptGeneration = c.state.Generation
+	c.state.Revision++
+	if err := checkpointNomadState(ctx, c.req, &c.state); err != nil {
+		return c.retained(nomadCleanupReasonReceiptCheckpoint)
+	}
 	return c.settle(ctx)
 }
 

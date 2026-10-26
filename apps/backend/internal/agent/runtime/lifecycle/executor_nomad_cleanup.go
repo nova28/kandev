@@ -230,6 +230,10 @@ func (m *Manager) withNomadCleanupClaim(ctx context.Context, req *ExecutorCreate
 	if !ok {
 		return errors.New("nomad cleanup: environment claim authority is unavailable")
 	}
+	if _, active := m.nomadCleanupEnvs.LoadOrStore(state.EnvironmentID, struct{}{}); active {
+		return errors.New("nomad cleanup is already running for this environment")
+	}
+	defer m.nomadCleanupEnvs.Delete(state.EnvironmentID)
 	claimRequest := models.TaskEnvironmentRecoveryClaimRequest{
 		TaskEnvironmentID: state.EnvironmentID, OwnerTaskID: req.TaskID, OwnershipGeneration: state.Generation,
 		SessionID: req.SessionID, OperationID: state.OperationID + nomadCleanupClaimSuffix,

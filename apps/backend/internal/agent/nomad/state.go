@@ -94,6 +94,9 @@ type EnvironmentState struct {
 	// DisconnectLostAfterSeconds is the immutable disconnect window of the job.
 	// Zero is a retained environment created before the window was configurable.
 	DisconnectLostAfterSeconds int64 `json:"disconnect_lost_after_seconds,omitempty"`
+	// RefusedBeforeStage records that placement admission refused the node before
+	// any worker file was staged, so no runtime exists to drain or fence.
+	RefusedBeforeStage bool `json:"refused_before_stage,omitempty"`
 	// PlacementMode is ModePool for pool-placed environments; empty is legacy.
 	PlacementMode string `json:"placement_mode,omitempty"`
 	// NodeContractSHA256 binds the placed node's kandev.* metadata at attach time.

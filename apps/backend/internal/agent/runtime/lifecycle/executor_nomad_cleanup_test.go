@@ -437,3 +437,28 @@ func TestNomadCleanupEvidenceCascadeForceStopLeavesFenceForCleanupJob(t *testing
 		t.Fatalf("phase=%q receipt=%q drain=%d, want absent with one drain receipt", got.Phase, got.DrainReceiptDigest, f.cleanup.drainCalls)
 	}
 }
+
+func TestNomadCleanupEvidenceDuplicateCallerLeavesInFlightClaimHeld(t *testing.T) {
+	f := prepareNomadCleanupFixture(t)
+	writer := &claimStoreWriter{}
+	manager := &Manager{runningWriter: writer, logger: newTestLogger()}
+	err := manager.withNomadCleanupClaim(context.Background(), f.request, func(ctx context.Context, _ string) error {
+		dupErr := manager.withNomadCleanupClaim(context.Background(), f.request, func(context.Context, string) error {
+			t.Fatal("duplicate cleanup must not run")
+			return nil
+		})
+		if dupErr == nil || !strings.Contains(dupErr.Error(), "already running") {
+			t.Fatalf("duplicate cleanup = %v, want already running", dupErr)
+		}
+		if writer.released != 0 || len(writer.acquired) != 1 {
+			t.Fatalf("duplicate touched the shared claim: acquired %d, released %d", len(writer.acquired), writer.released)
+		}
+		return nil
+	})
+	if err != nil || writer.released != 1 {
+		t.Fatalf("in-flight cleanup = %v, released %d, want one release", err, writer.released)
+	}
+	if err := manager.withNomadCleanupClaim(context.Background(), f.request, func(context.Context, string) error { return nil }); err != nil {
+		t.Fatalf("cleanup after completion = %v", err)
+	}
+}

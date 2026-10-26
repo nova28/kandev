@@ -40,6 +40,7 @@ func (r *NomadExecutor) launchPoolOperation(ctx context.Context, req *ExecutorCr
 	}
 	effective := profile.EffectiveProfile(state)
 	if err := r.admitAndVerifyPlacedNode(ctx, req, client, effective, state); err != nil {
+		state.RefusedBeforeStage = true
 		return nil, r.abortRegisteredNomadLaunch(ctx, req, &state, err)
 	}
 	instance, err := r.stageAndAttachPoolWorker(ctx, req, effective, &state, artifact, nonce)

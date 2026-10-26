@@ -42,6 +42,9 @@ const (
 
 // Manager manages agent instance lifecycles
 type Manager struct {
+	// nomadCleanupEnvs holds the environments with a cleanup in flight in this
+	// process; a second caller is refused before it can touch the shared claim.
+	nomadCleanupEnvs      sync.Map
 	registry              *registry.Registry
 	eventBus              bus.EventBus
 	credsMgr              CredentialsManager

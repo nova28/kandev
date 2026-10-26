@@ -153,3 +153,25 @@ func assertNoAbsenceWithoutReceipt(t *testing.T, f *nomadCreateFixture) {
 		}
 	}
 }
+
+func TestNomadDestroyIdentityRefusedBeforeStageSettlesWithoutQuarantine(t *testing.T) {
+	f := prepareNomadCleanupFixture(t)
+	setNomadFixtureState(t, f, func(s *nomad.EnvironmentState) {
+		s.ServerIdentity = ""
+		s.RefusedBeforeStage = true
+	})
+	coordinator := newNomadFixtureCoordinator(f, &claimStoreWriter{})
+	f.runtime.rollbackNomadLaunch(context.Background(), f.request)
+	if coordinator.lastErr != nil {
+		t.Fatalf("rollback cleanup = %v", coordinator.lastErr)
+	}
+	if f.fake.eligibility == "ineligible" || f.fake.marker != "" {
+		t.Fatalf("refused launch quarantined the node: eligibility=%s marker=%q", f.fake.eligibility, f.fake.marker)
+	}
+	if f.cleanup.drainCalls != 0 || f.cleanup.stopCalls != 1 {
+		t.Fatalf("drain=%d stop=%d, want no drain and one job stop", f.cleanup.drainCalls, f.cleanup.stopCalls)
+	}
+	if final := f.lastCheckpoint(t); final.Phase != nomadPhaseAbsent || final.QuarantineState != "" {
+		t.Fatalf("phase=%q quarantine=%q, want absent without quarantine", final.Phase, final.QuarantineState)
+	}
+}
