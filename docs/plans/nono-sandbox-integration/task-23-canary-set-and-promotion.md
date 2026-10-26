@@ -13,7 +13,6 @@ depends_on:
   - "19-degraded-states"
   - "20-conformance-suite"
   - "21-standalone-integration"
-  - "22-child-grant-ceiling"
 plan: "plan.md"
 requirements:
   - REQ-AGENTS-SANDBOX-012
@@ -31,7 +30,6 @@ acceptance_criteria:
   - AC-AGENTS-SANDBOX-012.11
   - AC-AGENTS-SANDBOX-012.12
   - AC-AGENTS-SANDBOX-012.13
-  - AC-AGENTS-SANDBOX-012.15
   - AC-AGENTS-SANDBOX-012.16
 system_design:
   - ../../specs/agents/system-design/sandbox-session-conformance.md
@@ -67,7 +65,7 @@ Each listed criterion in `docs/specs/agents/requirements/sandbox-session-conform
 
 ## Dependencies
 
-Depends on: 11-guarded-session-surface, 12-session-token-broker-relay, 13-managed-git-isolation, 15-credential-registry, 17-executor-rest-auth-loopback, 18-process-surface-labels, 19-degraded-states, 20-conformance-suite, 21-standalone-integration, 22-child-grant-ceiling. See the dependency table in the plan.
+Depends on: 11-guarded-session-surface, 12-session-token-broker-relay, 13-managed-git-isolation, 15-credential-registry, 17-executor-rest-auth-loopback, 18-process-surface-labels, 19-degraded-states, 20-conformance-suite, 21-standalone-integration. See the dependency table in the plan.
 
 ## Risks
 

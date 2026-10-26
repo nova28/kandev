@@ -1,7 +1,7 @@
 ---
 id: "22-child-grant-ceiling"
 title: "Refuse a child task wider than its parent's guard"
-status: pending
+status: cancelled
 wave: 11
 depends_on:
   - "04-policy-authority"
@@ -9,8 +9,7 @@ depends_on:
 plan: "plan.md"
 requirements:
   - REQ-AGENTS-SANDBOX-012
-acceptance_criteria:
-  - AC-AGENTS-SANDBOX-012.15
+acceptance_criteria: []
 system_design:
   - ../../specs/agents/system-design/sandbox-session-conformance.md
 ---
@@ -50,4 +49,4 @@ Task creation lives outside the sandbox package; the transaction boundary must b
 
 ## Results
 
-Pending. Design only; no implementation is authorized for this work order yet.
+Cancelled in this package. The child ceiling (former AC-AGENTS-SANDBOX-012.15) moved to Out of scope in the requirement, with its open questions; the launch-time `checkParentGuard` is unchanged.

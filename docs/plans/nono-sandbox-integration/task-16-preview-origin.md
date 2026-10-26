@@ -8,8 +8,7 @@ depends_on:
 plan: "plan.md"
 requirements:
   - REQ-AGENTS-SANDBOX-012
-acceptance_criteria:
-  - AC-AGENTS-SANDBOX-012.9
+acceptance_criteria: []
 system_design:
   - ../../specs/agents/system-design/sandbox-session-conformance.md
 ---
