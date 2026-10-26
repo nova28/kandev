@@ -299,7 +299,7 @@ def _default_kill_exact(ssh: Callable[[str], tuple[int, str]], identity: dict[st
 
     def present() -> bool:
         """True while the pid still carries the recorded identity; False once it is gone; a different identity raises."""
-        _, out = ssh(f"ps -p {pid} -ww -o pid=,ppid=,pgid=,lstart=,command=")
+        _, out = ssh(f"LC_ALL=C ps -p {pid} -ww -o pid=,ppid=,pgid=,lstart=,command=")
         rows = [match for match in (_PS_ROW.match(line) for line in out.splitlines()) if match and int(match.group(1)) == pid]
         if not rows:
             return False
@@ -625,7 +625,7 @@ class Runner:
         }
 
     def remote_tree(self, inventory: dict[str, Any]) -> list[dict[str, Any]]:
-        code, out = self.ssh("ps -eww -o pid=,ppid=,pgid=,lstart=,command=")
+        code, out = self.ssh("LC_ALL=C ps -eww -o pid=,ppid=,pgid=,lstart=,command=")
         if code != 0:
             raise PreflightError("remote process listing failed")
         needles = [inventory["allocation_id"], inventory["job_id"], inventory["environment_id"]]

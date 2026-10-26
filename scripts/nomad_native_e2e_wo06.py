@@ -351,7 +351,7 @@ class Scenario:
 
     # -- remote processes and fence -----------------------------------------------------------
     def ps_rows(self) -> list[dict[str, Any]]:
-        code, out = self.r.ssh("ps -eww -o pid=,ppid=,pgid=,lstart=,command=")
+        code, out = self.r.ssh("LC_ALL=C ps -eww -o pid=,ppid=,pgid=,lstart=,command=")
         if code != 0:
             raise PreflightError("remote process listing failed")
         rows = []
@@ -360,6 +360,8 @@ class Scenario:
             if match:
                 rows.append({"pid": int(match.group(1)), "ppid": int(match.group(2)), "pgid": int(match.group(3)),
                              "started": " ".join(match.group(4).split()), "command": match.group(5)})
+        if not rows and out.strip():
+            raise PreflightError("remote process listing was not empty but no row parsed; refusing to continue")
         return rows
 
     def focus(self, env: dict[str, Any]) -> None:

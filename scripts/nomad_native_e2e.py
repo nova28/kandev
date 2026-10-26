@@ -380,16 +380,16 @@ def _run_attached_session(config: dict[str, Any]) -> dict[str, Any]:
         raise PreflightError("Nomad agentctl task is not running")
 
     pids = [session[key] for key in ("agentctl_pid", "acp_pid", "child_pid", "grandchild_pid")]
-    ps = _ssh_command(config, "ps -o pid=,ppid=,pgid=,rss=,lstart= -p " + ",".join(str(pid) for pid in pids))
+    ps = _ssh_command(config, "LC_ALL=C ps -o pid=,ppid=,pgid=,rss=,lstart= -p " + ",".join(str(pid) for pid in pids))
     local_pids = [session["nomad_client_pid"], session["kandev_backend_pid"]]
     local_ps = subprocess.run(
-        ["ps", "-o", "pid=,rss=,etime=,comm=", "-p", ",".join(str(pid) for pid in local_pids)],
+        ["env", "LC_ALL=C", "ps", "-o", "pid=,rss=,etime=,comm=", "-p", ",".join(str(pid) for pid in local_pids)],
         capture_output=True, text=True, timeout=5, check=False,
     )
     if ps.returncode != 0 or local_ps.returncode != 0:
         raise PreflightError("pinned fixture SSH process identity probe failed")
     local_starts = subprocess.run(
-        ["ps", "-o", "pid=,lstart=", "-p", ",".join(str(pid) for pid in local_pids)],
+        ["env", "LC_ALL=C", "ps", "-o", "pid=,lstart=", "-p", ",".join(str(pid) for pid in local_pids)],
         capture_output=True, text=True, timeout=5, check=False,
     )
     if local_starts.returncode != 0:
@@ -418,7 +418,7 @@ def _run_attached_session(config: dict[str, Any]) -> dict[str, Any]:
     agentctl_sha = hashlib.sha256(Path(session["agentctl_binary_path"]).read_bytes()).hexdigest()
     if kandev_sha != session["kandev_sha256"] or agentctl_sha != session["agentctl_sha256"]:
         raise PreflightError("fixture build artifact digest does not match the recorded binary")
-    remote_process_path = _ssh_command(config, f"ps -o comm= -p {session['agentctl_pid']}")
+    remote_process_path = _ssh_command(config, f"LC_ALL=C ps -o comm= -p {session['agentctl_pid']}")
     remote_agentctl_sha = _ssh_command(config, f"shasum -a 256 {shlex.quote(session['agentctl_runtime_path'])}")
     if remote_process_path.returncode != 0 or remote_process_path.stdout.strip() != session["agentctl_runtime_path"]:
         raise PreflightError("live agentctl executable does not match the fixture build")
@@ -691,7 +691,7 @@ def _run_attached_recovery(config: dict[str, Any]) -> dict[str, Any]:
     if backend_path != session["kandev_binary_path"] or _local_process(backend_path, record["pid"])["pid"] != _listener_pid(manifest["port"]):
         raise PreflightError("fixture API listener is not the registered current Kandev child")
     local_before = _local_process(backend_path, record["pid"])
-    agent_before = _ssh_command(config, "ps -o pid=,ppid=,pgid=,rss=,lstart= -p " + ",".join(str(session[key]) for key in ("agentctl_pid", "acp_pid", "child_pid", "grandchild_pid")))
+    agent_before = _ssh_command(config, "LC_ALL=C ps -o pid=,ppid=,pgid=,rss=,lstart= -p " + ",".join(str(session[key]) for key in ("agentctl_pid", "acp_pid", "child_pid", "grandchild_pid")))
     if agent_before.returncode != 0 or len(agent_before.stdout.splitlines()) != 4:
         raise PreflightError("recovery agentctl process tree cannot be identity-checked")
     process_rows_before = {}
@@ -740,7 +740,7 @@ def _run_attached_recovery(config: dict[str, Any]) -> dict[str, Any]:
     nomad_after = _nomad_recovery_snapshot(config, session, expected)
     if inventory_after != inventory_before or nomad_after != nomad_before or replayed != prior_turns:
         raise PreflightError("backend restart changed the original Nomad operation or completed turn evidence")
-    agent_after = _ssh_command(config, "ps -o pid=,ppid=,pgid=,rss=,lstart= -p " + ",".join(str(session[key]) for key in ("agentctl_pid", "acp_pid", "child_pid", "grandchild_pid")))
+    agent_after = _ssh_command(config, "LC_ALL=C ps -o pid=,ppid=,pgid=,rss=,lstart= -p " + ",".join(str(session[key]) for key in ("agentctl_pid", "acp_pid", "child_pid", "grandchild_pid")))
     process_rows_after = {}
     if agent_after.returncode == 0:
         for line in agent_after.stdout.splitlines():
@@ -893,7 +893,7 @@ def _pre_ready_messages(session: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _remote_process_rows(config: dict[str, Any], session: dict[str, Any]) -> dict[int, dict[str, Any]]:
-    result = _ssh_command(config, "ps -o pid=,ppid=,pgid=,rss=,lstart= -p " + ",".join(str(session[key]) for key in ("agentctl_pid", "acp_pid", "child_pid", "grandchild_pid")))
+    result = _ssh_command(config, "LC_ALL=C ps -o pid=,ppid=,pgid=,rss=,lstart= -p " + ",".join(str(session[key]) for key in ("agentctl_pid", "acp_pid", "child_pid", "grandchild_pid")))
     rows: dict[int, dict[str, Any]] = {}
     if result.returncode == 0:
         for line in result.stdout.splitlines():

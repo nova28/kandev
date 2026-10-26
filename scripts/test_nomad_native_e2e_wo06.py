@@ -213,10 +213,10 @@ class Sim(World):
             if command.startswith("kill -KILL "):
                 self._kill(int(command.split()[-1]))
                 return 0, ""
-            if command.startswith("ps -p "):
-                pid = int(command.split()[2])
+            if command.startswith("LC_ALL=C ps -p "):
+                pid = int(command.split()[3])
                 return 0, "".join(self._row(p) for p in self.procs if p["pid"] == pid)
-            if command.startswith("ps -eww"):
+            if command.startswith("LC_ALL=C ps -eww"):
                 transient = ""
                 if self.flags.get("flap") and not self.flapped and any(p["pid"] == 200 for p in self.procs):
                     self.flapped = True
@@ -679,6 +679,17 @@ class ProcessIdentityTest(Wo06Base):
         self.assert_failed(self.run_scn("disconnect", leader_cmd_swap=True), "not the recorded agentctl", "kill-a-agentctl-leader")
         self.assertEqual(self.world.kills, [])
 
+    def test_ps_rows_refuses_a_listing_it_cannot_parse(self):
+        en_gb = "  200  1  200 Mon 26 Oct 15:54:21 2026 /alloc/x/agentctl\n"
+        scn = wo06.Scenario.__new__(wo06.Scenario)
+        scn.r = SimpleNamespace(ssh=lambda command: (0, en_gb))
+        with self.assertRaisesRegex(PreflightError, "no row parsed"):
+            scn.ps_rows()
+        commands = []
+        scn.r = SimpleNamespace(ssh=lambda command: (commands.append(command) or 0, ""))
+        self.assertEqual(scn.ps_rows(), [])
+        self.assertTrue(commands[0].startswith("LC_ALL=C ps "))
+
     def test_helper_classification(self):
         self.assertTrue(wo06._is_nomad_helper('/usr/local/bin/nomad executor {"x":1}'))
         self.assertTrue(wo06._is_nomad_helper("/usr/local/bin/nomad logmon"))
@@ -942,7 +953,7 @@ class OpsDefaultsTest(unittest.TestCase):
 
         def call(command):
             calls.append(command)
-            if command.startswith("ps -p"):
+            if command.startswith("LC_ALL=C ps -p"):
                 return 0, rows
             return 0, ""
 
@@ -982,7 +993,7 @@ class OpsDefaultsTest(unittest.TestCase):
         seen = []
 
         def call(command):
-            if command.startswith("ps -p"):
+            if command.startswith("LC_ALL=C ps -p"):
                 seen.append(command)
                 return 0, row if len(seen) == 1 else rows_after
             return 1, ""

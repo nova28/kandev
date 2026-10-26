@@ -290,7 +290,7 @@ class World:
                 return (3, "") if self.fence is None else (0, self.fence)
             if "rev-parse HEAD" in command:
                 return self.head_code, self.checkout_heads
-            assert command.startswith("ps -eww")
+            assert command.startswith("LC_ALL=C ps -eww")
             if self.ps_code:
                 return self.ps_code, ""
             if not self.tree_present:
