@@ -20,3 +20,7 @@ Desktop and loopback installs have no wildcard names, so sandboxed previews are 
 ## Alternatives considered
 
 Keeping the same origin and relying on the iframe sandbox attribute was rejected: the proxy cannot force it on top-level navigation. A single shared preview origin for all tasks was rejected because tasks could read each other's storage.
+
+## Scope and handoff
+
+Status: proposed. The rule applies to any task that has a task guard or has ever had a sandboxed attempt, whether or not an attempt is live and for every session of the task. Access from an authenticated UI uses a single-use ticket (60 s) from `POST /api/v1/tasks/:id/preview-ticket`, exchanged on the preview origin for a host-only cookie scoped to that task's preview routes. The per-task token lives in `task_preview_origins`, is created lazily, and is deleted with the task. When disabled, HTTP and WebSocket requests get 403 `preview_origin_unavailable`. Work order 16 implements it; the system design owns the details.

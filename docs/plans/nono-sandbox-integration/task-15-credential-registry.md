@@ -5,6 +5,7 @@ status: pending
 wave: 10
 depends_on:
   - "05-nono-provider-lifecycle"
+  - "24-summary-foundation"
 plan: "plan.md"
 requirements:
   - REQ-AGENTS-SANDBOX-012
@@ -43,7 +44,7 @@ Each listed criterion in `docs/specs/agents/requirements/sandbox-session-conform
 
 ## Dependencies
 
-Depends on: 05-nono-provider-lifecycle. See the dependency table in the plan.
+Depends on: 05-nono-provider-lifecycle, 24-summary-foundation. See the dependency table in the plan.
 
 ## Risks
 

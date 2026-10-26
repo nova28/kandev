@@ -47,7 +47,7 @@ Each listed criterion in `docs/specs/agents/requirements/sandbox-session-conform
 
 ## Dependencies
 
-Depends on: 05-nono-provider-lifecycle, 07-mcp-connectivity, 09-acceptance-delivery, 19-degraded-states. See the dependency table in the plan.
+Depends on: 05-nono-provider-lifecycle, 07-mcp-connectivity, 09-acceptance-delivery (which itself depends on 02 and 08), 19-degraded-states. See the dependency table in the plan.
 
 ## Risks
 

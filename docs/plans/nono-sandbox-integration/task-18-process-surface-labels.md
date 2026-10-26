@@ -6,6 +6,7 @@ wave: 11
 depends_on:
   - "05-nono-provider-lifecycle"
   - "10-execution-surfaces"
+  - "24-summary-foundation"
 plan: "plan.md"
 requirements:
   - REQ-AGENTS-SANDBOX-012
@@ -23,9 +24,9 @@ Route every process Kandev starts for a session through one entry that sandboxes
 
 ## Scope
 
-- `SandboxProcessKind` in `internal/agent/sandbox` mapped from `streams.ProcessKind` plus `language_server`, `terminal`, `code_server`, `helper`.
-- One start entry in lifecycle, scriptengine and agentctl process management; label written before the start; `process_label_unrecorded` on write failure.
-- Labels in the launch snapshot and Execution details; first delivery labels scripts `unsandboxed`; terminals follow the darwin refusal.
+- `SandboxProcessKind` in `internal/agent/sandbox` with kinds `setup_script`, `cleanup_script`, `custom_script`, `dev_process`, `language_server`, `agent_terminal`, `user_terminal`, `code_server`, `helper`, passed explicitly at every call site and never inferred from `streams.ProcessKind`.
+- One start entry in lifecycle, scriptengine and agentctl process management; label written `pending` before the start, then `started` or `failed`; `process_label_unrecorded` on write failure.
+- Labels in the launch snapshot and Execution details; only `agent_terminal` is sandboxed (refused on darwin), every other kind is `unsandboxed`, and `helper` does not degrade 012.8.
 
 ## Acceptance
 
@@ -46,7 +47,7 @@ Each listed criterion in `docs/specs/agents/requirements/sandbox-session-conform
 
 ## Dependencies
 
-Depends on: 05-nono-provider-lifecycle, 10-execution-surfaces. See the dependency table in the plan.
+Depends on: 05-nono-provider-lifecycle, 10-execution-surfaces, 24-summary-foundation. See the dependency table in the plan.
 
 ## Risks
 

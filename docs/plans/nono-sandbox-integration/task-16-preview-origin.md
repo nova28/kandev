@@ -3,7 +3,8 @@ id: "16-preview-origin"
 title: "Serve previews from a separate origin"
 status: pending
 wave: 10
-depends_on: []
+depends_on:
+  - "24-summary-foundation"
 plan: "plan.md"
 requirements:
   - REQ-AGENTS-SANDBOX-012
@@ -23,6 +24,7 @@ Serve sandboxed-attempt previews (HTML preview and session port proxy) from a pe
 
 - Per-task origin `<token>.<preview.baseDomain>` and cookie isolation in the browser-facing proxy (`gateway/websocket/port_proxy.go`) and the publish handler (`agentctl/server/api/workspace_preview.go`).
 - New config key `preview.baseDomain`; assertions that it differs from and is not a parent of the UI host and that UI cookies are host-only.
+- Isolation for any task with a guard or any sandboxed attempt ever; table `task_preview_origins` with a lazily created 256-bit token; `POST /api/v1/tasks/:id/preview-ticket` single-use ticket (60 s) exchanged for a host-only cookie; 403 and 503 `preview_origin_unavailable` and 404 on a deleted task, for HTTP and WebSocket.
 - `preview_origin_unavailable` state and UI message; flag `features.previewSeparateOrigin`, off by default; ADR `2026-10-26-sandboxed-preview-origin`.
 
 ## Acceptance
@@ -45,7 +47,7 @@ Each listed criterion in `docs/specs/agents/requirements/sandbox-session-conform
 
 ## Dependencies
 
-None on other work orders.
+Depends on: 24-summary-foundation (flags and summary types).
 
 ## Risks
 

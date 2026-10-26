@@ -160,6 +160,10 @@ Each criterion listed in work-order frontmatter needs a behavioral assertion, no
 | SANDBOX-011.5 | `sandboxruntime` darwin tests and the darwin group reader tests: wrapper-as-child bind, group scan empty / surviving member at the 5 s bound / read error, idempotent `Close`, restarted agentctl (`recovery_required` while supervisor live, stopped when exited and empty) |
 | SANDBOX-011.6-8, .14 | `agent/sandbox` `RecordApproval` refusal and no report row for a process-tree attempt (`captureReport`, `RefreshReport` and `Close` skip it; Linux unchanged), status tests; `session-execution-details.test.tsx` for darwin states and seven locales |
 | SANDBOX-011.11, PLUGINS-SANDBOX-002.1-5 | `plugins/sandbox_darwin_conformance_test.go` on a real Mac with controls, provider repository suite, `acceptance.md` record |
+| SANDBOX-012.1-3, .6, .10-12, .14, .16 | `sandboxLaunchAdmission` and `prepareExecution` tests (Tasks 15, 19, 24): evaluation order, `not_evaluated` items, refusal record write/prune/failure, reason precedence, re-admission versus continuation, indicator matrix, executor table |
+| SANDBOX-012.4-5, .7 | Canaries `G1_mcp_unguarded_tool`, `G2_*`, `G3_*` (Task 23) over the Task 11 to 13 mechanisms |
+| SANDBOX-012.8-9, .15 | `process_label_test.go` (AST checker, label lifecycle), preview ticket and origin tests, `child_ceiling_test.go` (lock and concurrent create) |
+| SANDBOX-012.13 | `cmd/sandbox-conformance` self-tests: control validity, result mapping, acceptance line and `--verify-release` |
 | TASK-LAUNCH-FAILURE-RECOVERY-005.1-5 | `bootstrap_attempt_recovery_test.go`: `TestBootstrapAttempt`, pending-launch controls, same-session retry, sibling isolation, exact queue dispatch |
 
 ## E2E tests
@@ -193,13 +197,14 @@ No broad suite or generic review work order is added.
 - [x] [Task 14: Support sandbox policies and Nono on macOS](task-14-macos-support.md)
 - [ ] [Task 15: Declare per-agent credential requirements](task-15-credential-registry.md)
 - [ ] [Task 16: Serve previews from a separate origin](task-16-preview-origin.md)
-- [ ] [Task 17: Authenticate executor REST routes and offer loopback bind](task-17-executor-rest-auth-loopback.md)
+- [ ] [Task 17: Authenticate executor REST routes and report the real bind](task-17-executor-rest-auth-loopback.md)
 - [ ] [Task 18: Sandbox or label every session process](task-18-process-surface-labels.md)
 - [ ] [Task 19: Refuse and report instead of failing silently](task-19-degraded-states.md)
-- [ ] [Task 20: Build the sandbox conformance suite and release gate](task-20-conformance-suite.md)
+- [ ] [Task 20: Build the sandbox conformance harness and journey](task-20-conformance-suite.md)
 - [ ] [Task 21: Integrate the extracted token and managed Git pieces](task-21-standalone-integration.md)
 - [ ] [Task 22: Refuse a child task wider than its parent's guard](task-22-child-grant-ceiling.md)
 - [ ] [Task 23: Complete the canary set and the promotion record](task-23-canary-set-and-promotion.md)
+- [ ] [Task 24: Add the summary contract, flags and admission registry](task-24-summary-foundation.md)
 
 Execute sequentially in listed order: 01, 02, 03, 04, 05, 06, 07, 10, 08, 09, 14.
 Task 13 has no dependency and may run at any point. Task 11 waits for Tasks 04 and 06 and Task 12 for Task 07; their `depends_on` lists are authoritative. Task IDs remain stable after adding Tasks 10 to 14. Dependency lists state hard prerequisites, not permission to delegate.
@@ -219,9 +224,9 @@ Use `gh pr create --draft --base main --body-file <prepared-file>` after authori
 Use the repository PR template. Identify #4538 as the merged prerequisite and distinguish host and plugin deliverables.
 Never commit or push to the former parent branch. Do not merge the follow-up PR.
 
-Tasks 15 to 23 implement REQ-AGENTS-SANDBOX-012 (sandboxed session) and the conformance suite that gates release; the mechanisms are in the [system design](../../specs/agents/system-design/sandbox-session-conformance.md). Task 21 waits for the standalone MCP session token change and the standalone managed Git isolation change (REQ-AGENTS-GITISOLATION) on main. No task from 15 on starts before that package is reviewed.
+Tasks 15 to 24 implement REQ-AGENTS-SANDBOX-012 (sandboxed session) and the conformance suite that gates release; the mechanisms are in the [system design](../../specs/agents/system-design/sandbox-session-conformance.md). Task 21 waits for the standalone MCP session token change and the standalone managed Git isolation change (REQ-AGENTS-GITISOLATION) on main. No task from 15 on starts before that package is reviewed.
 
-## Ownership and order for Tasks 11 to 23
+## Ownership and order for Tasks 11 to 24
 
 Tasks 04 to 10 belong to the #4769 author; Tasks 11 and up belong to this follow-up. "Done" on Task 14 means shipped on the combined branch; its prerequisites 05, 06, 07 and 10 are still open upstream.
 
@@ -231,17 +236,18 @@ Tasks 04 to 10 belong to the #4769 author; Tasks 11 and up belong to this follow
 | 12 token and broker | 07 | none |
 | 13 managed Git | none | none |
 | 14 macOS | 05, 06, 07, 10 | none |
-| 15 credential registry | 05 | none |
-| 16 preview origin | none | none |
-| 17 REST auth and bind | 04 (Part B only) | none |
-| 18 process surface | 05, 10 | none |
-| 19 degraded states | 04, 10 | 15 |
-| 20 harness and journey | 05, 07, 09 | 19 |
-| 21 standalone integration | none | 12, 13 and both standalone changes merged |
+| 15 credential registry | 05 | 24 |
+| 16 preview origin | none | 24 |
+| 17 REST auth and bind (agentctl only) | none | 24 |
+| 18 process surface | 05, 10 | 24 |
+| 19 degraded states | 04, 10 | 15, 17, 24 |
+| 20 harness and journey | 05, 07, 09 (09 depends on 02 and 08) | 19 |
+| 21 standalone integration | none | 12, 13; build also waits for both standalone changes to merge (cards df7b4bf2, 4f060a95) |
 | 22 child ceiling | 04 | 11 |
+| 24 summary foundation | 04, 10 | none |
 | 23 canary set and promotion | none | 11, 12, 13, 15 to 22 |
 
-Order to a usable end-to-end path (one agent, Local and Worktree, Linux and macOS): 05 provider lifecycle so a real agent launches; 19 so failures are visible; 15 so the agent can log in; 17 Part A; 18; 20 journey for one agent; then 16, 22, the remaining canaries of 23, the second agent, and 21 once both standalone changes have merged.
+Order to a usable end-to-end path (one agent, Local and Worktree, Linux and macOS), matching the `depends_on` lists: 05 provider lifecycle so a real agent launches; 24 foundation; then 15, 17 and 18 in parallel; then 19 so failures are visible; 20 journey for one agent; then 16, 22, the remaining canaries of 23, the second agent, and 21 last, once both standalone changes have merged.
 
 Not in this package: the journey found operator traps (executor bindings are organization-scoped and a workspace-scoped policy or binding fails with an error that names neither cause; the policy list is empty unless a workspace id is passed). They are a separate fix and carry no acceptance criterion here.
 

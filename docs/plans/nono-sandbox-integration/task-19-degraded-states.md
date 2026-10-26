@@ -2,20 +2,25 @@
 id: "19-degraded-states"
 title: "Refuse and report instead of failing silently"
 status: pending
-wave: 10
+wave: 11
 depends_on:
   - "04-policy-authority"
   - "10-execution-surfaces"
   - "15-credential-registry"
+  - "17-executor-rest-auth-loopback"
+  - "24-summary-foundation"
 plan: "plan.md"
 requirements:
   - REQ-AGENTS-SANDBOX-012
 acceptance_criteria:
   - AC-AGENTS-SANDBOX-012.1
   - AC-AGENTS-SANDBOX-012.2
+  - AC-AGENTS-SANDBOX-012.3
+  - AC-AGENTS-SANDBOX-012.6
   - AC-AGENTS-SANDBOX-012.10
   - AC-AGENTS-SANDBOX-012.12
   - AC-AGENTS-SANDBOX-012.14
+  - AC-AGENTS-SANDBOX-012.16
 system_design:
   - ../../specs/agents/system-design/sandbox-session-conformance.md
 ---
@@ -30,9 +35,10 @@ Replace the backend abort and the `unknown` launch failure with typed refusals, 
 
 - Typed reason from `newSandboxRuntime`; refusing runtime that keeps the backend serving; `reason_code` added to availability; provider conditions re-evaluated per read.
 - Exit diagnosis in agentctl with the closed cause set, core-supplied hints, redacted 2 KiB tail; `launch_cause` persisted and rendered.
-- `sandbox_summary`, the `refused` attempt record, item states and attempt events, and their rendering with shield behavior; name-only environment reporting with `missing`.
-- Executor capability table: only Local and Worktree supported.
-- Flag `features.sandboxSessionSummary`, off by default; the 012.1 keep-serving fix is not gated.
+- Plug the 012.1, 012.12, 012.16 and `rest_auth` (012.6) checks into the Task 24 admission registry in the requirement's evaluation order; populate summary items and events; render the indicator matrix; name-only environment reporting with `missing`.
+- Re-admission on new-process resume, recovery and replacement (012.3), writing a refusal record on refusal; continuation runs no admission.
+- Executor capability table: only Local and Worktree supported; Settings availability gains `executors`.
+- The flag and the refusal table come from Task 24; the 012.1 keep-serving fix is not gated.
 
 ## Acceptance
 
@@ -54,7 +60,7 @@ Each listed criterion in `docs/specs/agents/requirements/sandbox-session-conform
 
 ## Dependencies
 
-Depends on: 04-policy-authority, 10-execution-surfaces, 15-credential-registry. See the dependency table in the plan.
+Depends on: 04-policy-authority, 10-execution-surfaces, 15-credential-registry, 17-executor-rest-auth-loopback, 24-summary-foundation. See the dependency table in the plan.
 
 ## Risks
 
