@@ -17,3 +17,7 @@ the P3 two-node run.
   `worker-state/<node>/` empty.
 - The runner treats cleanup as settled only when the pool workspace and the
   per-environment fence directory are both gone.
+
+## Evidence status
+
+The raw run JSON for this work order stays on the operator laptop and is not committed, so the results above are operator-reported and not independently verifiable from this repository. The live runs for WO06 and WO07 used builds older than the later pool edits to the shared Nomad job, quarantine, bootstrap, state and destroy code; they were not re-run on the final head. No live run places two environments on one node and checks isolation through stop, recovery and cleanup; the offline admission test covers admission only.
