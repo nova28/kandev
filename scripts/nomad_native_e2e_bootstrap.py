@@ -26,7 +26,7 @@ _TOP_REQUIRED = {
     "cpu_mhz", "memory_mb", "repository", "expected_file", "temp_root_parent",
 }
 _TOP_OPTIONAL = {"agent_profile_name", "partition", "pool"}
-_POOL_KEYS = {"node_pool", "placement", "ssh_user", "memory_max_mb"}
+_POOL_KEYS = {"node_pool", "placement", "ssh_user", "memory_max_mb", "host_identity_token_file"}
 _NOMAD_KEYS = {"address", "token_file", "namespace", "region", "datacenter", "node_id", "platform"}
 _SSH_KEYS = {"target", "port", "host_fingerprint", "identity_file"}
 _NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}")
@@ -167,7 +167,7 @@ def validate_partition(value: Any, nomad_http_address: str) -> dict[str, str]:
 def validate_pool(value: Any) -> dict[str, Any]:
     """Pool profile settings for the pool scenarios. Placement onto the fixture node is by node pool, never by node id."""
     if not isinstance(value, dict) or "node_pool" not in value or value.keys() - _POOL_KEYS:
-        raise PreflightError("pool must contain node_pool and only node_pool, placement, ssh_user and memory_max_mb")
+        raise PreflightError("pool must contain node_pool and only node_pool, placement, ssh_user, memory_max_mb and host_identity_token_file")
     if not isinstance(value["node_pool"], str) or not _NAME.fullmatch(value["node_pool"]):
         raise PreflightError("pool.node_pool is invalid")
     if value.get("placement", "spread") not in ("spread", "binpack"):
@@ -176,7 +176,10 @@ def validate_pool(value: Any) -> dict[str, Any]:
         raise PreflightError("pool.ssh_user is invalid")
     if "memory_max_mb" in value:
         _positive_int(value["memory_max_mb"], "pool.memory_max_mb")
-    return dict(value)
+    result = dict(value)
+    if "host_identity_token_file" in value:
+        result["host_identity_token_file"] = str(_private_regular_file(value["host_identity_token_file"], "pool.host_identity_token_file", max_size=4096))
+    return result
 
 
 def validate_bootstrap(config: Any, run: Callable[..., Any] = subprocess.run, checkout_root: Path = CHECKOUT_ROOT) -> dict[str, Any]:

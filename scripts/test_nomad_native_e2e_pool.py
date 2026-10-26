@@ -44,6 +44,19 @@ class PoolBootstrapTest(Wo06Base):
         self.config["pool"] = dict(POOL)
         self.assertEqual(self.validate()["pool"], POOL)
 
+    def test_host_identity_token_file_must_be_a_private_regular_file(self):
+        token = self.parent / "identity-token"
+        token.write_text("secret-token\n")
+        token.chmod(0o600)
+        self.config["pool"] = {**POOL, "host_identity_token_file": str(token)}
+        self.assertEqual(self.validate()["pool"]["host_identity_token_file"], str(token))
+        token.chmod(0o644)
+        with self.assertRaises(PreflightError):
+            self.validate()
+        self.config["pool"] = {**POOL, "host_identity_token_file": "relative/token"}
+        with self.assertRaises(PreflightError):
+            self.validate()
+
     def test_pool_rejections(self):
         bad = [{}, {"placement": "spread"}, {"node_pool": "bad pool"}, {"node_pool": "kandev", "placement": "random"},
                {"node_pool": "kandev", "node_id": "x"}, {"node_pool": "kandev", "ssh_user": "a@b"},
@@ -124,6 +137,69 @@ class OwnedFenceTest(unittest.TestCase):
         self.assertEqual(self.sha("env kandev-job-1\n"), hashlib.sha256(b"env kandev-job-1\n").hexdigest())
         self.assertIsNone(self.sha("env kandev-job-2\n"))
         self.assertIsNone(self.sha(None))
+
+
+class TwoNodeLayoutTest(unittest.TestCase):
+    def scenario(self, output, code=0, executed=None):
+        scn = pool.TwoNodeScenario.__new__(pool.TwoNodeScenario)
+        calls = executed if executed is not None else []
+        scn.read_state = lambda env: {"workspace_path": "/n/workspaces/environments/e1/g1"}
+        scn.r = type("R", (), {"use_node": lambda self, a, r: calls.append(("use", a, r)),
+                               "ssh": lambda self, cmd: (calls.append(("ssh", cmd)) or (code, output))})()
+        return scn
+
+    def env(self, attach):
+        return {"label": "A", "attach": attach, "state_root": "/n", "environment_id": "e1"}
+
+    def test_local_node_must_hold_a_worktree_on_the_environment_branch(self):
+        layout = self.scenario("worktree kandev/pool/e1 /src/.git").workspace_layout(self.env("local"))
+        self.assertEqual(layout["kind"], "worktree")
+        with self.assertRaises(PreflightError):
+            self.scenario("checkout main /n/ws/.git").workspace_layout(self.env("local"))
+        with self.assertRaises(PreflightError):
+            self.scenario("worktree main /src/.git").workspace_layout(self.env("local"))
+
+    def test_ssh_node_must_hold_a_plain_checkout(self):
+        self.assertEqual(self.scenario("checkout main /n/ws/.git").workspace_layout(self.env("ssh"))["kind"], "checkout")
+        with self.assertRaises(PreflightError):
+            self.scenario("worktree kandev/pool/e1 /src/.git").workspace_layout(self.env("ssh"))
+
+    def test_empty_or_failed_listing_is_refused(self):
+        for output, code in (("", 0), ("worktree kandev/pool/e1 /src/.git", 1)):
+            with self.assertRaises(PreflightError):
+                self.scenario(output, code).workspace_layout(self.env("local"))
+
+    def test_cleaned_requires_branch_and_registration_gone_for_a_worktree(self):
+        layout = {"kind": "worktree", "branch": "kandev/pool/e1", "git_common_dir": "/src/.git"}
+        gone = self.scenario("", 1)
+        gone.r.ssh = lambda cmd: (1, "") if "show-ref" in cmd else (0, "worktree /src\n")
+        self.assertTrue(gone.assert_pool_cleaned(self.env("local"), layout)["branch_removed"])
+        branch_left = self.scenario("", 0)
+        branch_left.r.ssh = lambda cmd: (0, "")
+        with self.assertRaises(PreflightError):
+            branch_left.assert_pool_cleaned(self.env("local"), layout)
+        registered = self.scenario("", 0)
+        registered.r.ssh = lambda cmd: (1, "") if "show-ref" in cmd else (0, "worktree /n/workspaces/environments/e1/g1\n")
+        with self.assertRaises(PreflightError):
+            registered.assert_pool_cleaned(self.env("local"), layout)
+
+
+class ActiveNodeRoutingTest(unittest.TestCase):
+    def test_commands_follow_the_node_in_use(self):
+        runner = fixture.Runner.__new__(fixture.Runner)
+        runner.ops = fixture.Ops()
+        sent = []
+        runner.ops.local_exec = lambda cmd: sent.append(("local", cmd)) or (0, "")
+        runner.ssh_remote = lambda cmd: sent.append(("ssh", cmd)) or (0, "")
+        runner.active_attach = "ssh"
+        runner.save_state = lambda **kw: runner.__dict__.setdefault("saved", []).append(kw)
+        runner._exec_on_active_node("a")
+        runner.use_node("local", "/n")
+        runner._exec_on_active_node("b")
+        self.assertEqual(sent, [("ssh", "a"), ("local", "b")])
+        self.assertEqual(runner.saved, [{"pool_state_root": "/n"}])
+        with self.assertRaises(PreflightError):
+            runner.use_node("bogus", "/n")
 
 
 class PoolSettledTest(unittest.TestCase):

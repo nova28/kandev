@@ -200,6 +200,11 @@ def pin_host_key(ops: "Ops", ssh: dict[str, Any], known_hosts: Path) -> None:
     _write_private(known_hosts, matching[0] + "\n")
 
 
+def _default_local_exec(command: str) -> tuple[int, str]:
+    result = subprocess.run(["/bin/sh", "-c", command], capture_output=True, text=True, timeout=20, check=False)
+    return result.returncode, result.stdout
+
+
 def _default_ssh(ssh: dict[str, Any]) -> Callable[[str], tuple[int, str]]:
     def call(command: str) -> tuple[int, str]:
         result = subprocess.run(
@@ -396,6 +401,7 @@ class Ops:
     keyscan: Callable[[str, int], list[str]] = _default_keyscan
     key_fingerprint: Callable[[str], str] = _default_key_fingerprint
     ssh_factory: Callable[[dict[str, Any]], Callable[[str], tuple[int, str]]] = _default_ssh
+    local_exec: Callable[[str], tuple[int, str]] = _default_local_exec
     ws: Callable[[dict[str, Any]], dict[str, Any]] = _default_ws
     git_bare_clone: Callable[[str, str], None] = _default_git_bare_clone
     git_binary: Callable[[], str] = _default_git_binary
@@ -480,8 +486,21 @@ class Runner:
         self.nomad = ops.nomad_factory(state["nomad"]["address"], token, state["nomad"]["namespace"], state["nomad"]["region"])
         known_hosts = root / "known_hosts"
         pin_host_key(ops, state["ssh"], known_hosts)
-        self.ssh = ops.ssh_factory({**state["ssh"], "identity_file": str(self.home / ".ssh" / "id_ed25519"), "known_hosts": str(known_hosts)})
+        self.ssh_remote = ops.ssh_factory({**state["ssh"], "identity_file": str(self.home / ".ssh" / "id_ed25519"), "known_hosts": str(known_hosts)})
+        self.active_attach = "ssh"
+        self.ssh = self._exec_on_active_node
         self.database = str(self.home / "data" / "kandev.db")
+
+    def _exec_on_active_node(self, command: str) -> tuple[int, str]:
+        """Runs on the node the scenario is inspecting: this host for a local node, the SSH target otherwise."""
+        return self.ops.local_exec(command) if self.active_attach == "local" else self.ssh_remote(command)
+
+    def use_node(self, attach: str, state_root: str) -> None:
+        """Points worker commands and pool fence paths at the node a pool environment was placed on."""
+        if attach not in ("local", "ssh"):
+            raise PreflightError(f"unknown node attach {attach!r}")
+        self.active_attach = attach
+        self.save_state(pool_state_root=state_root)
 
     # -- bookkeeping -------------------------------------------------------
     def save_state(self, **updates: Any) -> None:
@@ -583,7 +602,8 @@ class Runner:
         if not isinstance(job_id, str) or not _JOB_ID.fullmatch(job_id):
             raise PreflightError("observed Nomad job id does not follow the kandev-<hash> pattern")
         node = self.nomad(f"/v1/node/{inventory['node_id']}")
-        if node.get("ID") != self.state["nomad"]["node_id"] or node.get("Status") != "ready" or node.get("SchedulingEligibility") != "eligible":
+        pooled = bool(self.state.get("pool_state_root"))
+        if (not pooled and node.get("ID") != self.state["nomad"]["node_id"]) or node.get("Status") != "ready" or node.get("SchedulingEligibility") != "eligible":
             raise PreflightError("Nomad worker identity is not the configured ready and eligible node")
         job = self.nomad(f"/v1/job/{job_id}")
         job = job.get("Job", job)
@@ -907,6 +927,8 @@ def _materialize(cfg: dict[str, Any], root: Path, port: int) -> None:
     with os.fdopen(fd, "wb") as handle:
         handle.write(Path(cfg["ssh"]["identity_file"]).read_bytes())
     env = {"HOME": str(home), "KANDEV_HOME_DIR": str(home), "KANDEV_DATABASE_PATH": str(home / "data" / "kandev.db"), "KANDEV_SERVER_PORT": str(port), SERVER_HOST_ENV: LOOPBACK_HOST, **_git_isolation_env(root)}
+    if (cfg.get("pool") or {}).get("host_identity_token_file"):
+        _write_private(home / "data" / "nomad-host-identity", Path(cfg["pool"]["host_identity_token_file"]).read_text(encoding="utf-8"))
     _write_private(root / "gitconfig", "")
     manifest = {"version": 1, "home_dir": str(home), "backend_executable": cfg["kandev_binary"], "argv": ["__backend"], "port": port, "env": env}
     _write_private(home / "supervisor" / "launch.json", json.dumps(manifest, sort_keys=True))

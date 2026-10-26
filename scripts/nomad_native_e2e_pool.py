@@ -19,7 +19,7 @@ import nomad_native_e2e_wo06 as wo06
 import nomad_native_e2e_wo07 as wo07
 from nomad_native_e2e import PreflightError
 
-SCENARIOS = ("pool-placement",)
+SCENARIOS = ("pool-placement", "pool-two-node")
 CONTRACT_KEYS = ("kandev.attach", "kandev.state_root")
 NODE_ID_TARGET = "${node.unique.id}"
 
@@ -105,6 +105,125 @@ class PoolScenario(wo07.Wo07Scenario):
         return result
 
 
+class TwoNodeScenario(PoolScenario):
+    """Two environments, one per node: spread, local worktree versus remote checkout, and proven cleanup of both."""
+
+    def pool_nodes(self) -> list[dict[str, Any]]:
+        pool = self.cfg["pool"]["node_pool"]
+        nodes = []
+        for stub in self.r.nomad("/v1/nodes"):
+            node = self.r.nomad(f"/v1/node/{stub['ID']}")
+            if node.get("NodePool") == pool and node.get("Status") == "ready" and node.get("SchedulingEligibility") == "eligible":
+                nodes.append(node)
+        return nodes
+
+    def verify_two_nodes(self) -> dict[str, Any]:
+        nodes = self.pool_nodes()
+        attaches = sorted((n.get("Meta") or {}).get("kandev.attach", "") for n in nodes)
+        if attaches != ["local", "ssh"]:
+            raise PreflightError(f"the pool needs exactly one ready local node and one ready ssh node, found attach values {attaches}")
+        for node in nodes:
+            problems = contract_problems(node.get("Meta") or {})
+            if problems:
+                raise PreflightError(f"node {node['ID']} does not carry the Kandev node contract: {', '.join(problems)}")
+        return {"nodes": {n["ID"]: n["Meta"]["kandev.attach"] for n in nodes}}
+
+    def await_placed(self, label: str, task: dict[str, str]) -> dict[str, Any]:
+        """Wait for the environment's node, point worker commands at it, then run the shared readiness checks."""
+        def placed() -> dict[str, Any] | None:
+            inventory = self.soft(lambda: self.r.inventory(task["session_id"], task["id"]))
+            return inventory if inventory and inventory.get("node_id") and inventory.get("allocation_id") else None
+
+        inventory = self.poll(placed, f"environment {label} was not placed on a node before timeout")
+        meta = self.r.nomad(f"/v1/node/{inventory['node_id']}").get("Meta") or {}
+        self.r.use_node(meta["kandev.attach"], meta["kandev.state_root"])
+        ready = self.await_ready(label, task)
+        self.envs[label]["attach"] = meta["kandev.attach"]
+        self.envs[label]["state_root"] = meta["kandev.state_root"]
+        self.save_envs()
+        return ready
+
+    def workspace_layout(self, env: dict[str, Any]) -> dict[str, Any]:
+        """The repository directory in the workspace: a git worktree on a local node, a plain checkout on an ssh node."""
+        self.r.use_node(env["attach"], env["state_root"])
+        workspace = self.read_state(env)["workspace_path"]
+        code, out = self.r.ssh(f'for d in {workspace}/*/; do [ -e "${{d}}.git" ] || continue; '
+                               f'if [ -f "${{d}}.git" ]; then echo worktree; else echo checkout; fi; '
+                               f'git -C "$d" rev-parse --abbrev-ref HEAD; '
+                               f'git -C "$d" rev-parse --path-format=absolute --git-common-dir; done')
+        lines = out.split()
+        if code != 0 or len(lines) != 3:
+            raise PreflightError(f"environment {env['label']} workspace has no single repository: {out!r}")
+        kind, branch, common = lines
+        want = "worktree" if env["attach"] == "local" else "checkout"
+        if kind != want:
+            raise PreflightError(f"environment {env['label']} on a {env['attach']} node has a {kind}, expected a {want}")
+        if kind == "worktree" and branch != f"kandev/pool/{env['environment_id']}":
+            raise PreflightError(f"the local worktree is on branch {branch!r}, expected the per-environment branch")
+        return {"kind": kind, "branch": branch, "git_common_dir": common, "workspace": workspace}
+
+    def assert_pool_cleaned(self, env: dict[str, Any], layout: dict[str, Any]) -> dict[str, Any]:
+        self.r.use_node(env["attach"], env["state_root"])
+        if layout["kind"] == "worktree":
+            code, _ = self.r.ssh(f"git --git-dir='{layout['git_common_dir']}' show-ref --verify --quiet 'refs/heads/{layout['branch']}'")
+            if code == 0:
+                raise PreflightError(f"environment {env['label']} left the branch {layout['branch']} in the source repository")
+            code, out = self.r.ssh(f"git --git-dir='{layout['git_common_dir']}' worktree list --porcelain")
+            if code != 0 or env["environment_id"] in out:
+                raise PreflightError(f"environment {env['label']} left a worktree registration in the source repository")
+        return {"kind": layout["kind"], "branch_removed": layout["kind"] == "worktree", "workspace_removed": True}
+
+
+def drive_pool_two_node(runner: fx.Runner, cfg: dict[str, Any], ops: fx.Ops, root: Path) -> dict[str, Any]:
+    guard = wo07.OperatorGuard(ops)
+    scn = TwoNodeScenario(runner, cfg, "pool-two-node", guard)
+    step = runner.step
+    try:
+        scn.data["node"] = step("verify-node-identity", scn.verify_node_identity)
+        step("poll-node-ready", lambda: scn.poll(scn.node_ready, "Nomad node is not ready and eligible"))
+        scn.data["nodes"] = step("verify-two-nodes", scn.verify_two_nodes)
+        step("start-git-daemon", runner.start_git_daemon)
+        step("start-backend", lambda: runner.start_backend(None))
+        step("create-fixture-objects", lambda: runner.setup_api_objects(cfg))
+        task_a = {"id": runner.state["task_id"], "session_id": runner.state["session_id"]}
+        step("await-a-running", lambda: scn.await_placed("A", task_a))
+        task_b = runner.create_task("Nomad pool fixture B")
+        step("await-b-running", lambda: scn.await_placed("B", task_b))
+        env_a, env_b = scn.envs["A"], scn.envs["B"]
+
+        def spread() -> dict[str, Any]:
+            if env_a["node_id"] == env_b["node_id"]:
+                raise PreflightError("both environments landed on the same node; spread placement did not use the second node")
+            return {"A": env_a["attach"], "B": env_b["attach"]}
+
+        scn.data["spread"] = step("assert-spread", spread)
+        layouts = {label: step(f"assert-workspace-{label.lower()}", lambda e=scn.envs[label]: scn.workspace_layout(e)) for label in ("A", "B")}
+        scn.data["layouts"] = layouts
+        scn.known_jobs = scn.kandev_jobs()
+        for label, task in (("A", task_a), ("B", task_b)):
+            step(f"archive-task-{label.lower()}", lambda t=task: scn.archive(t))
+        for label in ("A", "B"):
+            def settled(e=scn.envs[label]) -> dict[str, Any]:
+                scn.r.use_node(e["attach"], e["state_root"])
+                pending: list[str] = []
+                return scn.settle_note(pending, f"production cleanup of {e['label']} did not settle before timeout")(lambda: scn.production_settled(e, pending))
+
+            result = step(f"await-cleanup-{label.lower()}", settled)
+            scn.data["identities"][label]["cleanup"] = result
+            step(f"assert-cleaned-{label.lower()}", lambda e=scn.envs[label], l=layouts[label]: scn.assert_pool_cleaned(e, l))
+
+        def assert_no_operator() -> None:
+            guard.assert_clean()
+            guard.armed = False
+
+        step("assert-no-operator-cleanup", assert_no_operator)
+        cleanup = step("teardown", lambda: scn.finish({"released": [], "operator_calls": []}))
+    finally:
+        guard.restore()
+    return {"scenario": scn.name, "pool": True, "two_node": True, "production_cleanup": True, "operator_cleanup_used": False,
+            "release": "none", "cleanup": cleanup, "environments": wo07._env_report(scn)}
+
+
 def drive_pool_placement(runner: fx.Runner, cfg: dict[str, Any], ops: fx.Ops, root: Path) -> dict[str, Any]:
     guard = wo07.OperatorGuard(ops)
     scn = PoolScenario(runner, cfg, "pool-placement", guard)
@@ -125,6 +244,9 @@ def check_scenario_config(cfg: dict[str, Any], scenario: str) -> None:
         raise PreflightError("the pool scenarios mutate Nomad: nomad.address must be a loopback http address")
 
 
+DRIVERS = {"pool-placement": drive_pool_placement, "pool-two-node": drive_pool_two_node}
+
+
 def run_scenario(config: Any, scenario: str, ops: fx.Ops | None = None, **kwargs: Any) -> int:
     ops = ops or fx.Ops()
 
@@ -133,7 +255,7 @@ def run_scenario(config: Any, scenario: str, ops: fx.Ops | None = None, **kwargs
         wo06.check_no_quarantine_marker(cfg, ops)
 
     return fx.run_create_fixture(
-        config, ops=ops, drive=drive_pool_placement, mode=f"created-real-{scenario}", label=scenario,
+        config, ops=ops, drive=DRIVERS[scenario], mode=f"created-real-{scenario}", label=scenario,
         stop_owned_on_failure=True, check_config=check, state_extra=wo06._state_extra(scenario), **kwargs,
     )
 
