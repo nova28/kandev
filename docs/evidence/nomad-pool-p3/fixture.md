@@ -57,3 +57,20 @@ matches. The local `kandev.state_root` must lie outside the run home.
 Add to the existing `pool` block: `"host_identity_token_file": "<FX>/local-identity/data/nomad-host-identity"`.
 The fixture repository must be a local path (`repository.path`) so the local
 node can add a git worktree of it.
+
+## Scenarios beyond placement
+
+`pool-queue`, `pool-partition` and `pool-refusals` replace the manual procedures; each is one
+invocation of `scripts/nomad-native-e2e run --require-real --create-fixture --scenario <name>`.
+
+- `pool-queue` sizes the profile memory per run so each node holds one environment. No extra setup.
+- `pool-partition` needs a `partition` block (`listen`, `upstream`) in the runner config, and the
+  ssh node's Nomad client must use `servers = ["<partition.listen>"]` so the runner's relay sits
+  between that client and the server RPC (`upstream` is the real RPC address). The local client
+  connects directly. If the ssh node never leaves `ready` after the partition, the run fails with
+  an RPC-bypass message. The run sends one inert prompt to the local environment while partitioned.
+- `pool-refusals` overrides the ssh node's `kandev.ssh_host_key_sha256` through Nomad dynamic node
+  metadata (Nomad 1.5 or later; the runner's token needs `node:write`), and swaps the run-home
+  host identity token (read on every launch, so no backend restart). It needs one eligible local
+  and one eligible ssh node, and `pool.host_identity_token_file`. Metadata, per-node eligibility
+  and the token are restored in teardown and on failure.

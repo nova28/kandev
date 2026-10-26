@@ -20,7 +20,7 @@ import nomad_native_e2e_wo06 as wo06
 import nomad_native_e2e_wo07 as wo07
 from nomad_native_e2e import PreflightError
 
-SCENARIOS = ("pool-placement", "pool-two-node", "pool-node-quarantine")
+SCENARIOS = ("pool-placement", "pool-two-node", "pool-node-quarantine", "pool-queue", "pool-refusals")
 CONTRACT_KEYS = ("kandev.attach", "kandev.state_root")
 NODE_ID_TARGET = "${node.unique.id}"
 
@@ -332,7 +332,17 @@ def check_scenario_config(cfg: dict[str, Any], scenario: str) -> None:
         raise PreflightError("the pool scenarios mutate Nomad: nomad.address must be a loopback http address")
 
 
-DRIVERS = {"pool-placement": drive_pool_placement, "pool-two-node": drive_pool_two_node, "pool-node-quarantine": drive_pool_node_quarantine}
+def _lazy_driver(module: str, name: str) -> Callable[..., dict[str, Any]]:
+    """The queue and refusals drivers import this module, so they are resolved on first use."""
+    def drive(runner: fx.Runner, cfg: dict[str, Any], ops: fx.Ops, root: Path) -> dict[str, Any]:
+        return getattr(__import__(module), name)(runner, cfg, ops, root)
+
+    return drive
+
+
+DRIVERS = {"pool-placement": drive_pool_placement, "pool-two-node": drive_pool_two_node, "pool-node-quarantine": drive_pool_node_quarantine,
+           "pool-queue": _lazy_driver("nomad_native_e2e_pool_queue", "drive_pool_queue"),
+           "pool-refusals": _lazy_driver("nomad_native_e2e_pool_refusals", "drive_pool_refusals")}
 
 
 def run_scenario(config: Any, scenario: str, ops: fx.Ops | None = None, **kwargs: Any) -> int:

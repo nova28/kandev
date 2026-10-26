@@ -40,6 +40,9 @@ REQUIRED_SCENARIOS = {
     "pool-placement",
     "pool-two-node",
     "pool-node-quarantine",
+    "pool-queue",
+    "pool-partition",
+    "pool-refusals",
     "recovery",
     "pre-ready-recovery",
     "distribution",
@@ -1089,10 +1092,14 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "cleanup-fixture":
         return _fixture_module().cleanup_fixture_command(args.fixture_root)
     if args.command == "run" and args.create_fixture:
-        if args.scenario not in ("pre-ready-recovery", "admission", "disconnect", "cleanup-positive", "cleanup-negative", "pool-placement", "pool-two-node", "pool-node-quarantine") or not args.require_real:
-            print("--create-fixture requires --require-real --scenario pre-ready-recovery|admission|disconnect|cleanup-positive|cleanup-negative|pool-placement|pool-two-node|pool-node-quarantine", file=sys.stderr)
+        if args.scenario not in ("pre-ready-recovery", "admission", "disconnect", "cleanup-positive", "cleanup-negative", "pool-placement", "pool-two-node", "pool-node-quarantine", "pool-queue", "pool-partition", "pool-refusals") or not args.require_real:
+            print("--create-fixture requires --require-real --scenario pre-ready-recovery|admission|disconnect|cleanup-positive|cleanup-negative|pool-placement|pool-two-node|pool-node-quarantine|pool-queue|pool-partition|pool-refusals", file=sys.stderr)
             return 2
-        if args.scenario in ("pool-placement", "pool-two-node", "pool-node-quarantine"):
+        if args.scenario == "pool-partition":
+            _fixture_module()
+            import nomad_native_e2e_pool_partition
+            return nomad_native_e2e_pool_partition.create_fixture_command(args.config)
+        if args.scenario in ("pool-placement", "pool-two-node", "pool-node-quarantine", "pool-queue", "pool-refusals"):
             return _pool_module().create_fixture_command(args.config, args.scenario)
         if args.scenario in ("cleanup-positive", "cleanup-negative"):
             return _wo07_module().create_fixture_command(args.config, args.scenario)

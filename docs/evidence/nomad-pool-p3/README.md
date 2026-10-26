@@ -53,5 +53,5 @@ verified (`readmit-remove-allocation-directory` step, public docs updated).
 
 ## Pending
 
-The manual queue, partition and refusal procedures are being converted into runner scenarios
-(`pool-queue`, `pool-partition`, `pool-refusals`); results are appended here.
+Runner scenarios `pool-queue`, `pool-partition` and `pool-refusals` replace the manual
+procedures; offline-tested, live results are appended here after the operator runs them.

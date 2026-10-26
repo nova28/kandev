@@ -1,4 +1,8 @@
-# Manual P3 scenarios (operator-run)
+# Manual P3 scenarios (superseded by runner scenarios)
+
+**Superseded:** verification items 2, 3 and 5 are automated as `pool-queue`, `pool-partition` and
+`pool-refusals` (see `fixture.md`). The procedures below remain as a reference for what each
+scenario asserts.
 
 Verification items 2, 3 and 5 of `docs/specs/executors/system-design/nomad-worker-pool.md`.
 Run on the two-node fixture in `fixture.md`, after a runner scenario has left a
