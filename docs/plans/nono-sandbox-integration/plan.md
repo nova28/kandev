@@ -13,6 +13,7 @@ requirements:
   - REQ-AGENTS-SANDBOX-009
   - REQ-AGENTS-SANDBOX-010
   - REQ-AGENTS-SANDBOX-011
+  - REQ-AGENTS-SANDBOX-012
   - REQ-PLUGINS-SANDBOX-001
   - REQ-PLUGINS-SANDBOX-002
   - REQ-TASKS-TASK-LAUNCH-FAILURE-RECOVERY-005
@@ -22,6 +23,7 @@ requirements:
 system_design:
   - ../../specs/agents/system-design/sandbox-policies.md
   - ../../specs/agents/system-design/sandbox-macos-support.md
+  - ../../specs/agents/system-design/sandbox-session-conformance.md
   - ../../specs/plugins/system-design/sandbox-provider-capability.md
   - ../../specs/tasks/system-design/bootstrap-attempt-recovery.md
   - ../../specs/agents/system-design/managed-git-repository-code-isolation.md
@@ -189,6 +191,13 @@ No broad suite or generic review work order is added.
 - [ ] [Task 12: Authenticate ordinary-session MCP and relay the Git broker](task-12-session-token-broker-relay.md)
 - [ ] [Task 13: Isolate managed Git from repository-supplied code](task-13-managed-git-isolation.md)
 - [x] [Task 14: Support sandbox policies and Nono on macOS](task-14-macos-support.md)
+- [ ] [Task 15: Declare per-agent credential requirements](task-15-credential-registry.md)
+- [ ] [Task 16: Serve previews from a separate origin](task-16-preview-origin.md)
+- [ ] [Task 17: Authenticate executor REST routes and offer loopback bind](task-17-executor-rest-auth-loopback.md)
+- [ ] [Task 18: Sandbox or label every session process](task-18-process-surface-labels.md)
+- [ ] [Task 19: Refuse and report instead of failing silently](task-19-degraded-states.md)
+- [ ] [Task 20: Build the sandbox conformance suite and release gate](task-20-conformance-suite.md)
+- [ ] [Task 21: Integrate the extracted token and managed Git pieces](task-21-standalone-integration.md)
 
 Execute sequentially in listed order: 01, 02, 03, 04, 05, 06, 07, 10, 08, 09, 14.
 Tasks 11, 12 and 13 have no dependency on the others and may run at any point. Task IDs remain stable after adding Tasks 10 to 14. Dependency lists state hard prerequisites, not permission to delegate.
@@ -207,6 +216,8 @@ Integrate later main changes only on this feature branch and rerun affected chec
 Use `gh pr create --draft --base main --body-file <prepared-file>` after authorized commit/push and task checks.
 Use the repository PR template. Identify #4538 as the merged prerequisite and distinguish host and plugin deliverables.
 Never commit or push to the former parent branch. Do not merge the follow-up PR.
+
+Tasks 15 to 21 implement REQ-AGENTS-SANDBOX-012 (sandboxed session) and the conformance suite that gates release; order and ownership are in the [system design](../../specs/agents/system-design/sandbox-session-conformance.md). Task 21 waits for the standalone MCP-token and managed-Git changes on main. No task from 15 on starts before that package is reviewed.
 
 Tasks 11 to 14 build on this plan's branch and ship together in one follow-up PR that identifies #4769 as its base.
 
