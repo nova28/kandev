@@ -9,6 +9,7 @@ production cleanup as cleanup-positive.
 from __future__ import annotations
 
 import json
+import shlex
 import sys
 from pathlib import Path
 from typing import Any, Callable
@@ -175,6 +176,18 @@ class TwoNodeScenario(PoolScenario):
                 raise PreflightError(f"environment {env['label']} left a worktree registration in the source repository")
         return {"kind": layout["kind"], "branch_removed": layout["kind"] == "worktree", "workspace_removed": True}
 
+    def remove_allocation_dir(self, env: dict[str, Any]) -> dict[str, Any]:
+        """The readmission procedure's pool step: once the runtime is verified absent, delete the retained job directory and assert it is gone."""
+        self.focus(env)
+        root, job_id = self.pool_node_root(env), env["job_id"]
+        if not root or not root.startswith("/") or ".." in root or not wo06._SAFE_ID.fullmatch(job_id):
+            raise PreflightError("recorded pool paths are not safe to remove")
+        alloc = f"{root}/pool/allocations/{job_id}"
+        code, _ = self.r.ssh(f"[ -L {shlex.quote(alloc)} ] && exit 1; rm -rf -- {shlex.quote(alloc)}")
+        if code != 0 or self.r.ssh(f"[ -e {shlex.quote(alloc)} ] || [ -L {shlex.quote(alloc)} ]")[0] == 0:
+            raise PreflightError(f"the allocation directory of {env['label']} could not be removed after readmission")
+        return {"allocation_directory_removed": True}
+
     def remove_b_leftovers(self, env: dict[str, Any], layout: dict[str, Any]) -> dict[str, Any]:
         """Operator teardown released the environment, so its worktree, branch and node directories are removed here and asserted gone."""
         self.focus(env)
@@ -287,6 +300,7 @@ def drive_pool_node_quarantine(runner: fx.Runner, cfg: dict[str, Any], ops: fx.O
         layout_b = step("assert-workspace-b", lambda: scn.workspace_layout(scn.envs["B"]))
         scn.focus(env_a)
         readmitted = wo07._readmit(runner, ops, step, scn, env_a, leader, snapshot, node_x, window)
+        readmitted["allocation_directory"] = step("readmit-remove-allocation-directory", lambda: scn.remove_allocation_dir(env_a))
         released = [scn.release("B", kill_first=False)]
         env_a["released"] = True
         scn.save_envs()

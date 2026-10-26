@@ -342,6 +342,24 @@ class LocalNodeTreeAndLeftoversTest(unittest.TestCase):
         self.assertEqual(calls, ["focus", "remove", "assert"])
         self.assertTrue(report["removed"] and report["kind"] == "worktree")
 
+    def test_readmission_removes_the_allocation_directory_and_asserts_it_gone(self):
+        import subprocess, tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = os.path.realpath(tmp)
+            alloc = f"{tmp}/pool/allocations/kandev-job1"
+            os.makedirs(alloc)
+            def sh(cmd):
+                p = subprocess.run(["/bin/sh", "-c", cmd], capture_output=True, text=True, check=False)
+                return p.returncode, p.stdout
+            scn = pool.TwoNodeScenario.__new__(pool.TwoNodeScenario)
+            scn.focus = lambda env: None
+            scn.pool_node_root = lambda env: tmp
+            scn.r = type("R", (), {"ssh": lambda self, c: sh(c)})()
+            self.assertTrue(scn.remove_allocation_dir({"label": "A", "job_id": "kandev-job1"})["allocation_directory_removed"])
+            self.assertFalse(os.path.exists(alloc))
+            with self.assertRaises(PreflightError):
+                scn.remove_allocation_dir({"label": "A", "job_id": "../x"})
+
     def test_pool_leftovers_refuse_unsafe_paths(self):
         import nomad_native_e2e_wo06 as wo06
         scn = wo06.Scenario.__new__(wo06.Scenario)

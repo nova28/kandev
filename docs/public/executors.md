@@ -681,6 +681,8 @@ To readmit a quarantined worker, do all three steps yourself:
 2. Call `POST /api/v1/executors/nomad/readmit` with `node_id`, `environment_id`, `generation`, `job_id` and an `attestation` object (`process_tree_absent`, `job_stopped_purge_false`, `fence_removed`, all `true`, plus `operator`). Kandev keeps the record and marks it `operator_released`. It never changes node eligibility or the marker. It works while the archive cleanup is still retrying; a `409` with a busy message means another cleanup attempt holds the environment, so retry shortly.
 3. Delete the `kandev/quarantine/<node-id>` Nomad variable and re-enable the node with `nomad node eligibility -enable`.
 
+For a pool environment, a retained cleanup also keeps its staged job directory `<state_root>/pool/allocations/<job-id>` on the node (the bootstrap script, its environment file, the ready marker and an agentctl copy). Once step 1 has verified the runtime is absent, delete that directory too.
+
 ## Lifecycle and cleanup
 
 The task environment reports `creating`, `ready`, `stopped`, or `failed`; individual execution records have finer states. Stop is deliberately not synonymous with destroy for resumable Docker, Kubernetes, and Sprites environments.

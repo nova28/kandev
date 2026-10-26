@@ -37,7 +37,21 @@ AC-EXECUTORS-NOMADPOOL-001.3 matches Nomad: spread places each environment on th
 node with the lowest reserved-resource utilisation; binpack fills a node before using
 another; placement is reservation-based, not live-load-based.
 
+## Reruns at e2fc748583 (v0.98.0-59-ge2fc748583): all passed
+
+| Scenario | Run | Result |
+|---|---|---|
+| `pool-placement` | `runs/nomad-e2e-fixture-10s2t0y7` | rc 0 |
+| `pool-two-node` | `runs/nomad-e2e-fixture-mpm6g4oe` | rc 0 |
+| `pool-node-quarantine` | `runs/nomad-e2e-fixture-5omgj8_b` | rc 0 |
+
+After each run: no worker processes, no extra worktree, and no allocation directory or
+local-state entry left, so the leak fix holds. One remainder: after `pool-node-quarantine`
+the quarantined environment A's allocation directory stayed on the ssh node. Keeping it
+while quarantined is correct; the readmission procedure now deletes it once absence is
+verified (`readmit-remove-allocation-directory` step, public docs updated).
+
 ## Pending
 
-Reruns of the three scenarios with the fixes, and the manual queue, partition and refusal
-procedures in `manual-scenarios.md`, are run by the operator; results are appended here.
+The manual queue, partition and refusal procedures are being converted into runner scenarios
+(`pool-queue`, `pool-partition`, `pool-refusals`); results are appended here.
