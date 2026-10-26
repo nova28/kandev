@@ -66,6 +66,8 @@ func (h *NomadReadmitHandlers) httpReadmit(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, nomadReadmitError("invalid readmission request"))
 	case errors.Is(err, nomad.ErrNomadReadmitNotFound):
 		c.JSON(http.StatusNotFound, nomadReadmitError("no matching retained environment"))
+	case errors.Is(err, nomad.ErrNomadReadmitBusy):
+		c.JSON(http.StatusConflict, nomadReadmitError("environment is busy with another operation; retry shortly"))
 	case errors.Is(err, nomad.ErrNomadReadmitPhase):
 		c.JSON(http.StatusConflict, nomadReadmitError("retained environment is not releasable"))
 	default:

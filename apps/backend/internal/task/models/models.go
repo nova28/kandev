@@ -3143,6 +3143,11 @@ type TaskEnvironmentRecoveryClaimRequest struct {
 	ExecutorType               string
 	AllowCurrentSessionRuntime bool
 	CleanupJobID               string
+	// OperatorReadmission admits the claim past the task cleanup barrier. It is
+	// only for the operator release of a retained Nomad row, which checkpoints a
+	// phase and starts nothing; exclusion against a running cleanup attempt
+	// remains the unique per-environment claim.
+	OperatorReadmission bool
 }
 
 // TaskEnvironmentRecoveryClaim is the durable authority held from recovery

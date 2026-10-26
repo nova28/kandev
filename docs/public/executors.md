@@ -659,7 +659,7 @@ If any step cannot be proven (drain failure or timeout, lost reply, changed runt
 To readmit a quarantined worker, do all three steps yourself:
 
 1. Verify outside Kandev that no process from the environment remains (for example after a controlled reboot with a changed boot id), stop the job without purge, and remove the worker fence only after checking that it names this environment.
-2. Call `POST /api/v1/executors/nomad/readmit` with `node_id`, `environment_id`, `generation`, `job_id` and an `attestation` object (`process_tree_absent`, `job_stopped_purge_false`, `fence_removed`, all `true`, plus `operator`). Kandev keeps the record and marks it `operator_released`. It never changes node eligibility or the marker.
+2. Call `POST /api/v1/executors/nomad/readmit` with `node_id`, `environment_id`, `generation`, `job_id` and an `attestation` object (`process_tree_absent`, `job_stopped_purge_false`, `fence_removed`, all `true`, plus `operator`). Kandev keeps the record and marks it `operator_released`. It never changes node eligibility or the marker. It works while the archive cleanup is still retrying; a `409` with a busy message means another cleanup attempt holds the environment, so retry shortly.
 3. Delete the `kandev/quarantine/<node-id>` Nomad variable and re-enable the node with `nomad node eligibility -enable`.
 
 ## Lifecycle and cleanup

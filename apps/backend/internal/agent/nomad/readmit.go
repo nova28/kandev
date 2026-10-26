@@ -13,6 +13,8 @@ var (
 	ErrNomadReadmitInvalid = errors.New("nomad readmission request is invalid")
 	// ErrNomadReadmitNotFound reports that no retained row matches the exact identity.
 	ErrNomadReadmitNotFound = errors.New("nomad readmission target was not found")
+	// ErrNomadReadmitBusy reports that another operation holds the environment claim; retry later.
+	ErrNomadReadmitBusy = errors.New("nomad readmission target is busy")
 	// ErrNomadReadmitPhase reports that the matching row is not cleanup_pending or quarantined.
 	ErrNomadReadmitPhase = errors.New("nomad readmission target is not in a releasable phase")
 )

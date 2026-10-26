@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -62,6 +63,7 @@ func TestNomadWorkerQuarantineReadmitHandlerStatusCodes(t *testing.T) {
 		{"invalid attestation", nomad.ErrNomadReadmitInvalid, readmitBody, http.StatusBadRequest},
 		{"not found", nomad.ErrNomadReadmitNotFound, readmitBody, http.StatusNotFound},
 		{"phase", nomad.ErrNomadReadmitPhase, readmitBody, http.StatusConflict},
+		{"busy", fmt.Errorf("%w: environment claimed", nomad.ErrNomadReadmitBusy), readmitBody, http.StatusConflict},
 		{"internal", errors.New("db password=secret"), readmitBody, http.StatusInternalServerError},
 	}
 	for _, tc := range cases {

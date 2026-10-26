@@ -47,8 +47,11 @@ func (m *Manager) withNomadReadmitClaim(ctx context.Context, req *ExecutorCreate
 	claim, err := store.AcquireTaskEnvironmentRecoveryClaim(ctx, models.TaskEnvironmentRecoveryClaimRequest{
 		TaskEnvironmentID: state.EnvironmentID, OwnerTaskID: req.TaskID, OwnershipGeneration: state.Generation,
 		SessionID: req.SessionID, OperationID: state.OperationID + nomadReadmitClaimSuffix,
-		ExecutorType: string(models.ExecutorTypeNomad), AllowCurrentSessionRuntime: true,
+		ExecutorType: string(models.ExecutorTypeNomad), AllowCurrentSessionRuntime: true, OperatorReadmission: true,
 	})
+	if errors.Is(err, recoveryclaim.ErrBusy) {
+		return fmt.Errorf("nomad readmission: %w: %w", nomad.ErrNomadReadmitBusy, err)
+	}
 	if err != nil {
 		return fmt.Errorf("nomad readmission: environment claim unavailable: %w", err)
 	}
