@@ -78,4 +78,4 @@ None.
 
 ## Results
 
-Not started.
+In progress. Offline and ssh-node live proof done (`docs/evidence/nomad-pool-p2/`, build a1c7afce42): per-environment fence, TMPDIR scratch, workspace removal on proven cleanup, per-node quarantine scope. Remaining: local-node git worktree (REQ-003.1), then its live proof in P3.

@@ -148,6 +148,22 @@ func WorkspaceRemoveCommand(state EnvironmentState) (string, error) {
 	if err != nil || expected != state.WorkspacePath || filepath.Dir(filepath.Dir(state.WorkspacePath)) != filepath.Join(state.WorkspaceRoot, "environments") {
 		return "", errors.New("remove Nomad pool workspace: path differs from the immutable state")
 	}
-	return "d=" + shellQuote(state.WorkspacePath) + `; [ -L "$d" ] && exit 1; [ -e "$d" ] || exit 0; ` +
+	return "d=" + shellQuote(state.WorkspacePath) + `; b=` + shellQuote(PoolWorktreeBranch(state.EnvironmentID)) +
+		`; [ -L "$d" ] && exit 1; [ -e "$d" ] || exit 0; ` + worktreeDetachScript +
 		`rm -rf -- "$d" && { rmdir "$(dirname "$d")" 2>/dev/null || true; }`, nil
 }
+
+// PoolWorktreeBranch is the per-environment branch a local pool node creates
+// in each repository checkout it worktrees from.
+func PoolWorktreeBranch(environmentID string) string {
+	return "kandev/pool/" + environmentID
+}
+
+// worktreeDetachScript removes every git worktree one level below $d, deletes
+// the per-environment branch ($b) from its source repository and prunes the
+// repository. A failure exits non-zero so the workspace is retained.
+const worktreeDetachScript = `for g in "$d"/*/.git; do [ -f "$g" ] || continue; w="$(dirname "$g")"; ` +
+	`c="$(git -C "$w" rev-parse --path-format=absolute --git-common-dir)" || exit 1; ` +
+	`git -C "$w" worktree remove --force "$w" || exit 1; ` +
+	`if git --git-dir="$c" show-ref --verify --quiet "refs/heads/$b"; then git --git-dir="$c" branch -D "$b" >/dev/null || exit 1; fi; ` +
+	`git --git-dir="$c" worktree prune || exit 1; done; `
