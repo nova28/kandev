@@ -140,6 +140,8 @@ class TwoNodeScenario(PoolScenario):
         inventory = self.poll(placed, f"environment {label} was not placed on a node before timeout")
         meta = self.r.nomad(f"/v1/node/{inventory['node_id']}").get("Meta") or {}
         self.r.use_node(meta["kandev.attach"], meta["kandev.state_root"])
+        # Recorded before readiness so cleanup-fixture finds the node files of a launch that fails after placement.
+        self.record_env(label, task, inventory, attach=meta["kandev.attach"], state_root=meta["kandev.state_root"])
         ready = self.await_ready(label, task)
         self.envs[label]["attach"] = meta["kandev.attach"]
         self.envs[label]["state_root"] = meta["kandev.state_root"]

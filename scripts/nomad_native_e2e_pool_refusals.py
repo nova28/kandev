@@ -360,6 +360,17 @@ class RefusalScenario(pool.TwoNodeScenario):
         except PreflightError:
             return None, notes or [f"pending: {', '.join(pending)}"]
 
+    def readmit_node(self, name: str, env: dict[str, Any], marker_path: str, marker: str) -> dict[str, Any]:
+        """The documented readmission after the operator teardown: readmit, delete the marker, enable eligibility."""
+        node_id = env["node_id"]
+        self.poll(lambda: not self.tree(env), f"{name}: worker processes remain, so the node cannot be readmitted")
+        readmit = self.r.api("POST", wo07.READMIT_API_PATH, wo07.readmit_body(env, node_id, self.read_state(env))) or {}
+        self.ops.nomad_delete_variable(self.nomad_cfg["address"], self.r.token, self.nomad_cfg["namespace"], marker)
+        self.poll(lambda: self.get_or_none(marker_path) is None, f"{name}: the quarantine marker still exists after deletion")
+        self.set_eligibility(node_id, True)
+        self.poll(lambda: self.node_record(node_id).get("Status") == "ready", f"{name}: node {node_id} is not ready after readmission")
+        return {"marker_deleted": True, "readmit": readmit, "eligibility": "enabled"}
+
     def end_case(self, case: dict[str, Any], task: dict[str, str]) -> dict[str, Any]:
         env = self.envs[case["label"]]
         self.focus(env)
@@ -382,9 +393,7 @@ class RefusalScenario(pool.TwoNodeScenario):
             result = {"path": "operator-teardown", "retained_state": retained, "production_note": notes, "released": released,
                       "leftovers": leftovers}
             if quarantine is not None:
-                self.ops.nomad_delete_variable(self.nomad_cfg["address"], self.r.token, self.nomad_cfg["namespace"], quarantine["marker"])
-                self.poll(lambda: self.get_or_none(marker_path) is None, f"{case['name']}: the quarantine marker still exists after deletion")
-                result["quarantine"] = {**quarantine, "marker_deleted": True}
+                result["quarantine"] = {**quarantine, **self.readmit_node(case["name"], env, marker_path, quarantine["marker"])}
         self.focus(env)
         if self.tree(env):
             raise PreflightError(f"{case['name']}: worker processes remain after the task ended")

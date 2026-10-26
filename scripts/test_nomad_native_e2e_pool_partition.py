@@ -27,6 +27,7 @@ class World:
         self.tree = {"env-l": [(1, "a")], "env-s": [(2, "b")]}
         self.fence = {"env-l": "f1", "env-s": "f2"}
         self.prompts = []
+        self.states = {"s-l": flags.get("state", "WAITING_FOR_INPUT"), "s-s": "WAITING_FOR_INPUT"}
 
     def on_partition(self):
         self.partitioned = True
@@ -37,6 +38,10 @@ class World:
             self.allocs["job-s"].append({"ID": "al-new"})
         if self.flags.get("new_job"):
             self.jobs.add("kandev-new")
+        if self.flags.get("ssh_report"):
+            self.messages["s-s"].append("kandev-unavailable-report")
+        if self.flags.get("ssh_lost_messages"):
+            self.messages["s-s"] = ["other"]
         if self.flags.get("ssh_lost"):
             self.status["al-s"] = "lost"
         if self.flags.get("local_tree"):
@@ -90,7 +95,13 @@ def make_runner(world, ops):
     runner.fence = lambda env_id=None: world.fence[env_id]
     runner.nomad_snapshot = lambda inv: {"inv": inv["session"], "jobs": sorted(world.jobs & {"job-l", "job-s"})}
     runner.nomad = lambda path: {"Status": world.node[path.rsplit("/", 1)[1]], "SchedulingEligibility": "eligible"}
-    runner.api = lambda method, path, body: {"messages": [{"id": m} for m in world.messages[path.split("/")[2]]]}
+    def api(method, path, body):
+        if path.startswith("/tasks/"):
+            sid = {"t-l": "s-l", "t-s": "s-s"}[path.split("/")[2]]
+            return {"sessions": [{"id": sid, "state": world.states[sid]}]}
+        return {"messages": [{"id": m} for m in world.messages[path.split("/")[2]]]}
+
+    runner.api = api
     return runner
 
 
@@ -146,7 +157,7 @@ class FakeScn(pp.PartitionScenario):
 
 
 class PartitionBase(unittest.TestCase):
-    def run_drive(self, cfg=CFG, fail_heal=False, probe_accepted=True, probe_adds=True, command=None, **flags):
+    def run_drive(self, cfg=CFG, fail_heal=False, probe_accepted=True, probe_adds=True, reply_only_user=False, command=None, **flags):
         world = World(**flags)
         ticks = iter(range(10000))
         ops = fx.Ops()
@@ -160,7 +171,9 @@ class PartitionBase(unittest.TestCase):
         def prompt(payload):
             world.prompts.append(payload["session_id"])
             if probe_adds:
-                world.messages[payload["session_id"]].append(f"m-new-{len(world.prompts)}")
+                world.messages[payload["session_id"]] += [f"m-new-{len(world.prompts)}", f"m-reply-{len(world.prompts)}"]
+            if reply_only_user:
+                world.messages[payload["session_id"]].pop()
             return {"accepted": probe_accepted}
 
         ops.prompt = prompt
@@ -237,7 +250,17 @@ class DriveTest(PartitionBase):
 
     def test_probe_must_be_accepted_and_add_a_message(self):
         self.fails("did not accept the prompt", probe_accepted=False)
-        self.fails("produced no new message", probe_adds=False)
+        self.fails("did not answer the prompt", probe_adds=False)
+        self.fails("did not answer the prompt", reply_only_user=True)
+
+    def test_probe_waits_for_a_promptable_local_session(self):
+        self.fails("not ready for input before the probe prompt (state 'RUNNING')", state="RUNNING")
+        self.assertEqual(self.world.prompts, [])
+
+    def test_unavailability_report_on_the_ssh_session_is_allowed_but_not_loss(self):
+        report = self.run_drive(ssh_report=True)
+        self.assertTrue(report["production_cleanup"])
+        self.fails("messages of environment B changed", ssh_lost_messages=True)
 
     def test_ssh_allocation_replaced(self):
         self.fails("has 2 allocations", replaced=True)

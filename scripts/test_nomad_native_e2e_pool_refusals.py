@@ -101,11 +101,17 @@ class Sim:
         return task
 
     def api(self, method, path, body):
+        if path == "/executors/nomad/readmit":
+            self.calls.append(("readmit", body["node_id"], self.markers_at_readmit(body)))
+            return {"readmitted": True}
         task_id = path.split("/")[2] if path.startswith("/tasks/") else None
         info = self.tasks[task_id] if task_id else next(t for t in self.tasks.values() if t["n"] == int(path.split("sess-")[1].split("/")[0]))
         if path.endswith("/sessions"):
             return {"sessions": [{"id": f"sess-{info['n']}", "state": "FAILED"}]}
         return {"messages": [{"content": info["text"]}]}
+
+    def markers_at_readmit(self, body):
+        return {"marker_present": body["node_id"] in self.markers, "attestation": body["attestation"]["fence_removed"]}
 
     def inventory(self, session_id, task_id):
         info = self.tasks[task_id]
@@ -359,6 +365,11 @@ class FailureTest(DriveBase):
         self.assertEqual(result["path"], "operator-teardown")
         self.assertTrue(result["quarantine"]["marker_deleted"])
         self.assertNotIn(SSH, self.sim.markers)
+        self.assertEqual(result["quarantine"]["eligibility"], "enabled")
+        self.assertEqual(self.sim.nodes[SSH]["SchedulingEligibility"], "eligible")
+        order = [c[0] for c in self.sim.calls if c[0] in ("readmit",)]
+        self.assertEqual(order, ["readmit"])
+        self.assertTrue(next(c for c in self.sim.calls if c[0] == "readmit")[2]["marker_present"])
 
     def test_eligibility_left_when_a_marker_exists_at_restore(self):
         sim = Sim(self._tmp.name)

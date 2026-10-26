@@ -67,6 +67,21 @@ the node's original host-key meta value instead of nulling it. Skipping quaranti
 provable pre-staging refusal would need a new "never staged" state and is left as an owner
 decision.
 
+## Third live round at 605a05c32d: findings and fixes
+
+Owner decision: keep the contract, a refused launch quarantines the node.
+
+| Scenario | Result | Finding | Fix |
+|---|---|---|---|
+| `pool-queue` | rc 2 | C was placed on A's node, but its agentctl failed with "failed to allocate an available port" on the single reserved port; cleanup-fixture left C's allocation directory | product: `CreateInstance` waits (bounded, caller-context aware, lock released between tries) while every port of the range is held by a process outside the manager, and forgets in-use marks so a retry probes the range again; runner: placement is recorded before readiness so cleanup-fixture removes the node files of a launch that fails after placement |
+| `pool-refusals` | rc 2 | after the expected rollback quarantine the marker was deleted, but the product's retained cleanup stayed in retry_wait and the node stayed ineligible | runner: operator teardown now follows the documented readmission: readmit API, delete marker, enable eligibility, wait ready |
+| `pool-partition` | rc 2 | the probe prompt was judged while the local session was still answering, and messages the ssh session received during the partition were compared strictly | runner: wait for a promptable state before the probe, wait for an answered prompt and a settled state, and accept appended messages (prefix check) on the partitioned ssh session |
+
+The port-wait fix rests on the operator's reading that the previous holder of the single
+Nomad-reserved port was still shutting down when C started (the scheduler frees an
+allocation's resources once its desired status is stop, before the client process has
+exited). The live rerun confirms or refutes it.
+
 ## Pending
 
 `pool-queue`, `pool-refusals` and `pool-partition` are offline-tested; live results are

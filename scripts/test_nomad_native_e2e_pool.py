@@ -199,6 +199,27 @@ class TwoNodeLayoutTest(unittest.TestCase):
             registered.assert_pool_cleaned(self.env("local"), layout)
 
 
+class AwaitPlacedRecordTest(unittest.TestCase):
+    def test_placement_is_recorded_before_readiness_so_cleanup_finds_the_node(self):
+        scn = pool.TwoNodeScenario.__new__(pool.TwoNodeScenario)
+        scn.envs, scn.data, scn.saved = {}, {"identities": {}}, []
+        inventory = {"node_id": "n1", "allocation_id": "al1", "job_id": "kandev-abc", "environment_id": "e1"}
+        scn.poll = lambda probe, message, *a: probe()
+        scn.soft = lambda fn: fn()
+        scn.save_envs = lambda: scn.saved.append(dict(scn.envs))
+
+        def not_ready(label, task):
+            raise PreflightError("did not reach durable inventory phase ready")
+
+        scn.await_ready = not_ready
+        scn.r = type("R", (), {"inventory": lambda self, sid, tid: inventory,
+                               "nomad": lambda self, path: {"Meta": {"kandev.attach": "ssh", "kandev.state_root": "/n"}},
+                               "use_node": lambda self, a, r: None, "state": {}, "save_state": lambda self, **kw: None})()
+        with self.assertRaises(PreflightError):
+            scn.await_placed("C", {"id": "t", "session_id": "s"})
+        self.assertEqual((scn.envs["C"]["node_id"], scn.envs["C"]["state_root"], scn.envs["C"]["attach"]), ("n1", "/n", "ssh"))
+
+
 class FocusTest(unittest.TestCase):
     def test_focus_points_commands_and_fence_at_the_environment_node(self):
         import nomad_native_e2e_wo06 as wo06

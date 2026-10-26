@@ -25,6 +25,7 @@ from nomad_native_e2e import PreflightError
 SCENARIO = "pool-partition"
 PROBE_PROMPT = "For this inert partition check, output exactly WO05_PARTITION_LOCAL_PROBE"
 ISOLATION_FAILURE = "the ssh node never left ready while its Nomad client agent was stopped"
+PROMPTABLE_STATES = ("WAITING_FOR_INPUT", "COMPLETED", "IDLE")
 FROZEN_NOTE = ("the ssh node Nomad client agent (pid {pid}) may still be stopped; run `kill -CONT {pid}` after confirming "
                "`ps -p {pid} -o command=` shows the nomad agent started with {config}")
 
@@ -93,8 +94,9 @@ class PartitionScenario(pool.TwoNodeScenario):
         self.check_new_jobs(when)
         return status
 
-    def check_unchanged(self, env: dict[str, Any], snap: dict[str, Any], when: str, messages: list[Any]) -> None:
-        """Everything observable about an environment equals its snapshot, except the message list which must equal `messages`."""
+    def check_unchanged(self, env: dict[str, Any], snap: dict[str, Any], when: str, messages: list[Any], report_allowed: bool = False) -> None:
+        """Everything observable about an environment equals its snapshot, except the message list: it must equal `messages`, or when
+        `report_allowed` only keep them as a prefix because Kandev may append an unavailability report to a partitioned session."""
         self.focus(env)
         label = env["label"]
         if self.r.inventory(env["session_id"], env["task_id"]) != snap["inventory"]:
@@ -105,16 +107,39 @@ class PartitionScenario(pool.TwoNodeScenario):
             raise PreflightError(f"{when}: worker fence of environment {label} changed")
         if self.r.nomad_snapshot(snap["inventory"]) != snap["nomad"]:
             raise PreflightError(f"{when}: Nomad job or allocation identity of environment {label} changed")
-        if self.message_ids(env) != messages:
+        current = self.message_ids(env)
+        if (current[:len(messages)] if report_allowed else current) != messages:
             raise PreflightError(f"{when}: session messages of environment {label} changed unexpectedly")
 
+    def session_state(self, task: dict[str, str]) -> Any:
+        sessions = self.r.api("GET", f"/tasks/{task['id']}/sessions", None).get("sessions", [])
+        return next((item.get("state") for item in sessions if item.get("id") == task["session_id"]), None)
+
+    def await_promptable(self, task: dict[str, str], when: str) -> None:
+        seen: list[Any] = []
+
+        def promptable() -> bool:
+            seen[:] = [self.session_state(task)]
+            return seen[0] in PROMPTABLE_STATES
+
+        try:
+            self.poll(promptable, "the local session never became promptable")
+        except PreflightError as exc:
+            raise PreflightError(f"the local session was not ready for input {when} (state {seen[0] if seen else None!r}): {exc}") from None
+
     def probe_local(self, env: dict[str, Any], task: dict[str, str], before: list[Any]) -> list[Any]:
-        """The only prompt sent after the snapshot: an accepted ack and a new message prove the local environment still answers."""
+        """The only prompt sent after the snapshot. The local environment must accept it and answer it: the prompt message and at
+        least one reply appear and the session returns to a promptable state. The returned list is the settled message list."""
+        self.await_promptable(task, "before the probe prompt")
         ack = self.ops.prompt({"ws_base": f"ws://127.0.0.1:{self.r.state['port']}", "task_id": task["id"], "session_id": task["session_id"], "content": PROBE_PROMPT})
         if ack.get("accepted") is not True:
             raise PreflightError("the local environment did not accept the prompt sent during the partition")
-        after = self.poll(lambda: (lambda ids: ids if len(ids) > len(before) else None)(self.message_ids(env)),
-                          "the local environment produced no new message for the prompt sent during the partition")
+
+        def answered() -> list[Any] | None:
+            ids = self.message_ids(env)
+            return ids if len(ids) > len(before) + 1 and self.session_state(task) in PROMPTABLE_STATES else None
+
+        after = self.poll(answered, "the local environment did not answer the prompt sent during the partition")
         if after[:len(before)] != before:
             raise PreflightError("the local session lost earlier messages")
         return after
@@ -182,7 +207,7 @@ def _partition_steps(runner: fx.Runner, cfg: dict[str, Any], ops: fx.Ops, scn: P
                           "allocation of the ssh environment stayed unknown after the partition healed")
         if status != "running":
             raise PreflightError(f"allocation of the ssh environment has ClientStatus {status!r} after the heal, expected running")
-        scn.check_unchanged(remote, snaps["ssh"], "after heal", snaps["ssh"]["messages"])
+        scn.check_unchanged(remote, snaps["ssh"], "after heal", snaps["ssh"]["messages"], report_allowed=True)
         scn.check_allocation(local, "after heal")
         scn.check_unchanged(local, snaps["local"], "after heal", messages["local"])
         return {"ssh_allocation_client_status": status, "prompts_sent_to_ssh": 0, "prompts_sent_to_local": 1}
