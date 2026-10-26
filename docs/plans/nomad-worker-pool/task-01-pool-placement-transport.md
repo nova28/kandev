@@ -1,7 +1,7 @@
 ---
 id: "01-pool-placement-transport"
 title: "Pool placement and transport"
-status: in_progress
+status: done
 wave: 1
 depends_on: []
 plan: "plan.md"
@@ -75,10 +75,10 @@ None; task 02 builds on the placed-node identity.
 
 ## Results
 
-Offline complete (2026-10-26), live proof pending.
+Complete (2026-10-26). Real-worker proof in `docs/evidence/nomad-pool-p1/`: run 3 passed `pool-placement` on build `e7515aca9f` after two runs that each found a defect.
 
 - Delivered: pool profile and node contract (94983e4851), pool job without a node name (4bc6f5ac79), preflight of node pool, scheduler algorithm and memory oversubscription (13a3f8efb2), pool launch, recovery and cleanup over one SSH or local transport with local-node verification (f8a5ac0a64).
 - Runner: `pool-placement` create-fixture scenario (`scripts/nomad_native_e2e_pool.py`) uses the single-client fixture with a pool profile; it proves the job names no node, the allocation sits on a node carrying the Kandev contract, durable state is pool-placed, then runs the cleanup-positive assertions. The two-client fixture is deferred to task 03, which needs two nodes.
 - Operator onboarding: `scripts/nomad-pool-onboard`; public docs in `docs/public/executors.md`.
 - Live run 1 and 2 (operator, b14dcd28b5): preflight correctly refused disabled memory oversubscription; run 2 placed, attached and started the agent but the runner looked for the fence and processes at legacy paths. Runner fix: the pool fence path derives from the node's `kandev.state_root`, and cleanup-fixture releases a fence that names the recorded job even when the run failed before recording it.
-- Open risk for the live run: whether Nomad interpolates `${meta.kandev.state_root}` in task env and args.
+- Resolved by run 3: Nomad interpolates `${meta.kandev.state_root}` in task env and args on the placed node.

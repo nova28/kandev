@@ -74,7 +74,7 @@ host key and of a fake local node. Live runs need owner approval.
 
 ## Work orders
 
-- [ ] [Task 01: Pool placement and transport](task-01-pool-placement-transport.md)
+- [x] [Task 01: Pool placement and transport](task-01-pool-placement-transport.md)
 - [ ] [Task 02: Pool workspaces, fences and quarantine](task-02-pool-workspaces-fences.md)
 - [ ] [Task 03: Two-node proof and handoff](task-03-pool-proof-handoff.md)
 
