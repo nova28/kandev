@@ -25,6 +25,7 @@ When the standalone MCP session token change and the standalone managed Git isol
 ## Scope
 
 - Reconcile requirement ids, flags and spec files with the merged standalone versions.
+- The standalone token change (kdlbs/kandev#4798, head aced58fb73) registers `features.sessionMcpToken` (`KANDEV_FEATURES_SESSION_MCP_TOKEN`, off in every profile, restart required) and advertises `session_mcp_token` plus `mcp_token_fingerprint` on `/identity` (REQ-EXECUTORS-SESSION-CONTROL-ISOLATION-001.11, 004.1); with it off nothing is minted and AC-012.5 reads `unknown` `token_unsupported`. Reconcile the 012.5 item with that flag, and its `mcp_token_*` launch codes with the 012.1 refusal path.
 - Remove duplicated code from Tasks 12 and 13 that the standalone changes now own.
 - Update the journey steps and the canary mapping to the final names.
 
