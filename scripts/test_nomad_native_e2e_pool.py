@@ -335,3 +335,45 @@ class LocalNodeTreeAndLeftoversTest(unittest.TestCase):
         scn.r = type("R", (), {"state": {}})()
         with self.assertRaises(PreflightError):
             scn.remove_pool_leftovers({"label": "A", "state_root": "/s", "environment_id": "../x", "job_id": "j"}, True)
+
+
+class TreeDiagnosticsTest(unittest.TestCase):
+    PS = """\
+    1     0     1 Mon Oct 26 09:00:00 2026 /sbin/launchd
+  500     1   500 Mon Oct 26 09:01:00 2026 /usr/local/bin/nomad agent -config=/fx/local-client.hcl
+  600   500   600 Mon Oct 26 15:17:30 2026 /usr/local/bin/nomad executor {"LogFile":"/fx/alloc/al-1/logs"}
+  601   600   600 Mon Oct 26 15:17:31 2026 /fx/local-state/pool/allocations/kandev-job1/agentctl-{sha} --workdir /fx/local-state/workspaces/environments/env1/g1
+"""
+
+    def scenario(self, rows_text, attach="local"):
+        import nomad_native_e2e_wo06 as wo06
+        scn = wo06.Scenario.__new__(wo06.Scenario)
+        ops = fixture.Ops()
+        ops.sleep = lambda s: None
+        ops.scenario_timeout, ops.poll_interval = 0, 0
+        ticks = iter(range(0, 1000, 1))
+        ops.clock = lambda: next(ticks)
+        scn.ops, scn.data, scn.cfg = ops, {}, None
+        runner = type("R", (), {"state": {"pool_state_root": "/fx/local-state"}, "active_attach": attach, "use_node": lambda s, a, r: None})()
+        runner.ssh = lambda cmd: (0, rows_text)
+        runner.poll = lambda t, i, probe, failure: fixture.Runner.poll(runner, t, i, probe, failure)
+        runner.ops = ops
+        scn.r = runner
+        return scn
+
+    ENV = {"label": "A", "job_id": "kandev-job1", "allocation_id": "al-1", "environment_id": "env1"}
+
+    def test_captured_local_listing_yields_one_agentctl_root_and_ignores_nomad_helpers(self):
+        text = self.PS.replace("{sha}", "a" * 64)
+        tree = self.scenario(text).tree(self.ENV)
+        self.assertEqual([(item["pid"], item["role"]) for item in tree], [(601, "agentctl")])
+
+    def test_unsettled_tree_records_diagnostics_in_evidence(self):
+        scn = self.scenario("  1     0     1 Mon Oct 26 09:00:00 2026 /sbin/launchd\n")
+        with self.assertRaises(PreflightError):
+            scn.stable_tree(self.ENV)
+        diag = scn.data["tree_diagnostics"]["A"]
+        self.assertEqual(diag["active_attach"], "local")
+        self.assertEqual(diag["ps_row_count"], 1)
+        self.assertEqual(diag["needles"], ["al-1", "kandev-job1", "env1"])
+        self.assertEqual(diag["named_rows"], [])

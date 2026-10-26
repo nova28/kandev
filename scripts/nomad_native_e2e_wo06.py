@@ -466,14 +466,37 @@ class Scenario:
     def stable_tree(self, env: dict[str, Any], minimum_depth: int = 0) -> list[dict[str, Any]]:
         """Two consecutive equal snapshots, so a transient helper that exits during startup is never recorded."""
         previous: list[Any] = []
+        current_box: list[list[dict[str, Any]]] = []
 
         def stable() -> list[dict[str, Any]] | None:
             current = self.tree(env)
+            current_box.append(current)
             settled = bool(previous) and _ident(current) == previous[-1] and any(item["depth"] >= minimum_depth for item in current)
             previous[:] = [_ident(current)]
             return current if settled else None
 
-        return self.poll(stable, f"the remote process tree of environment {env['label']} did not settle before timeout")
+        try:
+            return self.poll(stable, f"the remote process tree of environment {env['label']} did not settle before timeout")
+        except PreflightError:
+            self.data.setdefault("tree_diagnostics", {})[env["label"]] = self.tree_diagnostics(env, previous, current_box)
+            raise
+
+    def tree_diagnostics(self, env: dict[str, Any], previous: list[Any], last: list[list[dict[str, Any]]]) -> dict[str, Any]:
+        """Evidence for a tree that never settled: the node in use, what was searched for, what the process list held and the last snapshots."""
+        diagnostics: dict[str, Any] = {"active_attach": getattr(self.r, "active_attach", None), "state_root": self.r.state.get("pool_state_root"),
+                                       "needles": _needles(env), "last_identities": previous[-1] if previous else None,
+                                       "last_snapshots": last[-2:]}
+        try:
+            rows = self.ps_rows()
+            protected = _self_and_ancestors(rows)
+            named = [row for row in rows if any(needle in row["command"] for needle in _needles(env))]
+            diagnostics.update(ps_row_count=len(rows), protected_pids=sorted(protected), named_rows=[
+                {"pid": row["pid"], "ppid": row["ppid"], "started": row["started"], "protected": row["pid"] in protected,
+                 "nomad_helper": _is_nomad_helper(row["command"]), "agentctl": _is_agentctl(row["command"]), "command_head": row["command"][:200]}
+                for row in named[:20]])
+        except PreflightError as exc:
+            diagnostics["ps_error"] = str(exc)
+        return diagnostics
 
     def await_ready(self, label: str, task: dict[str, str]) -> dict[str, Any]:
         def ready() -> dict[str, Any] | None:
