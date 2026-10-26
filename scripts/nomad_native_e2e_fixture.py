@@ -461,10 +461,13 @@ def _remote_state_dir(allocation_root: str, node_id: str) -> str:
     return posixpath.join(posixpath.dirname(posixpath.dirname(allocation_root)), "worker-state", node_id)
 
 
-def _fence_path(state: dict[str, Any]) -> str:
-    """The node-wide fence. A pool node keeps it under its kandev.state_root, recorded once the node metadata is read."""
+def _fence_path(state: dict[str, Any], environment_id: str | None = None) -> str:
+    """The start fence. A pool node fences each environment alone under its kandev.state_root (recorded from node
+    metadata); until an environment is recorded the node-level environments directory stands in. A pinned worker keeps
+    the worker-wide fence."""
     if state.get("pool_state_root"):
-        return posixpath.join(state["pool_state_root"], "worker-state", state["node_id"], "active-environment")
+        env = environment_id or state.get("fence_environment_id") or "unrecorded"
+        return posixpath.join(state["pool_state_root"], "environments", env, "active")
     return posixpath.join(_remote_state_dir(state["allocation_root"], state["node_id"]), "active-environment")
 
 
@@ -611,9 +614,9 @@ class Runner:
                 rows.append({"pid": int(match.group(1)), "ppid": int(match.group(2)), "pgid": int(match.group(3)), "started": " ".join(match.group(4).split())})
         return sorted(rows, key=lambda row: row["pid"])
 
-    def fence(self) -> str | None:
+    def fence(self, environment_id: str | None = None) -> str | None:
         """SHA-256 of the worker's active-environment fence, or None when it is absent."""
-        path = shlex.quote(_fence_path(self.state))
+        path = shlex.quote(_fence_path(self.state, environment_id))
         # The bootstrap fence is a directory created by mkdir; its owner file carries the identity.
         code, out = self.ssh(f"if [ -e {path} ]; then cat -- {path}/owner; else exit 3; fi")
         if code == 3:
@@ -622,9 +625,9 @@ class Runner:
             raise PreflightError("remote fence read failed")
         return hashlib.sha256(out.encode()).hexdigest()
 
-    def fence_owner(self) -> str | None:
+    def fence_owner(self, environment_id: str | None = None) -> str | None:
         """Raw owner text of the worker's active-environment fence, or None when it is absent."""
-        path = shlex.quote(_fence_path(self.state))
+        path = shlex.quote(_fence_path(self.state, environment_id))
         code, out = self.ssh(f"if [ -e {path} ]; then cat -- {path}/owner; else exit 3; fi")
         if code == 3:
             return None

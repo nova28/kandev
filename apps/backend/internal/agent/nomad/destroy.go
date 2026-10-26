@@ -125,9 +125,13 @@ func FenceReleaseCommand(profile ProfileConfig, state EnvironmentState) (string,
 	if err != nil || filepath.Clean(root) != state.AllocationRoot {
 		return "", errors.New("release Nomad worker fence: allocation root differs from immutable state")
 	}
-	dir := filepath.Join(filepath.Dir(filepath.Dir(root)), "worker-state", state.NodeID, "active-environment")
+	dir := FenceDir(state, root)
+	parent := ""
+	if state.PlacementMode == ModePool {
+		parent = ` && { rmdir "$(dirname "$d")" 2>/dev/null || true; }`
+	}
 	return "d=" + shellQuote(dir) + `; f="$d/owner"; ` +
 		`[ -e "$d" ] || [ -L "$d" ] || exit 0; ` +
 		`[ ! -L "$d" ] && [ -d "$d" ] && [ ! -L "$f" ] && [ -f "$f" ] && ` +
-		`[ "$(cat "$f")" = ` + shellQuote(fenceOwnerToken(state)) + ` ] && rm -f "$f" && rmdir "$d"`, nil
+		`[ "$(cat "$f")" = ` + shellQuote(fenceOwnerToken(state)) + ` ] && rm -f "$f" && rmdir "$d"` + parent, nil
 }

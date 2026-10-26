@@ -436,6 +436,8 @@ class Scenario:
                "job_id": inventory.get("job_id"), "allocation_id": inventory.get("allocation_id"), "node_id": inventory.get("node_id"),
                "fence_sha256": None, "tree": [], **extra}
         self.envs[label] = env
+        if self.r.state.get("pool_state_root") and env["environment_id"]:
+            self.r.state["fence_environment_id"] = env["environment_id"]
         self.save_envs()
         self.data.setdefault("identities", {})[label] = {key: env[key] for key in ("task_id", "session_id", "environment_id", "job_id", "allocation_id", "node_id")}
         return env

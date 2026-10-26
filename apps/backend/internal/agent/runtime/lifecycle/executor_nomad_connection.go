@@ -381,8 +381,7 @@ func verifyNomadWorkerFenceOver(ctx context.Context, transport nomadWorkerTransp
 		state.OperationID == "" || state.InputDigest == "" {
 		return errors.New("verify Nomad worker fence: exact allocation ownership is incomplete")
 	}
-	workerStateRoot := filepath.Join(filepath.Dir(filepath.Dir(profile.AllocationRoot)), "worker-state", state.NodeID)
-	fenceOwnerPath := filepath.Join(workerStateRoot, "active-environment", "owner")
+	fenceOwnerPath := filepath.Join(nomad.FenceDir(state, profile.AllocationRoot), "owner")
 	owner := strings.Join([]string{
 		state.InstallationID, state.NodeID, state.EnvironmentID, fmt.Sprint(state.Generation),
 		state.OperationID, state.InputDigest, state.JobID,
