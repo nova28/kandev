@@ -25,7 +25,8 @@ _TOP_REQUIRED = {
     "schema_version", "kandev_binary", "nomad", "ssh", "workspace_root", "allocation_root",
     "cpu_mhz", "memory_mb", "repository", "expected_file", "temp_root_parent",
 }
-_TOP_OPTIONAL = {"agent_profile_name", "partition"}
+_TOP_OPTIONAL = {"agent_profile_name", "partition", "pool"}
+_POOL_KEYS = {"node_pool", "placement", "ssh_user", "memory_max_mb"}
 _NOMAD_KEYS = {"address", "token_file", "namespace", "region", "datacenter", "node_id", "platform"}
 _SSH_KEYS = {"target", "port", "host_fingerprint", "identity_file"}
 _NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}")
@@ -163,6 +164,21 @@ def validate_partition(value: Any, nomad_http_address: str) -> dict[str, str]:
     return {"listen": value["listen"], "upstream": value["upstream"]}
 
 
+def validate_pool(value: Any) -> dict[str, Any]:
+    """Pool profile settings for the pool scenarios. Placement onto the fixture node is by node pool, never by node id."""
+    if not isinstance(value, dict) or "node_pool" not in value or value.keys() - _POOL_KEYS:
+        raise PreflightError("pool must contain node_pool and only node_pool, placement, ssh_user and memory_max_mb")
+    if not isinstance(value["node_pool"], str) or not _NAME.fullmatch(value["node_pool"]):
+        raise PreflightError("pool.node_pool is invalid")
+    if value.get("placement", "spread") not in ("spread", "binpack"):
+        raise PreflightError("pool.placement must be spread or binpack")
+    if "ssh_user" in value and (not isinstance(value["ssh_user"], str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]{0,31}", value["ssh_user"])):
+        raise PreflightError("pool.ssh_user is invalid")
+    if "memory_max_mb" in value:
+        _positive_int(value["memory_max_mb"], "pool.memory_max_mb")
+    return dict(value)
+
+
 def validate_bootstrap(config: Any, run: Callable[..., Any] = subprocess.run, checkout_root: Path = CHECKOUT_ROOT) -> dict[str, Any]:
     """Returns a normalized copy; raises PreflightError before anything is created."""
     if not isinstance(config, dict) or config.keys() - (_TOP_REQUIRED | _TOP_OPTIONAL) or _TOP_REQUIRED - config.keys():
@@ -217,4 +233,5 @@ def validate_bootstrap(config: Any, run: Callable[..., Any] = subprocess.run, ch
         "temp_root_parent": str(_temp_root_parent(config["temp_root_parent"], checkout)),
         "agent_profile_name": profile_name,
         "partition": validate_partition(config["partition"], address) if "partition" in config else None,
+        "pool": validate_pool(config["pool"]) if "pool" in config else None,
     }

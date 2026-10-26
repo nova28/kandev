@@ -1,7 +1,7 @@
 ---
 id: "01-pool-placement-transport"
 title: "Pool placement and transport"
-status: pending
+status: in_progress
 wave: 1
 depends_on: []
 plan: "plan.md"
@@ -75,4 +75,9 @@ None; task 02 builds on the placed-node identity.
 
 ## Results
 
-Not started.
+Offline complete (2026-10-26), live proof pending.
+
+- Delivered: pool profile and node contract (94983e4851), pool job without a node name (4bc6f5ac79), preflight of node pool, scheduler algorithm and memory oversubscription (13a3f8efb2), pool launch, recovery and cleanup over one SSH or local transport with local-node verification (f8a5ac0a64).
+- Runner: `pool-placement` create-fixture scenario (`scripts/nomad_native_e2e_pool.py`) uses the single-client fixture with a pool profile; it proves the job names no node, the allocation sits on a node carrying the Kandev contract, durable state is pool-placed, then runs the cleanup-positive assertions. The two-client fixture is deferred to task 03, which needs two nodes.
+- Operator onboarding: `scripts/nomad-pool-onboard`; public docs in `docs/public/executors.md`.
+- Open risk for the live run: whether Nomad interpolates `${meta.kandev.state_root}` in task env and args.

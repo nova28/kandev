@@ -650,6 +650,21 @@ retry a failed connection immediately, and it does not move, reconfigure, or
 otherwise repair a host that has become unreachable or changed address;
 fixing the host or the connection settings remains an operator action.
 
+## Nomad worker pool
+
+A Nomad profile that names neither `node_id` nor `ssh_target` is a pool profile. Kandev registers a job that names no node and lets Nomad place it on any eligible node in the profile's node pool (default `kandev`). Pool profiles take `node_pool`, `placement` (`spread`, the default, or `binpack`), `pin_node_id`, `exclude_local`, `prefer_local`, `ssh_user`, `cpu_mhz`, `memory_mb` and `memory_max_mb`. `binpack` needs the node pool or cluster scheduler algorithm to be `binpack`, and `memory_max_mb` above `memory_mb` needs memory oversubscription enabled; Kandev checks both before it registers a job.
+
+A node is usable only when it publishes the Kandev node contract as Nomad client metadata: `kandev.attach` (`ssh` or `local`), `kandev.state_root`, and for `ssh` nodes `kandev.ssh_host`, `kandev.ssh_port` and `kandev.ssh_host_key_sha256`. A `local` node is the machine Kandev runs on. It must also publish `kandev.host_identity_sha256`, the sha256 of the token in `<kandev home>/data/nomad-host-identity`, reserve CPU and memory for Kandev, and keep its state root outside the Kandev home. A local node that fails any check is refused and never reached over SSH.
+
+`scripts/nomad-pool-onboard` prints the client block for a node. It creates the local token when needed and never edits Nomad configuration:
+
+```bash
+scripts/nomad-pool-onboard ssh /srv/kandev 10.0.0.12 22 SHA256:<fingerprint from ssh-keygen -lf>
+scripts/nomad-pool-onboard local "$HOME/kandev-worker-state"
+```
+
+Paste the block into the node's Nomad client configuration and restart the client. If the metadata changes between launch and recovery, Kandev refuses to reattach to that environment.
+
 ## Nomad worker quarantine and readmission
 
 Archiving, deleting or resetting a task that owns a Nomad environment runs proven cleanup: the runtime is sealed and drained, a receipt is stored, the job is stopped without purging, allocations are confirmed terminal on the original node, and the worker fence is released. Plain session stop only detaches the transport.

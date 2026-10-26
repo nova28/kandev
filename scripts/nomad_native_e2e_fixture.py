@@ -652,6 +652,8 @@ class Runner:
             "ssh_host_fingerprint": cfg["ssh"]["host_fingerprint"], "workspace_root": cfg["workspace_root"],
             "allocation_root": cfg["allocation_root"], "cpu_mhz": str(cfg["cpu_mhz"]), "memory_mb": str(cfg["memory_mb"]),
         }
+        if cfg.get("pool"):
+            nomad_config = self.pool_profile_config(cfg)
         executors = api("GET", "/executors", None).get("executors", [])
         executor = next((item for item in executors if item.get("type") == "nomad"), None) or api("POST", "/executors", {
             "name": "nomad-fixture", "type": "nomad", "status": "active", "is_system": False, "resumable": True,
@@ -672,6 +674,17 @@ class Runner:
         }
         task = self.create_task("Nomad pre-ready recovery fixture", "Pre-ready recovery fixture; no prompt is sent.")
         self.save_state(workspace_id=workspace["id"], task_id=task["id"], session_id=task["session_id"], repository_id=repository["id"], executor_profile_id=profile["id"])
+
+    @staticmethod
+    def pool_profile_config(cfg: dict[str, Any]) -> dict[str, str]:
+        """A pool profile names a node pool and sizing only: no node id, SSH target or worker paths."""
+        nomad, pool = cfg["nomad"], cfg["pool"]
+        config = {key: nomad[key] for key in ("address", "namespace", "region", "datacenter", "platform")}
+        config.update(node_pool=pool["node_pool"], cpu_mhz=str(cfg["cpu_mhz"]), memory_mb=str(cfg["memory_mb"]))
+        for key in ("placement", "ssh_user", "memory_max_mb"):
+            if key in pool:
+                config[key] = str(pool[key])
+        return config
 
     def create_task(self, title: str, description: str = "Nomad fixture task; no prompt is sent.") -> dict[str, str]:
         """Create one more task on the executor profile prepared by setup_api_objects."""

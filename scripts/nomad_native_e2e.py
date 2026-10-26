@@ -37,6 +37,7 @@ REQUIRED_SCENARIOS = {
     "disconnect",
     "cleanup-positive",
     "cleanup-negative",
+    "pool-placement",
     "recovery",
     "pre-ready-recovery",
     "distribution",
@@ -1064,6 +1065,12 @@ def _wo07_module() -> Any:
     return nomad_native_e2e_wo07
 
 
+def _pool_module() -> Any:
+    _fixture_module()
+    import nomad_native_e2e_pool
+    return nomad_native_e2e_pool
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -1080,9 +1087,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "cleanup-fixture":
         return _fixture_module().cleanup_fixture_command(args.fixture_root)
     if args.command == "run" and args.create_fixture:
-        if args.scenario not in ("pre-ready-recovery", "admission", "disconnect", "cleanup-positive", "cleanup-negative") or not args.require_real:
-            print("--create-fixture requires --require-real --scenario pre-ready-recovery|admission|disconnect|cleanup-positive|cleanup-negative", file=sys.stderr)
+        if args.scenario not in ("pre-ready-recovery", "admission", "disconnect", "cleanup-positive", "cleanup-negative", "pool-placement") or not args.require_real:
+            print("--create-fixture requires --require-real --scenario pre-ready-recovery|admission|disconnect|cleanup-positive|cleanup-negative|pool-placement", file=sys.stderr)
             return 2
+        if args.scenario == "pool-placement":
+            return _pool_module().create_fixture_command(args.config, args.scenario)
         if args.scenario in ("cleanup-positive", "cleanup-negative"):
             return _wo07_module().create_fixture_command(args.config, args.scenario)
         if args.scenario in ("admission", "disconnect"):
