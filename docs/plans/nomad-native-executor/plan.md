@@ -166,11 +166,14 @@ silently erase records, kill unidentified processes or re-enable a node.
 - [x] [Task 03: Native launch and secure SSH connection](task-03-native-connection.md)
 - [x] [Task 04: Real no-model session](task-04-real-session.md)
 - [ ] [Task 05: Ambiguous-operation and restart recovery](task-05-recovery.md)
-- [ ] [Task 06: Capacity and actual client disconnect](task-06-admission-disconnect.md)
-- [ ] [Task 07: Cooperative cancellation and quarantine](task-07-cleanup-quarantine.md)
-- [ ] [Task 08: Built runtime and contribution handoff](task-08-package-handoff.md)
+- [x] [Task 06: Capacity and actual client disconnect](task-06-admission-disconnect.md)
+- [x] [Task 07: Cooperative cancellation and quarantine](task-07-cleanup-quarantine.md)
+- [ ] [Task 08: Built runtime and contribution handoff](task-08-package-handoff.md) (cancelled; replaced by the [Nomad worker pool plan](../nomad-worker-pool/plan.md))
 
-Execute 01 -> 02 -> 03 -> 04 -> 05 -> 06 -> 07 -> 08 sequentially. Each has an
+Execute 01 -> 02 -> 03 -> 04 -> 05 -> 06 -> 07 sequentially, then continue with the
+[Nomad worker pool plan](../nomad-worker-pool/plan.md), whose final work order carries
+the built-runtime proof and contribution handoff. The single pinned worker is the
+first slice; the pool is the destination. Each has an
 independent verification boundary; only the complete real matrix proves the
 advertised supported executor.
 
@@ -220,6 +223,24 @@ nonce handshake, a durable drain receipt preceded whole-job stop without purge,
 and terminal allocation, exact process/port absence and fence release were
 verified. This establishes fixture cleanup only; it does not prove automatic
 recovery or the unfinished production cleanup path in work order 07.
+
+Deliberate deviation (work order 05). The startup-continuation design has no
+`task_environments` `creating`→`ready` write. Work order 05 adds one, owned by
+`PublishRecoveredNomadEnvironmentReady`, for `nomad` environments only, plus a
+Nomad-only re-election live-evidence guard and a typed recovery-guard code on
+workspace reads. Specs are frozen on this card, so the owed follow-up is an
+amendment of the startup-continuation design (step 4) adding the environment
+publication, the re-election rule and the error mapping, plus the
+task-launch-failure-recovery design ("Abandoned claims", "Re-election", physical
+evidence list) which the Nomad re-election guard narrows. The PR body names the
+deviation, and the amendment blocks marking work order 05 complete.
+
+Work order 05 real proof passed on 2026-10-25 (run 10, local throwaway Nomad
+2.0.7 fixture, supersedes runs 7 and 9): a pre-ready crash at the fixture-only barrier, an automatic
+restart, environment `ready` and a normal workspace read before any prompt with
+the recovered checkout HEAD asserted over pinned SSH, and the same execution, job, allocation and fence. Evidence is in
+`docs/evidence/nomad-wo05/`. Its cleanup was an operator teardown; production
+whole-job stop remains work order 07's.
 
 Documentation catalog/specification checks have passed during implementation;
 they do not establish runtime behavior. Capacity, actual client/server

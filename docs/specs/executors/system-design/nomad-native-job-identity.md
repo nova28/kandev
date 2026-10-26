@@ -120,7 +120,9 @@ closed compatibility table, not a general Nomad jobspec canonicalizer.
   grants; no extra identities. Do not broadly ignore the Identity object or
   import a Vault/Consul implicit-identity mutation into this native job.
 - Disconnect Replace=false and Reconcile=keep_original remain exact. LostAfter
-  absent/zero can normalize only per its scalar API-to-struct rule. Crucially,
+  is the explicit profile-configured window (default 24h, 1m to 168h) and must
+  match the retained `disconnect_lost_after_seconds` exactly; zero normalizes
+  only for a retained environment whose state has no snapshot (legacy). Crucially,
   StopOnClientAfter is a duration pointer: absent/null is not numeric zero,
   because an explicit zero can change disconnected-client termination behavior.
 - Empty/null equivalence for known empty Constraints, maps or arrays is allowed

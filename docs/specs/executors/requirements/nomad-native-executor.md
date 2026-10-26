@@ -160,6 +160,8 @@ not successful release.
 - Rendered UI and production rollout.
 - Automatic support promotion to bare-metal Linux. Nomad exec with cgroups is
   a possible later Docker-free boundary with its own proof and capability profile.
+- Placement across a pool of workers and more than one environment per worker;
+  see [Nomad worker pool](nomad-worker-pool.md).
 
 
 ## Implementation plans

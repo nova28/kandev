@@ -221,7 +221,7 @@ func validTestProfile() map[string]string {
 		"datacenter":           "dc1",
 		"node_id":              "node-neo",
 		"platform":             "darwin/arm64",
-		"ssh_target":           "henry@neo.internal",
+		"ssh_target":           "kandev@neo.internal",
 		"ssh_port":             "22",
 		"ssh_host_fingerprint": "SHA256:abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJK",
 		"workspace_root":       "/var/lib/kandev/workspaces",
@@ -237,7 +237,7 @@ func validTestState() EnvironmentState {
 		Version: 1, EnvironmentID: "env-1", Generation: 3, OperationID: "op-1", InstallationID: "install-1", ExecutionID: "execution-1",
 		InputDigest: strings.Repeat("a", 64), JobID: "kandev-env-1-g3-op-1",
 		Namespace: "default", Region: "global", Datacenter: "dc1", NodeID: "node-neo",
-		Platform: "darwin/arm64", SSHHost: "neo.internal", SSHUser: "henry", SSHPort: 22,
+		Platform: "darwin/arm64", SSHHost: "neo.internal", SSHUser: "kandev", SSHPort: 22,
 		SSHHostFingerprint: "SHA256:abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJK",
 		WorkspaceRoot:      "/var/lib/kandev/workspaces", WorkspacePath: "/var/lib/kandev/workspaces/environments/env-1/g3",
 		AllocationRoot: "/var/lib/kandev/allocations",
@@ -251,4 +251,24 @@ func cloneTestConfig(source map[string]string) map[string]string {
 		clone[key] = value
 	}
 	return clone
+}
+
+func TestNomadWorkerQuarantineStateValidation(t *testing.T) {
+	for _, value := range []string{"", QuarantinePending, QuarantineMarked} {
+		state := validTestState()
+		state.QuarantineState = value
+		encoded, err := MarshalEnvironmentState(state)
+		if err != nil {
+			t.Fatalf("quarantine state %q rejected: %v", value, err)
+		}
+		decoded, err := UnmarshalEnvironmentState(encoded)
+		if err != nil || decoded.QuarantineState != value {
+			t.Fatalf("round trip %q = %q, %v", value, decoded.QuarantineState, err)
+		}
+	}
+	state := validTestState()
+	state.QuarantineState = "released"
+	if err := state.Validate(); err == nil {
+		t.Fatal("unknown quarantine state accepted")
+	}
 }

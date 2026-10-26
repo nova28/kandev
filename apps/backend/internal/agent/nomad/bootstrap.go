@@ -10,6 +10,16 @@ import (
 
 var safeNodeID = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
 
+// FenceDir is the start fence directory of one environment. A pool environment
+// is fenced alone under its node's state root so several environments can share
+// a node; a pinned worker keeps the worker-wide fence.
+func FenceDir(state EnvironmentState, allocationRoot string) string {
+	if state.PlacementMode == ModePool {
+		return filepath.Join(state.StateRoot, "environments", state.EnvironmentID, "active")
+	}
+	return filepath.Join(filepath.Dir(filepath.Dir(allocationRoot)), "worker-state", state.NodeID, "active-environment")
+}
+
 // BuildBootstrapScript returns the worker-side bootstrap wrapper. The secret
 // environment file is staged mode 0600 over the already pinned SSH channel;
 // its values never appear in the Nomad job, task argv, or task logs. The fence
@@ -26,7 +36,12 @@ func BuildBootstrapScript(state EnvironmentState, allocationRoot string) (string
 	if !safeNodeID.MatchString(state.NodeID) {
 		return "", fmt.Errorf("build Nomad bootstrap: NodeID contains unsupported path characters")
 	}
-	workerState := filepath.Join(filepath.Dir(filepath.Dir(root)), "worker-state", state.NodeID)
+	fence := FenceDir(state, root)
+	fenceParent := filepath.Dir(fence)
+	scratch := ""
+	if state.PlacementMode == ModePool {
+		scratch = "export TMPDIR=\"${NOMAD_ALLOC_DIR:?missing Nomad allocation directory}/tmp\"\nmkdir -p \"$TMPDIR\"\n"
+	}
 	owner := strings.Join([]string{state.InstallationID, state.NodeID, state.EnvironmentID, fmt.Sprint(state.Generation), state.OperationID, state.InputDigest, state.JobID}, ":")
 	return fmt.Sprintf(`#!/bin/sh
 set -eu
@@ -48,7 +63,7 @@ umask 077
 mkdir -p "$workspace_root"
 mkdir -p %s
 if ! mkdir %s 2>/dev/null; then
-  echo 'Kandev worker start fence already exists' >&2
+  echo 'Kandev start fence already exists' >&2
   exit 73
 fi
 printf '%%s\n' %s "$NOMAD_ALLOC_ID" > %s/owner
@@ -56,14 +71,14 @@ chmod 0600 %s/owner
 set -a
 . "$bootstrap_env_file"
 set +a
-export KANDEV_AGENTCTL_PATH="$agentctl_path"
+%sexport KANDEV_AGENTCTL_PATH="$agentctl_path"
 export KANDEV_WORKSPACE_ROOT="$workspace_root"
 export AGENTCTL_PORT="$control_port"
 export AGENTCTL_INSTANCE_PORT_BASE="$instance_port"
 export AGENTCTL_INSTANCE_PORT_MAX="$instance_port"
 export AGENTCTL_LISTEN_HOST=127.0.0.1
 exec "$agentctl_path" --workdir "$workspace_root"
-`, shellQuote(state.JobID), shellQuote(state.NodeID), shellQuote(workerState), shellQuote(filepath.Join(workerState, "active-environment")), shellQuote(owner), shellQuote(filepath.Join(workerState, "active-environment")), shellQuote(filepath.Join(workerState, "active-environment"))), nil
+`, shellQuote(state.JobID), shellQuote(state.NodeID), shellQuote(fenceParent), shellQuote(fence), shellQuote(owner), shellQuote(fence), shellQuote(fence), scratch), nil
 }
 
 // EncodePrivateEnvironment produces a POSIX environment fragment intended for

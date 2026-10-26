@@ -34,8 +34,8 @@ func (m *Manager) wireNomadInventoryPersistence(req *ExecutorCreateRequest, exec
 	req.PersistNomadRuntimeSecret = func(ctx context.Context, metadataKey, value string) error {
 		return m.persistNomadRuntimeSecret(ctx, req, metadataKey, value)
 	}
-	req.PersistNomadRuntimeSecret = func(ctx context.Context, metadataKey, value string) error {
-		return m.persistNomadRuntimeSecret(ctx, req, metadataKey, value)
+	req.ListNomadInventory = func(ctx context.Context) ([]nomad.EnvironmentState, error) {
+		return m.listNomadInventoryStates(ctx)
 	}
 	if req.PreviousExecutionID == "" {
 		req.ReleaseRuntimeInventory = func(ctx context.Context) error {
@@ -211,4 +211,29 @@ func (m *Manager) ListLiveNomadExecutorsRunning(ctx context.Context) ([]*models.
 		return nil, nil
 	}
 	return lister.ListExecutorsRunningNomad(ctx)
+}
+
+// listNomadInventoryStates decodes every retained Nomad row. A row whose typed
+// state cannot be decoded is an error because unknown inventory blocks admission.
+func (m *Manager) listNomadInventoryStates(ctx context.Context) ([]nomad.EnvironmentState, error) {
+	lister, ok := m.runningWriter.(nomadExecutorRunningLister)
+	if !ok {
+		return nil, errors.New("list Nomad inventory: executor-running store does not support Nomad inventory listing")
+	}
+	rows, err := lister.ListExecutorsRunningNomad(ctx)
+	if err != nil {
+		return nil, err
+	}
+	states := make([]nomad.EnvironmentState, 0, len(rows))
+	for _, row := range rows {
+		if row == nil {
+			continue
+		}
+		state, err := nomad.EnvironmentStateFromMetadata(row.Metadata)
+		if err != nil {
+			return nil, fmt.Errorf("decode retained Nomad inventory row: %w", err)
+		}
+		states = append(states, state)
+	}
+	return states, nil
 }

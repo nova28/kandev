@@ -182,7 +182,7 @@ func nomadExecutorRunningFixture(executionID string, generation int64, phase str
 		OperationID: executionID, InstallationID: "installation-one", ExecutionID: executionID,
 		InputDigest: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 		JobID:       "kandev-fixture-job", Namespace: "default", Region: "global", Datacenter: "dc1",
-		NodeID: "node-neo", Platform: "darwin/arm64", SSHHost: "neo.internal", SSHUser: "henry", SSHPort: 22,
+		NodeID: "node-neo", Platform: "darwin/arm64", SSHHost: "neo.internal", SSHUser: "kandev", SSHPort: 22,
 		SSHHostFingerprint: "SHA256:abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJK",
 		WorkspaceRoot:      workspaceRoot, WorkspacePath: workspacePath, AllocationRoot: "/var/lib/kandev/allocations/env",
 		CPUMHz: 1500, MemoryMB: 4096, Phase: phase,

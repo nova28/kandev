@@ -103,6 +103,7 @@ func TestNomadExecutorForceStopFailsClosedAndCloseOnlyDetaches(t *testing.T) {
 	instance := nomadStopTestInstance("operation-2", "task-2", "session-2", "allocation-2")
 	runtime := NewNomadExecutor(nil, nil, nil)
 	runtime.sessions[instance.InstanceID] = &nomadAgentctlConnection{instance: instance, controlForwarder: forward}
+	instance.StopReason = StopReasonSessionArchived
 
 	if err := runtime.StopInstance(context.Background(), instance, true); !errors.Is(err, ErrNomadExecutorNotReady) {
 		t.Fatalf("force StopInstance() = %v, want fail-closed error", err)
@@ -542,12 +543,16 @@ type nomadCreateFixture struct {
 	createCalls          int
 	preexistingInstance  bool
 	fenceOK              bool
+	fenceAbsent          bool
 	loseRegisterResponse bool
 	failBootstrapWrite   bool
 	allocationsPending   bool
 	rejectBootstrap      bool
 	multipleAllocations  bool
 	jobHistoryMissing    bool
+	fake                 *nomadAdmissionFake
+	inventory            []nomad.EnvironmentState
+	cleanup              nomadCleanupFixture
 }
 
 type nomadCreateSecretReader struct{}
@@ -570,7 +575,7 @@ func newNomadCreateFixture(t *testing.T, failRegistration bool) *nomadCreateFixt
 	t.Setenv("KANDEV_AGENTCTL_DARWIN_ARM64_BINARY", artifactPath)
 	artifactHash := sha256.Sum256(artifact)
 	artifactDigest := hex.EncodeToString(artifactHash[:])
-	fixture := &nomadCreateFixture{artifactDigest: artifactDigest}
+	fixture := &nomadCreateFixture{artifactDigest: artifactDigest, fake: newNomadAdmissionFake()}
 
 	agentctlServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -594,6 +599,8 @@ func newNomadCreateFixture(t *testing.T, failRegistration bool) *nomadCreateFixt
 			_, _ = io.WriteString(w, `{"id":"execution-1","port":41231,"task_id":"task-1","session_id":"session-1","workspace_path":"`+filepath.Join(fixture.profile.WorkspaceRoot, "environments", "environment-1", "g3")+`","status":"running"}`)
 		case "/health":
 			_, _ = io.WriteString(w, `{"status":"ok"}`)
+		case "/api/v1/runtime/seal-and-drain":
+			fixture.cleanup.serveDrain(w, r, fixture)
 		default:
 			http.NotFound(w, r)
 		}
@@ -603,6 +610,9 @@ func newNomadCreateFixture(t *testing.T, failRegistration bool) *nomadCreateFixt
 	nomadServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("X-Nomad-Token") != "fixture-token" {
 			t.Errorf("Nomad API request omitted resolved secret token")
+		}
+		if fixture.fake.serve(w, r) || fixture.cleanup.serveNomad(w, r, fixture) {
+			return
 		}
 		switch {
 		case r.Method == http.MethodPut && r.URL.Path == "/v1/jobs":
@@ -682,6 +692,9 @@ func newNomadCreateFixture(t *testing.T, failRegistration bool) *nomadCreateFixt
 			if fixture.fenceOK {
 				return sshOut("verified\n")
 			}
+			if fixture.fenceAbsent {
+				return sshOut("absent\n")
+			}
 			return sshFail("fence mismatch")
 		case strings.HasPrefix(command, "mkdir -p "):
 			directory := strings.Trim(strings.TrimPrefix(command, "mkdir -p "), "'")
@@ -703,6 +716,8 @@ func newNomadCreateFixture(t *testing.T, failRegistration bool) *nomadCreateFixt
 			return sshOK
 		case strings.HasPrefix(command, "shasum -a 256 "):
 			return sshOut(artifactDigest + "  fixture\n")
+		case strings.HasPrefix(command, "d=") || strings.HasPrefix(command, "rm -f -- "):
+			return fixture.cleanup.serveSSH(command, fixture)
 		default:
 			return sshFail("unexpected remote command")
 		}
@@ -743,7 +758,11 @@ func newNomadCreateFixture(t *testing.T, failRegistration bool) *nomadCreateFixt
 				return err
 			}
 			fixture.checkpoints = append(fixture.checkpoints, state)
+			fixture.fake.record("checkpoint:" + state.Phase + ":" + state.QuarantineState)
 			return nil
+		},
+		ListNomadInventory: func(context.Context) ([]nomad.EnvironmentState, error) {
+			return fixture.inventory, nil
 		},
 	}
 	fixture.request.PersistNomadRuntimeSecret = func(_ context.Context, metadataKey, value string) error {

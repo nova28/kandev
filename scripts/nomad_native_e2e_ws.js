@@ -68,7 +68,35 @@ async function unknownTerminalRejected() {
   });
 }
 
+// Read-only: lists the workspace tree and reads git snapshots. Sends no prompt.
+async function workspaceRead() {
+  return await withApiSocket(async ws => {
+    const tree = await request(ws, 'workspace.tree.get', { session_id: input.session_id, path: '', depth: 4 });
+    let repoHead = null;
+    try {
+      const git = await request(ws, 'session.git.snapshots', { task_id: input.task_id, session_id: input.session_id });
+      const head = ((git.snapshots || []).find(item => typeof item.head_commit === 'string' && /^[0-9a-f]{40}$/.test(item.head_commit)) || {}).head_commit;
+      if (head) repoHead = head;
+    } catch { repoHead = null; }
+    const contains = JSON.stringify(tree).includes(input.expected_file);
+    const out = { ok: true, contains_expected_file: contains };
+    if (repoHead) out.repo_head = repoHead;
+    console.log(JSON.stringify(out));
+    if (!contains) process.exit(2);
+  });
+}
+
+// Production stop path: the same session.stop action the UI uses.
+async function sessionStop() {
+  return await withApiSocket(async ws => {
+    await request(ws, 'session.stop', { session_id: input.session_id, reason: 'fixture cleanup' }, 90000);
+    console.log(JSON.stringify({ ok: true }));
+  });
+}
+
 async function main() {
+  if (input.mode === 'workspace-read') return workspaceRead();
+  if (input.mode === 'session-stop') return sessionStop();
   const result = await withApiSocket(async ws => {
     const prompt = await request(ws, 'message.add', {
       task_id: input.task_id,

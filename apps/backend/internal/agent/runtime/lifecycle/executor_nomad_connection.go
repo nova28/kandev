@@ -27,8 +27,9 @@ const nomadDrainCapability = "runtime-seal-drain.v1"
 type nomadAgentctlConnection struct {
 	instance          *ExecutorInstance
 	sshClient         *ssh.Client
-	controlForwarder  *SSHPortForwarder
-	instanceForwarder *SSHPortForwarder
+	transport         nomadWorkerTransport
+	controlForwarder  nomadPortForward
+	instanceForwarder nomadPortForward
 	runtimeAPITunnel  *sshRuntimeAPITunnel
 	controlClient     *agentctl.ControlClient
 	closeOnce         sync.Once
@@ -51,7 +52,9 @@ func (c *nomadAgentctlConnection) closeHostResources() {
 		if c.controlClient != nil {
 			c.controlClient.Close()
 		}
-		if c.sshClient != nil {
+		if c.transport != nil {
+			_ = c.transport.Close()
+		} else if c.sshClient != nil {
 			_ = c.sshClient.Close()
 		}
 	})
@@ -82,14 +85,51 @@ func connectNomadAgentctlOverSSHWithTunnel(
 	log *logger.Logger,
 	preparedTunnel *sshRuntimeAPITunnel,
 ) (*nomadAgentctlConnection, error) {
-	if client == nil || state == nil || req == nil || log == nil || (bootstrapNonce == "" && req.AuthToken == "") {
+	if client == nil {
+		return nil, errors.New("connect Nomad agentctl: pinned SSH client is required")
+	}
+	conn := &nomadAgentctlConnection{sshClient: client, transport: nomadSSHTransport{client: client}}
+	return conn.connect(ctx, profile, state, req, bootstrapNonce, log, preparedTunnel)
+}
+
+// connectNomadAgentctlOverTransport is the pool attach: the transport is SSH
+// for a remote node and the Kandev host itself for a local one.
+func connectNomadAgentctlOverTransport(
+	ctx context.Context,
+	transport nomadWorkerTransport,
+	profile nomad.ProfileConfig,
+	state *nomad.EnvironmentState,
+	req *ExecutorCreateRequest,
+	bootstrapNonce string,
+	log *logger.Logger,
+	preparedTunnel *sshRuntimeAPITunnel,
+) (*nomadAgentctlConnection, error) {
+	if transport == nil {
+		return nil, errors.New("connect Nomad agentctl: a worker transport is required")
+	}
+	conn := &nomadAgentctlConnection{transport: transport}
+	if sshT, ok := transport.(nomadSSHTransport); ok {
+		conn.sshClient = sshT.client
+	}
+	return conn.connect(ctx, profile, state, req, bootstrapNonce, log, preparedTunnel)
+}
+
+func (conn *nomadAgentctlConnection) connect(
+	ctx context.Context,
+	profile nomad.ProfileConfig,
+	state *nomad.EnvironmentState,
+	req *ExecutorCreateRequest,
+	bootstrapNonce string,
+	log *logger.Logger,
+	preparedTunnel *sshRuntimeAPITunnel,
+) (*nomadAgentctlConnection, error) {
+	if state == nil || req == nil || log == nil || (bootstrapNonce == "" && req.AuthToken == "") {
 		return nil, errors.New("connect Nomad agentctl: pinned SSH client, state, request, logger, and persisted auth or bootstrap credential are required")
 	}
 	phaseAllowed := state.Phase == nomadPhaseAllocated || (req.RequireExistingAgentctlInstance && state.Phase == nomadPhaseReady)
 	if err := state.Validate(); err != nil || !phaseAllowed || state.NodeID != profile.NodeID || state.ControlPort < 1 || state.InstancePort < 1 {
 		return nil, errors.New("connect Nomad agentctl: exact allocated worker identity and ports are required")
 	}
-	conn := &nomadAgentctlConnection{sshClient: client}
 	if err := conn.establish(ctx, state, req, bootstrapNonce, log, preparedTunnel); err != nil {
 		conn.closeHostResources()
 		return nil, err
@@ -110,14 +150,14 @@ func (conn *nomadAgentctlConnection) establish(
 	client := conn.sshClient
 	if preparedTunnel != nil {
 		conn.runtimeAPITunnel = preparedTunnel
-	} else {
+	} else if client != nil {
 		tunnel, _, err := openSSHRuntimeAPITunnelForRequest(client, req)
 		if err != nil {
 			return fmt.Errorf("connect Nomad agentctl: open reverse Kandev API tunnel: %w", err)
 		}
 		conn.runtimeAPITunnel = tunnel
 	}
-	controlForwarder, err := StartPortForward(client, state.ControlPort, log)
+	controlForwarder, err := conn.transport.Forward(state.ControlPort, log)
 	if err != nil {
 		return fmt.Errorf("connect Nomad agentctl: forward control port: %w", err)
 	}
@@ -151,6 +191,9 @@ func (conn *nomadAgentctlConnection) establish(
 		Metadata:       req.Metadata,
 		AuthToken:      control.AuthToken(),
 		BootstrapNonce: bootstrapNonce,
+	}
+	if state.PlacementMode == nomad.ModePool && state.NodeAttach == nomad.AttachLocal {
+		conn.instance.LocalWorktreeBranch = nomad.PoolWorktreeBranch(state.EnvironmentID)
 	}
 	log.Info("connected to Nomad-owned agentctl", zap.String("server_identity", identity.ServerIdentity))
 	return nil
@@ -268,7 +311,7 @@ func (conn *nomadAgentctlConnection) attachNomadAgentctlInstance(
 	log *logger.Logger,
 ) error {
 	control := conn.controlClient
-	instanceForwarder, err := StartPortForward(conn.sshClient, created.Port, log)
+	instanceForwarder, err := conn.transport.Forward(created.Port, log)
 	if err != nil {
 		deleteNomadAgentctlInstance(control, created.ID)
 		return fmt.Errorf("connect Nomad agentctl: forward instance port: %w", err)
@@ -325,24 +368,41 @@ func nomadHandshakeHTTPStatus(message string) (int, bool) {
 	return status, parseErr == nil
 }
 
+// errNomadWorkerFenceAbsent reports that the worker holds no owner record at
+// all, as opposed to a record that belongs to something else.
+var errNomadWorkerFenceAbsent = errors.New("verify Nomad worker fence: no owner record is present")
+
 func verifyNomadWorkerFence(ctx context.Context, client *ssh.Client, profile nomad.ProfileConfig, state nomad.EnvironmentState) error {
-	if client == nil || state.AllocationID == "" || state.NodeID != profile.NodeID || state.JobID == "" ||
+	if client == nil {
+		return errors.New("verify Nomad worker fence: exact allocation ownership is incomplete")
+	}
+	return verifyNomadWorkerFenceOver(ctx, nomadSSHTransport{client: client}, profile, state)
+}
+
+func verifyNomadWorkerFenceOver(ctx context.Context, transport nomadWorkerTransport, profile nomad.ProfileConfig, state nomad.EnvironmentState) error {
+	if transport == nil || state.AllocationID == "" || state.NodeID != profile.NodeID || state.JobID == "" ||
 		state.OperationID == "" || state.InputDigest == "" {
 		return errors.New("verify Nomad worker fence: exact allocation ownership is incomplete")
 	}
-	workerStateRoot := filepath.Join(filepath.Dir(filepath.Dir(profile.AllocationRoot)), "worker-state", state.NodeID)
-	fenceOwnerPath := filepath.Join(workerStateRoot, "active-environment", "owner")
+	fenceOwnerPath := filepath.Join(nomad.FenceDir(state, profile.AllocationRoot), "owner")
 	owner := strings.Join([]string{
 		state.InstallationID, state.NodeID, state.EnvironmentID, fmt.Sprint(state.Generation),
 		state.OperationID, state.InputDigest, state.JobID,
 	}, ":") + "\n" + state.AllocationID
 	command := "f=" + shellQuote(fenceOwnerPath) +
-		`; [ ! -L "$f" ] && [ -f "$f" ] && [ "$(stat -f %Lp "$f")" = 600 ] && [ "$(cat "$f")" = ` + shellQuote(owner) + ` ] && printf verified`
-	output, _, err := runSSHCommand(ctx, client, command)
-	if err != nil || strings.TrimSpace(output) != "verified" {
+		`; if [ -L "$f" ]; then :; elif [ ! -e "$f" ]; then printf absent` +
+		`; elif [ -f "$f" ] && [ "$(stat -f %Lp "$f")" = 600 ] && [ "$(cat "$f")" = ` + shellQuote(owner) + ` ]; then printf verified; fi`
+	output, _, err := transport.Run(ctx, command)
+	if err != nil {
 		return errors.New("verify Nomad worker fence: exact private owner record is unavailable")
 	}
-	return nil
+	switch strings.TrimSpace(output) {
+	case "verified":
+		return nil
+	case "absent":
+		return errNomadWorkerFenceAbsent
+	}
+	return errors.New("verify Nomad worker fence: exact private owner record is unavailable")
 }
 
 func deleteNomadAgentctlInstance(control *agentctl.ControlClient, instanceID string) {
@@ -387,7 +447,7 @@ func nomadWorkerPathsFor(profile nomad.ProfileConfig, state nomad.EnvironmentSta
 	}, nil
 }
 
-func stageNomadWorkerFiles(ctx context.Context, client *ssh.Client, profile nomad.ProfileConfig, state nomad.EnvironmentState, artifact []byte, bootstrapEnv map[string]string) (nomadWorkerPaths, error) {
+func stageNomadWorkerFilesOver(ctx context.Context, client nomadWorkerTransport, profile nomad.ProfileConfig, state nomad.EnvironmentState, artifact []byte, bootstrapEnv map[string]string) (nomadWorkerPaths, error) {
 	digest := sha256.Sum256(artifact)
 	digestHex := hex.EncodeToString(digest[:])
 	paths, err := nomadWorkerPathsFor(profile, state, digestHex)
@@ -403,20 +463,20 @@ func stageNomadWorkerFiles(ctx context.Context, client *ssh.Client, profile noma
 		return nomadWorkerPaths{}, err
 	}
 	dir := filepath.Dir(paths.BootstrapPath)
-	if _, _, err := runSSHCommand(ctx, client, "mkdir -p "+shellQuote(dir)); err != nil {
+	if _, _, err := client.Run(ctx, "mkdir -p "+shellQuote(dir)); err != nil {
 		return nomadWorkerPaths{}, fmt.Errorf("prepare Nomad worker directory: %w", err)
 	}
-	if err := sftpUploadBytes(client, paths.ArtifactPath, artifact, 0o500); err != nil {
+	if err := client.Upload(paths.ArtifactPath, artifact, 0o500); err != nil {
 		return nomadWorkerPaths{}, fmt.Errorf("stage verified agentctl artifact: %w", err)
 	}
-	if err := sftpUploadBytes(client, paths.BootstrapPath, []byte(script), 0o700); err != nil {
+	if err := client.Upload(paths.BootstrapPath, []byte(script), 0o700); err != nil {
 		return nomadWorkerPaths{}, fmt.Errorf("stage Nomad bootstrap: %w", err)
 	}
 	command := "umask 077; cat > " + shellQuote(paths.EnvironmentPath) + " && chmod 0600 " + shellQuote(paths.EnvironmentPath)
-	if _, _, err := runSSHCommandStdin(ctx, client, command, bytes.NewReader(envFile)); err != nil {
+	if _, _, err := client.RunStdin(ctx, command, bytes.NewReader(envFile)); err != nil {
 		return nomadWorkerPaths{}, fmt.Errorf("stage private Nomad bootstrap environment: %w", err)
 	}
-	remoteDigest, _, err := runSSHCommand(ctx, client, "shasum -a 256 "+shellQuote(paths.ArtifactPath))
+	remoteDigest, _, err := client.Run(ctx, "shasum -a 256 "+shellQuote(paths.ArtifactPath))
 	if err != nil {
 		return nomadWorkerPaths{}, fmt.Errorf("verify staged Nomad artifact: %w", err)
 	}

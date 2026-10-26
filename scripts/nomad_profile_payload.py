@@ -27,6 +27,10 @@ _CONFIG_KEYS = {
     "ssh_target", "ssh_port", "ssh_host_fingerprint", "workspace_root",
     "allocation_root", "cpu_mhz", "memory_mb",
 }
+_POOL_REQUIRED = {"address", "namespace", "region", "datacenter", "platform", "node_pool"}
+_POOL_OPTIONAL = {
+    "placement", "ssh_user", "cpu_mhz", "memory_mb", "memory_max_mb", "pin_node_id", "exclude_local", "prefer_local",
+}
 
 
 @dataclass(frozen=True)
@@ -72,7 +76,9 @@ def validate_profile_source(source: Any) -> OriginalProfileReferences:
     if not isinstance(source["nomad_token_ref"], str) or not _REF.fullmatch(source["nomad_token_ref"]):
         raise ProfilePayloadError("nomad_token_ref must be the original $kandev-secret:<UUID> reference")
     config = source["config"]
-    if not isinstance(config, dict) or set(config) != _CONFIG_KEYS:
+    pool = isinstance(config, dict) and "node_pool" in config
+    if not isinstance(config, dict) or (pool and not _POOL_REQUIRED <= set(config) <= _POOL_REQUIRED | _POOL_OPTIONAL) \
+            or (not pool and set(config) != _CONFIG_KEYS):
         raise ProfilePayloadError("profile config fields do not match the typed Nomad profile")
     if any(not isinstance(key, str) or not isinstance(value, str) or not value for key, value in config.items()):
         raise ProfilePayloadError("profile config values must be non-empty strings")

@@ -38,7 +38,23 @@ type Job struct {
 	Datacenters       []string          `json:"Datacenters"`
 	Meta              map[string]string `json:"Meta"`
 	Constraints       []Constraint      `json:"Constraints"`
+	Affinities        []Affinity        `json:"Affinities,omitempty"`
+	Spreads           []Spread          `json:"Spreads,omitempty"`
 	TaskGroups        []TaskGroup       `json:"TaskGroups"`
+}
+
+// Affinity is a soft placement preference.
+type Affinity struct {
+	LTarget string `json:"LTarget"`
+	Operand string `json:"Operand"`
+	RTarget string `json:"RTarget"`
+	Weight  int    `json:"Weight"`
+}
+
+// Spread asks the scheduler to distribute allocations across an attribute.
+type Spread struct {
+	Attribute string `json:"Attribute"`
+	Weight    int    `json:"Weight"`
 }
 
 type Constraint struct {
@@ -76,6 +92,7 @@ type ReschedulePolicy struct {
 type DisconnectPolicy struct {
 	Replace   bool   `json:"Replace"`
 	Reconcile string `json:"Reconcile"`
+	LostAfter int64  `json:"LostAfter"`
 }
 
 type NetworkResource struct {
@@ -99,8 +116,9 @@ type Task struct {
 }
 
 type TaskResources struct {
-	CPU      int `json:"CPU"`
-	MemoryMB int `json:"MemoryMB"`
+	CPU         int `json:"CPU"`
+	MemoryMB    int `json:"MemoryMB"`
+	MemoryMaxMB int `json:"MemoryMaxMB,omitempty"`
 }
 
 type JobRegisterRequest struct {
@@ -119,11 +137,15 @@ type NativeJobInput struct {
 const defaultNodePool = "default"
 
 func NativeJobFromState(state EnvironmentState) (Job, error) {
+	if state.PlacementMode == ModePool {
+		return BuildPoolJob(PoolJobInput{Profile: PoolProfileFromState(state), State: state, ArtifactDigest: state.ArtifactSHA256})
+	}
 	profile := ProfileConfig{
 		Namespace: state.Namespace, Region: state.Region, Datacenter: state.Datacenter, NodeID: state.NodeID,
 		Platform: state.Platform, SSHHost: state.SSHHost, SSHUser: state.SSHUser, SSHPort: state.SSHPort,
 		SSHHostFingerprint: state.SSHHostFingerprint, WorkspaceRoot: state.WorkspaceRoot,
 		AllocationRoot: state.AllocationRoot, CPUMHz: state.CPUMHz, MemoryMB: state.MemoryMB,
+		DisconnectLostAfter: time.Duration(state.DisconnectLostAfterSeconds) * time.Second,
 	}
 	return BuildNativeJob(NativeJobInput{Profile: profile, State: state, AgentctlPath: state.AgentctlPath, BootstrapPath: state.BootstrapPath})
 }
@@ -145,7 +167,7 @@ func BuildNativeJob(input NativeJobInput) (Job, error) {
 	job := Job{
 		ID: s.JobID, Name: s.JobID, Type: "batch", Namespace: p.Namespace, Region: p.Region,
 		Priority: 50, NodePool: defaultNodePool, Datacenters: []string{p.Datacenter}, Meta: metadata,
-		Constraints: []Constraint{{LTarget: "${node.unique.id}", Operand: "=", RTarget: p.NodeID}},
+		Constraints: []Constraint{{LTarget: nodeUniqueIDTarget, Operand: "=", RTarget: p.NodeID}},
 		TaskGroups:  []TaskGroup{group},
 	}
 	if err := applyRetainedDigest(&job, s); err != nil {
@@ -198,7 +220,15 @@ func profileMatchesState(p ProfileConfig, s EnvironmentState) bool {
 	return p.NodeID == s.NodeID && p.Datacenter == s.Datacenter && p.Namespace == s.Namespace && p.Region == s.Region &&
 		p.Platform == s.Platform && p.SSHHost == s.SSHHost && p.SSHUser == s.SSHUser && p.SSHPort == s.SSHPort &&
 		p.SSHHostFingerprint == s.SSHHostFingerprint &&
-		p.AllocationRoot == s.AllocationRoot && p.CPUMHz == s.CPUMHz && p.MemoryMB == s.MemoryMB
+		p.AllocationRoot == s.AllocationRoot && p.CPUMHz == s.CPUMHz && p.MemoryMB == s.MemoryMB &&
+		profileMatchesDisconnectWindow(p, s)
+}
+
+// profileMatchesDisconnectWindow compares the profile with the immutable
+// window snapshot. A retained environment from before the window was
+// configurable carries zero and keeps its original job policy.
+func profileMatchesDisconnectWindow(p ProfileConfig, s EnvironmentState) bool {
+	return s.DisconnectLostAfterSeconds == 0 || p.DisconnectLostAfter == time.Duration(s.DisconnectLostAfterSeconds)*time.Second
 }
 
 func nativeJobMetadata(s EnvironmentState) map[string]string {
@@ -221,7 +251,7 @@ func nativeTaskGroup(p ProfileConfig, s EnvironmentState, agentctlPath, bootstra
 			Attempts: 0, Interval: int64(24 * time.Hour), Delay: int64(5 * time.Second),
 			DelayFunction: "constant", Unlimited: false,
 		},
-		Disconnect: DisconnectPolicy{Replace: false, Reconcile: "keep_original"},
+		Disconnect: DisconnectPolicy{Replace: false, Reconcile: "keep_original", LostAfter: int64(time.Duration(s.DisconnectLostAfterSeconds) * time.Second)},
 		Networks: []NetworkResource{{Mode: "host", DynamicPorts: []Port{
 			{Label: "agentctl_control", Value: 0},
 			{Label: "agentctl_instance", Value: 0},
@@ -235,7 +265,7 @@ func nativeTaskGroup(p ProfileConfig, s EnvironmentState, agentctlPath, bootstra
 				"KANDEV_WORKSPACE_ROOT":         s.WorkspacePath,
 				"KANDEV_ALLOCATION_ROOT":        p.AllocationRoot,
 				"KANDEV_WORKER_STATE_ROOT":      filepath.Join(filepath.Dir(filepath.Dir(p.AllocationRoot)), "worker-state", p.NodeID),
-				"KANDEV_NOMAD_NODE_ID":          "${node.unique.id}",
+				"KANDEV_NOMAD_NODE_ID":          nodeUniqueIDTarget,
 				"KANDEV_NOMAD_JOB_ID":           s.JobID,
 				"KANDEV_ENVIRONMENT_ID":         s.EnvironmentID,
 				"KANDEV_ENVIRONMENT_GENERATION": strconv.FormatInt(s.Generation, 10),
@@ -254,7 +284,7 @@ func nativeTaskGroup(p ProfileConfig, s EnvironmentState, agentctlPath, bootstra
 // the state carries one.
 func applyRetainedDigest(job *Job, s EnvironmentState) error {
 	if s.NativeJobSpecSHA256 != "" {
-		if s.NativeJobPolicyVersion != NativeJobPolicyVersion {
+		if s.NativeJobPolicyVersion != s.expectedJobPolicyVersion() {
 			return fmt.Errorf("build native Nomad job: unsupported retained policy version")
 		}
 		digest, err := NativeJobSpecDigest(*job)

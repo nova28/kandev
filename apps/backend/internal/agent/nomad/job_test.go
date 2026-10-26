@@ -357,7 +357,7 @@ func TestBuildBootstrapScriptUsesPermanentWorkerFenceAndPrivateFile(t *testing.T
 		t.Fatal(err)
 	}
 	for _, required := range []string{
-		"if ! mkdir '/var/lib/kandev/worker-state/node-neo/active-environment'",
+		"if ! mkdir '/var/lib/worker-state/node-neo/active-environment'",
 		"KANDEV_BOOTSTRAP_ENV_FILE",
 		"NOMAD_JOB_ID",
 		"NOMAD_ALLOC_ID",
@@ -417,9 +417,27 @@ func mustJSON(t *testing.T, value any) []byte {
 func validTestProfileConfig() ProfileConfig {
 	return ProfileConfig{
 		Namespace: "default", Region: "global", Datacenter: "dc1", NodeID: "node-neo",
-		Platform: "darwin/arm64", SSHUser: "henry", SSHHost: "neo.internal", SSHPort: 22,
+		Platform: "darwin/arm64", SSHUser: "kandev", SSHHost: "neo.internal", SSHPort: 22,
 		SSHHostFingerprint: "SHA256:abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJK",
 		WorkspaceRoot:      "/var/lib/kandev/workspaces", AllocationRoot: "/var/lib/kandev/allocations",
 		CPUMHz: 1500, MemoryMB: 4096, NomadTokenSecretID: "secret-nomad-token",
+	}
+}
+
+func TestNomadNativeJobDisconnectPolicy(t *testing.T) {
+	profile := validTestProfileConfig()
+	profile.Address = "http://127.0.0.1:4646"
+	state := validTestState()
+	state.JobID, _ = StableJobID(JobIdentity{EnvironmentID: state.EnvironmentID, Generation: state.Generation, OperationID: state.OperationID, InstallationID: state.InstallationID})
+	job, err := BuildNativeJob(NativeJobInput{Profile: profile, State: state, AgentctlPath: "/var/lib/kandev/allocations/env-1/agentctl", BootstrapPath: "/var/lib/kandev/allocations/env-1/bootstrap.sh"})
+	if err != nil {
+		t.Fatalf("BuildNativeJob: %v", err)
+	}
+	group := job.TaskGroups[0]
+	if group.Count != 1 || group.RestartPolicy.Attempts != 0 || group.ReschedulePolicy.Attempts != 0 || group.ReschedulePolicy.Unlimited {
+		t.Fatalf("group can restart, reschedule, or scale: %+v", group)
+	}
+	if group.Disconnect.Replace || group.Disconnect.Reconcile != "keep_original" {
+		t.Fatalf("disconnect policy = %+v, want no replacement and keep_original", group.Disconnect)
 	}
 }

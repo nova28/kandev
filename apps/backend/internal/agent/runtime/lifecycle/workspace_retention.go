@@ -27,7 +27,7 @@ func (m *Manager) stopWorkspaceRuntime(ctx context.Context, backend ExecutorBack
 	}
 	defer releaseRetention()
 
-	retainNomadTransportOnly := backend.Name() == executor.NameNomad && instance != nil && instance.StopReason == "" && !force
+	retainNomadTransportOnly := backend.Name() == executor.NameNomad && instance != nil && !nomadStopDestroys(instance.StopReason)
 	if backend.Name() != executor.NameStandalone && !retainNomadTransportOnly {
 		sandboxID, _ := instance.Metadata[MetadataKeySpriteName].(string)
 		if err := m.checkRetainedWorkspaceResource(ctx, instance.TaskID, instance.InstanceID, instance.ContainerID, sandboxID); err != nil {

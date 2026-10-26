@@ -94,11 +94,11 @@ func resolveNomadLaunchIdentity(req *ExecutorCreateRequest) (nomadLaunchIdentity
 	if err != nil || generation < 1 {
 		return id, errors.New("nomad launch requires a positive task environment ownership generation")
 	}
-	workspacePath, err := nomad.EnvironmentWorkspacePath(profile.WorkspaceRoot, req.TaskEnvironmentID, generation)
+	workspacePath, err := nomadIdentityWorkspacePath(profile, req.TaskEnvironmentID, generation)
 	if err != nil {
 		return id, fmt.Errorf("derive immutable Nomad environment workspace: %w", err)
 	}
-	inputDigest, err := nomadLaunchDigest(profile, req, req.WorkspacePath, workspacePath)
+	inputDigest, err := nomadLaunchDigest(profile, req, req.WorkspacePath, nomadDigestWorkspacePath(profile, req.TaskEnvironmentID, generation, workspacePath))
 	if err != nil {
 		return id, fmt.Errorf("nomad launch identity: %w", err)
 	}
@@ -115,6 +115,25 @@ func resolveNomadLaunchIdentity(req *ExecutorCreateRequest) (nomadLaunchIdentity
 	}, nil
 }
 
+// nomadIdentityWorkspacePath is the environment workspace of a legacy profile.
+// A pool environment has none until a node is chosen, so it returns empty.
+func nomadIdentityWorkspacePath(profile nomad.ProfileConfig, environmentID string, generation int64) (string, error) {
+	if profile.Mode == nomad.ModePool {
+		return "", nil
+	}
+	return nomad.EnvironmentWorkspacePath(profile.WorkspaceRoot, environmentID, generation)
+}
+
+// nomadDigestWorkspacePath is the workspace identity folded into the launch
+// digest. A pool environment uses a symbolic path because the real one depends
+// on the node Nomad will choose.
+func nomadDigestWorkspacePath(profile nomad.ProfileConfig, environmentID string, generation int64, workspacePath string) string {
+	if profile.Mode == nomad.ModePool {
+		return fmt.Sprintf("pool/%s/g%d", environmentID, generation)
+	}
+	return workspacePath
+}
+
 // validateNomadContinuation proves the retained typed inventory is the exact
 // operation, owner, input and phase the request continues.
 func validateNomadContinuation(req *ExecutorCreateRequest, id nomadLaunchIdentity) (nomad.EnvironmentState, error) {
@@ -126,10 +145,11 @@ func validateNomadContinuation(req *ExecutorCreateRequest, id nomadLaunchIdentit
 		!nomadContinuationPhaseAllowed(state, req) {
 		return state, errors.New("nomad continuation does not match the exact retained operation, owner, input, or phase")
 	}
-	if _, err := nomad.BuildNativeJob(nomad.NativeJobInput{Profile: id.profile, State: state, AgentctlPath: state.AgentctlPath, BootstrapPath: state.BootstrapPath}); err != nil {
+	if _, err := nomad.NativeJobFromState(state); err != nil {
 		return state, fmt.Errorf("nomad continuation immutable job evidence is invalid: %w", err)
 	}
-	inputDigest, err := nomadLaunchDigest(id.profile, req, state.WorkspaceInputPath, id.workspacePath)
+	inputDigest, err := nomadLaunchDigest(id.profile, req, state.WorkspaceInputPath,
+		nomadDigestWorkspacePath(id.profile, req.TaskEnvironmentID, id.generation, id.workspacePath))
 	if err != nil || state.InputDigest != inputDigest {
 		return state, errors.New("nomad continuation does not match the exact retained operation, owner, input, or phase")
 	}
@@ -137,13 +157,19 @@ func validateNomadContinuation(req *ExecutorCreateRequest, id nomadLaunchIdentit
 }
 
 func nomadContinuationIdentityMatches(state nomad.EnvironmentState, req *ExecutorCreateRequest, id nomadLaunchIdentity) bool {
-	return state.WorkspaceInputCaptured && state.ExecutionID == req.InstanceID && state.OperationID == req.InstanceID &&
-		state.EnvironmentID == req.TaskEnvironmentID && state.InputDigest != "" &&
-		state.NodeID == id.profile.NodeID && state.InstallationID == id.profileID &&
+	common := state.WorkspaceInputCaptured && state.ExecutionID == req.InstanceID && state.OperationID == req.InstanceID &&
+		state.EnvironmentID == req.TaskEnvironmentID && state.InputDigest != "" && state.InstallationID == id.profileID
+	if id.profile.Mode == nomad.ModePool {
+		return common && state.PlacementMode == nomad.ModePool && nomadPoolSnapshotMatches(state, id.profile)
+	}
+	return common && state.NodeID == id.profile.NodeID &&
 		state.WorkspaceRoot == id.profile.WorkspaceRoot && state.WorkspacePath == id.workspacePath
 }
 
 func nomadContinuationEvidencePresent(state nomad.EnvironmentState) bool {
+	if state.PlacementMode == nomad.ModePool && state.NodeID == "" {
+		return state.ArtifactSHA256 != "" && state.NativeJobSpecSHA256 != ""
+	}
 	return state.AgentctlPath != "" && state.BootstrapPath != "" && state.NativeJobSpecSHA256 != ""
 }
 
@@ -160,6 +186,9 @@ func nomadContinuationPhaseAllowed(state nomad.EnvironmentState, req *ExecutorCr
 
 func newNomadIntentState(req *ExecutorCreateRequest, id nomadLaunchIdentity) nomad.EnvironmentState {
 	profile := id.profile
+	if profile.Mode == nomad.ModePool {
+		return newNomadPoolIntentState(req, id)
+	}
 	return nomad.EnvironmentState{
 		Version: 1, Revision: 1, EnvironmentID: req.TaskEnvironmentID, Generation: id.generation,
 		OperationID: req.InstanceID, InstallationID: id.profileID, ExecutionID: req.InstanceID,
@@ -169,7 +198,8 @@ func newNomadIntentState(req *ExecutorCreateRequest, id nomadLaunchIdentity) nom
 		SSHHostFingerprint: profile.SSHHostFingerprint, WorkspaceRoot: profile.WorkspaceRoot, WorkspacePath: id.workspacePath,
 		WorkspaceInputPath: req.WorkspacePath, WorkspaceInputCaptured: true,
 		AllocationRoot: profile.AllocationRoot, CPUMHz: profile.CPUMHz, MemoryMB: profile.MemoryMB,
-		Phase: nomadPhaseIntent,
+		DisconnectLostAfterSeconds: int64(profile.DisconnectLostAfter.Seconds()),
+		Phase:                      nomadPhaseIntent,
 	}
 }
 
@@ -215,6 +245,16 @@ func (r *NomadExecutor) dialPinnedNomadWorker(ctx context.Context, profile nomad
 	return sshClient, nil
 }
 
+// resolveNomadWorkerArtifact returns the verified Darwin arm64 agentctl and its
+// SHA-256 digest.
+func (r *NomadExecutor) resolveNomadWorkerArtifact(ctx context.Context, req *ExecutorCreateRequest) (string, []byte, error) {
+	digest, artifact, _, err := localAgentctlSha256WithContext(ctx, r.agentctlResolver, SSHRemotePlatform{GOOS: "darwin", GOARCH: sshRemoteGOARCHARM64}, req.OnProgress)
+	if err != nil {
+		return "", nil, fmt.Errorf("resolve verified Darwin arm64 agentctl: %w", err)
+	}
+	return digest, artifact, nil
+}
+
 // checkpointNomadJobEvidence resolves the verified agentctl artifact, pins the
 // immutable job digest and worker paths, and checkpoints them before staging.
 func (r *NomadExecutor) checkpointNomadJobEvidence(
@@ -223,9 +263,9 @@ func (r *NomadExecutor) checkpointNomadJobEvidence(
 	profile nomad.ProfileConfig,
 	state *nomad.EnvironmentState,
 ) ([]byte, nomadWorkerPaths, error) {
-	artifactDigest, artifact, _, err := localAgentctlSha256WithContext(ctx, r.agentctlResolver, SSHRemotePlatform{GOOS: "darwin", GOARCH: "arm64"}, req.OnProgress)
+	artifactDigest, artifact, err := r.resolveNomadWorkerArtifact(ctx, req)
 	if err != nil {
-		return nil, nomadWorkerPaths{}, fmt.Errorf("resolve verified Darwin arm64 agentctl: %w", err)
+		return nil, nomadWorkerPaths{}, err
 	}
 	paths, err := nomadWorkerPathsFor(profile, *state, artifactDigest)
 	if err != nil {
@@ -261,19 +301,31 @@ func stageNomadLaunchFiles(
 	paths nomadWorkerPaths,
 	nonce string,
 ) error {
+	staged, err := stageNomadLaunchFilesOver(ctx, nomadSSHTransport{client: sshClient}, req, profile, state, artifact, nonce)
+	if err != nil {
+		return err
+	}
+	if staged != paths {
+		return errors.New("staged Nomad worker paths differ from the pre-dispatch immutable job evidence")
+	}
+	return nil
+}
+
+func stageNomadLaunchFilesOver(
+	ctx context.Context,
+	transport nomadWorkerTransport,
+	req *ExecutorCreateRequest,
+	profile nomad.ProfileConfig,
+	state nomad.EnvironmentState,
+	artifact []byte,
+	nonce string,
+) (nomadWorkerPaths, error) {
 	bootstrapEnv := managedGitCredentialBrokerEnv(sshRemoteContributionEnv(req, ""))
 	if selectedCheckoutIsPullRequest(req.Metadata) {
 		bootstrapEnv = nil
 	}
 	bootstrapEnv = sshAgentctlLaunchEnv(bootstrapEnv, nonce, req.AgentctlStartupConfig)
-	stagedPaths, err := stageNomadWorkerFiles(ctx, sshClient, profile, state, artifact, bootstrapEnv)
-	if err != nil {
-		return err
-	}
-	if stagedPaths != paths {
-		return errors.New("staged Nomad worker paths differ from the pre-dispatch immutable job evidence")
-	}
-	return nil
+	return stageNomadWorkerFilesOver(ctx, transport, profile, state, artifact, bootstrapEnv)
 }
 
 // revealNomadToken resolves the Nomad API credential from its secret reference.
@@ -305,7 +357,7 @@ func (r *NomadExecutor) registerNomadJob(
 	if err != nil {
 		return nil, fmt.Errorf("configure Nomad API client: %w", err)
 	}
-	job, err := nomad.BuildNativeJob(nomad.NativeJobInput{Profile: profile, State: *state, AgentctlPath: state.AgentctlPath, BootstrapPath: state.BootstrapPath})
+	job, err := buildNomadJobForState(profile, *state)
 	if err != nil {
 		return nil, err
 	}

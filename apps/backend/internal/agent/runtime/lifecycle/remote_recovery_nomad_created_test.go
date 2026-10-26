@@ -242,10 +242,10 @@ func TestCreatedNomadRecoveryPublishesWorkspaceOnlyExecutionForOriginalOperation
 	}
 	guardCtx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	if _, err := manager.GetOrEnsureExecution(guardCtx, sessionID); err != ErrSessionRecoveryGuarded {
+	if _, err := manager.GetOrEnsureExecution(guardCtx, sessionID); !errors.Is(err, ErrSessionRecoveryGuarded) {
 		t.Fatalf("unrelated workspace request during Created recovery = %v, want ErrSessionRecoveryGuarded", err)
 	}
-	if _, err := manager.GetOrEnsureExecutionForEnvironment(guardCtx, environment); err != ErrSessionRecoveryGuarded {
+	if _, err := manager.GetOrEnsureExecutionForEnvironment(guardCtx, environment); !errors.Is(err, ErrSessionRecoveryGuarded) {
 		t.Fatalf("environment workspace request during Created recovery = %v, want ErrSessionRecoveryGuarded", err)
 	}
 	close(backend.barrier)
@@ -255,7 +255,18 @@ func TestCreatedNomadRecoveryPublishesWorkspaceOnlyExecutionForOriginalOperation
 		t.Fatal("Created Nomad continuation did not finish after the runtime boundary was released")
 	}
 	require.True(t, manager.HasPendingRemoteRecovery(sessionID, executionID), "a transient owner-snapshot failure must keep the guard after publication")
-	manager.retryRemoteRecovery(context.Background(), entry)
+	// Creating the instance advances the inventory to ready; the next tick
+	// publishes the environment and only then releases the guard.
+	advanced := state
+	advanced.Phase, advanced.Revision = "ready", state.Revision+1
+	require.NoError(t, nomad.PutEnvironmentState(row.Metadata, advanced))
+	require.NoError(t, nomad.PutEnvironmentState(info.Metadata, advanced))
+	manager.SetNomadEnvironmentReadyPublisher(&recordingNomadPublisher{onPublish: func(NomadEnvironmentReadyPublication) {
+		admissionReader.env.Status = models.TaskEnvironmentStatusReady
+	}})
+	for attempt := 0; attempt < 3 && manager.HasPendingRemoteRecovery(sessionID, executionID); attempt++ {
+		manager.retryRemoteRecovery(context.Background(), entry)
+	}
 
 	require.EqualValues(t, 1, backend.createCount.Load(), "created-session continuation must use the normal workspace-only runtime path once")
 	require.Equal(t, executionID, backend.lastRequest.InstanceID, "continuation must retain the original execution identity")

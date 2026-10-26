@@ -9,7 +9,41 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 )
+
+const (
+	phaseRegistered = "registered"
+	phaseAllocated  = "allocated"
+	phaseReady      = "ready"
+)
+
+// PhaseOperatorReleased is the terminal phase of a retained environment whose
+// absence an operator attested by hand. It is never proof of absence.
+const PhaseOperatorReleased = "operator_released"
+
+// OperatorAttestation is the operator's manual statement that the retained
+// runtime is gone and the worker fence is removed.
+type OperatorAttestation struct {
+	ProcessTreeAbsent    bool   `json:"process_tree_absent"`
+	JobStoppedPurgeFalse bool   `json:"job_stopped_purge_false"`
+	FenceRemoved         bool   `json:"fence_removed"`
+	Operator             string `json:"operator"`
+}
+
+// Complete reports whether every attested fact holds and an operator is named.
+func (a OperatorAttestation) Complete() bool {
+	return a.ProcessTreeAbsent && a.JobStoppedPurgeFalse && a.FenceRemoved && strings.TrimSpace(a.Operator) != ""
+}
+
+// OperatorAttestationDigest is the SHA-256 of the canonical attestation bound
+// to the exact retained environment identity.
+func OperatorAttestationDigest(state EnvironmentState, attestation OperatorAttestation) string {
+	canonical := fmt.Sprintf("%s\x00%s\x00%d\x00%s\x00%t\x00%t\x00%t\x00%s", state.NodeID, state.EnvironmentID, state.Generation,
+		state.JobID, attestation.ProcessTreeAbsent, attestation.JobStoppedPurgeFalse, attestation.FenceRemoved, attestation.Operator)
+	digest := sha256.Sum256([]byte(canonical))
+	return hex.EncodeToString(digest[:])
+}
 
 var digestPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
@@ -53,9 +87,40 @@ type EnvironmentState struct {
 	Phase                  string `json:"phase"`
 	DrainReceiptDigest     string `json:"drain_receipt_digest,omitempty"`
 	DrainReceiptGeneration int64  `json:"drain_receipt_generation,omitempty"`
+	QuarantineState        string `json:"quarantine_state,omitempty"`
+	// OperatorAttestationDigest binds an operator_released state to the
+	// operator's manual absence attestation. It is empty in every other phase.
+	OperatorAttestationDigest string `json:"operator_attestation_digest,omitempty"`
+	// DisconnectLostAfterSeconds is the immutable disconnect window of the job.
+	// Zero is a retained environment created before the window was configurable.
+	DisconnectLostAfterSeconds int64 `json:"disconnect_lost_after_seconds,omitempty"`
+	// RefusedBeforeStage records that placement admission refused the node before
+	// any worker file was staged, so no runtime exists to drain or fence.
+	RefusedBeforeStage bool `json:"refused_before_stage,omitempty"`
+	// PlacementMode is ModePool for pool-placed environments; empty is legacy.
+	PlacementMode string `json:"placement_mode,omitempty"`
+	// NodeContractSHA256 binds the placed node's kandev.* metadata at attach time.
+	NodeContractSHA256 string `json:"node_contract_sha256,omitempty"`
+	NodeAttach         string `json:"node_attach,omitempty"`
+	StateRoot          string `json:"state_root,omitempty"`
+	// Pool placement snapshot of the profile, immutable with the job.
+	NodePool     string `json:"node_pool,omitempty"`
+	Placement    string `json:"placement,omitempty"`
+	PinNodeID    string `json:"pin_node_id,omitempty"`
+	ExcludeLocal bool   `json:"exclude_local,omitempty"`
+	PreferLocal  bool   `json:"prefer_local,omitempty"`
+	MemoryMaxMB  int    `json:"memory_max_mb,omitempty"`
+	// ArtifactSHA256 names the staged agentctl artifact and worker paths.
+	ArtifactSHA256 string `json:"artifact_sha256,omitempty"`
 }
 
 func (s EnvironmentState) Validate() error {
+	if s.PlacementMode != "" {
+		return s.validatePlacementMode()
+	}
+	if s.carriesPoolFields() {
+		return fmt.Errorf("nomad legacy environment state carries pool placement fields")
+	}
 	if !s.hasOperationIdentity() {
 		return fmt.Errorf("nomad environment state has invalid immutable operation identity")
 	}
@@ -74,7 +139,7 @@ func (s EnvironmentState) hasOperationIdentity() bool {
 }
 
 func (s EnvironmentState) hasWorkerIdentity() bool {
-	return s.Namespace != "" && s.Region != "" && s.Datacenter != "" && s.NodeID != "" && s.Platform == "darwin/arm64"
+	return s.Namespace != "" && s.Region != "" && s.Datacenter != "" && s.NodeID != "" && s.Platform == WorkerPlatform
 }
 
 func (s EnvironmentState) hasSSHIdentity() bool {
@@ -84,6 +149,9 @@ func (s EnvironmentState) hasSSHIdentity() bool {
 func (s EnvironmentState) validateWorkspaceAndEvidence() error {
 	if s.WorkspaceRoot == "" || s.WorkspacePath == "" || s.AllocationRoot == "" || s.CPUMHz <= 0 || s.MemoryMB <= 0 {
 		return fmt.Errorf("nomad environment state has incomplete resource identity")
+	}
+	if s.DisconnectLostAfterSeconds != 0 && (s.DisconnectLostAfterSeconds < int64(MinDisconnectLostAfter/time.Second) || s.DisconnectLostAfterSeconds > int64(MaxDisconnectLostAfter/time.Second)) {
+		return fmt.Errorf("nomad environment state has an out-of-range disconnect window")
 	}
 	if !s.WorkspaceInputCaptured && s.WorkspaceInputPath != "" {
 		return fmt.Errorf("nomad environment state has workspace input without capture evidence")
@@ -99,6 +167,9 @@ func (s EnvironmentState) validateWorkspaceAndEvidence() error {
 }
 
 func (s EnvironmentState) validateJobEvidence() error {
+	if s.PlacementMode == ModePool && s.NodeID == "" {
+		return s.validateUnplacedPoolEvidence()
+	}
 	jobEvidenceFields := []bool{s.AgentctlPath != "", s.BootstrapPath != "", s.NativeJobPolicyVersion != 0, s.NativeJobSpecSHA256 != ""}
 	jobEvidenceCount := 0
 	for _, present := range jobEvidenceFields {
@@ -110,31 +181,53 @@ func (s EnvironmentState) validateJobEvidence() error {
 		return fmt.Errorf("nomad environment state has incomplete immutable job evidence")
 	}
 	if jobEvidenceCount == len(jobEvidenceFields) {
-		if s.NativeJobPolicyVersion != NativeJobPolicyVersion || !digestPattern.MatchString(s.NativeJobSpecSHA256) {
+		if s.NativeJobPolicyVersion != s.expectedJobPolicyVersion() || !digestPattern.MatchString(s.NativeJobSpecSHA256) {
 			return fmt.Errorf("nomad environment state has unsupported native job policy evidence")
 		}
-		agentctlPath, agentctlErr := normalizedAbsolutePath(s.AgentctlPath)
-		bootstrapPath, bootstrapErr := normalizedAbsolutePath(s.BootstrapPath)
-		if agentctlErr != nil || bootstrapErr != nil ||
-			!strings.HasPrefix(agentctlPath, s.AllocationRoot+string(filepath.Separator)) ||
-			!strings.HasPrefix(bootstrapPath, s.AllocationRoot+string(filepath.Separator)) ||
-			!strings.HasSuffix(bootstrapPath, ".sh") {
-			return fmt.Errorf("nomad environment state has invalid staged artifact paths")
-		}
+		return s.validateStagedPaths()
+	}
+	return nil
+}
+
+func (s EnvironmentState) validateStagedPaths() error {
+	agentctlPath, agentctlErr := normalizedAbsolutePath(s.AgentctlPath)
+	bootstrapPath, bootstrapErr := normalizedAbsolutePath(s.BootstrapPath)
+	if agentctlErr != nil || bootstrapErr != nil ||
+		(s.AllocationRoot != "" && (!strings.HasPrefix(agentctlPath, s.AllocationRoot+string(filepath.Separator)) ||
+			!strings.HasPrefix(bootstrapPath, s.AllocationRoot+string(filepath.Separator)))) ||
+		!strings.HasSuffix(bootstrapPath, ".sh") {
+		return fmt.Errorf("nomad environment state has invalid staged artifact paths")
 	}
 	return nil
 }
 
 func (s EnvironmentState) validatePhaseAndIndexes() error {
 	switch s.Phase {
-	case "intent", "registered", "allocated", "ready", "cleanup_pending", "quarantined", "absent":
+	case "intent", "registered", phaseAllocated, phaseReady, "cleanup_pending", "quarantined", "absent", PhaseOperatorReleased:
 	default:
 		return fmt.Errorf("nomad environment state has invalid phase")
+	}
+	switch s.QuarantineState {
+	case "", QuarantinePending, QuarantineMarked:
+	default:
+		return fmt.Errorf("nomad environment state has invalid quarantine state")
 	}
 	if err := s.validateRuntimeIndexes(); err != nil {
 		return err
 	}
+	if err := s.validateOperatorAttestation(); err != nil {
+		return err
+	}
 	return s.validateDrainReceipt()
+}
+
+func (s EnvironmentState) validateOperatorAttestation() error {
+	released := s.Phase == PhaseOperatorReleased
+	if released != (s.OperatorAttestationDigest != "") ||
+		(released && !digestPattern.MatchString(s.OperatorAttestationDigest)) {
+		return fmt.Errorf("nomad operator release requires exactly one attestation digest")
+	}
+	return nil
 }
 
 func (s EnvironmentState) validateRuntimeIndexes() error {

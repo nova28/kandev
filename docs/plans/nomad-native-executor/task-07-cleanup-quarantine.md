@@ -1,7 +1,7 @@
 ---
 id: "07-cleanup-quarantine"
 title: "Cooperative cancellation and quarantine"
-status: pending
+status: done
 wave: 7
 depends_on:
   - "06-admission-disconnect"
@@ -106,4 +106,19 @@ Success is scoped to trusted managed groups. Terminal allocation, missing PID, c
 
 ## Results
 
-Pending. Implementation and verification evidence have not yet been recorded.
+Complete (2026-10-26). Real-worker proof in `docs/evidence/nomad-wo07/`: run 7 passed `cleanup-positive` and `cleanup-negative` on build `ffc77bb52d` against a local throwaway Nomad fixture, after six earlier runs that each found a defect (listed there). The offline Verification block passes; on macOS run the `task/service` tests with `TMPDIR=/private/tmp`.
+
+## Implementation notes (offline complete, live proof pending)
+
+- Owner decisions: plain `session.stop` stays transport-only; archive, delete, reset and launch rollback run cleanup. The claim id is folded into the receipt digest only. Readmission is `POST /api/v1/executors/nomad/readmit` (admin only), moving a retained row to the terminal `operator_released` phase; it never writes `absent`, never changes eligibility or the marker.
+- Cleanup order: checkpoint `cleanup_pending`, seal and drain with the recorded server identity, persist receipt digest, remove the staged bootstrap env file, stop the job with purge=false, confirm one terminal allocation on the original ready node, checkpoint `absent`, release the fence by owner compare, release inventory. Any failure leaves `cleanup_pending` and quarantines the node; recovery never drains again.
+- Owner rows are retained by service teardown, sqlite environment and task delete guards, and the task delete cascade.
+- Deferred: absent tombstones are re-resumed on each boot (idempotent, one SSH dial per row); a persisted released marker needs an `EnvironmentState` field.
+- Live runner: `scripts/nomad-native-e2e run --require-real --create-fixture --scenario cleanup-positive|cleanup-negative --config "$KANDEV_NOMAD_TEST_CONFIG"`.
+- Live run 2 (cleanup-positive) showed the task-tree handoff stops (`cascade archive`, `task tree archived`, any bare force) racing the durable cleanup job. `NomadExecutor.StopInstance` is now transport-only for those reasons; only the claim-holding cleanup job destroys, and it re-reads the inventory row after taking the claim. The failed-run path of the WO06/WO07 runner now stops its own backend and git daemon through their owned records and records `stopped_on_failure`; the Nomad job, node state and quarantine stay for `cleanup-fixture`.
+- Live run 3 showed the archive cleanup job deleting the `executors_running` row after the `absent` checkpoint. Contract: the row is the absent tombstone and keeps the drain receipt digest and generation until the environment is deleted. `performTaskCleanup` skips Nomad inventory rows only for the archive job (`taskEnvironmentCleanup.keepNomadInventory`, set from `job.IsArchive()`); task deletion still removes the row with its owner, and SQLite guards refuse deleting a row in a retained phase. "Row gone" is never absence evidence. `task_environments.status` is a generic lifecycle field and stays `ready` after archive cleanup; the inventory phase, not that column, is the cleanup evidence, and no consumer may read it as such.
+- Live run 4 (cleanup-negative) froze the worker leader before archive and showed the handoff stop blocking on the agentctl client's 60s default and shutdown's agent wait ignoring its deadline. The agentctl stop on a Nomad execution is now bounded by `nomadAgentctlStopTimeout` (10s), `StopAllAgents` returns at its context deadline, and the runner's failed-run stop escalates to SIGKILL of the recorded process group only after the registry verified the leader identity (`stop_owned_process`).
+- Test environment: the `task/service` archive and cleanup tests that build real worktrees (for example `TestArchiveTaskCleanupPreservesTaskEnvironmentIdentity`) fail on macOS with the default `TMPDIR` under `/var/folders` because the no-follow worktree open rejects the `/var` symlink (`not a directory`). They fail identically on `codex/nomad-executor` and pass with `TMPDIR=/private/tmp`; run them that way on macOS.
+- Live run 5 passed every product step; the operator readmission step lost a race in `_default_kill_exact` when a tree member exited between the identity check and `kill -KILL`. A failed kill now re-checks the recorded identity: gone returns `already_gone`, the same identity still present raises, and a reused pid raises a mismatch. Kill order stays deepest first, leader last.
+- Live run 6 showed operator readmission refused (500) while the archive cleanup job was in `retry_wait`, because the task cleanup barrier rejected any claim without that job's id. Contract: readmission only checkpoints `operator_released` and starts nothing, so its claim is admitted past the task cleanup barrier (`TaskEnvironmentRecoveryClaimRequest.OperatorReadmission`). Exclusion against a running cleanup attempt stays the unique per-environment claim, and a busy claim is reported as `nomad.ErrNomadReadmitBusy`, HTTP 409 with a retryable message. The retrying job then finds no destroyable row and finishes; the row stays `operator_released`. No automatic clearing is added: readmission remains an explicit admin request with an attestation.
+

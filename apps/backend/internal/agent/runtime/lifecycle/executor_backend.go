@@ -385,7 +385,9 @@ var persistentMetadataKeys = map[string]bool{
 	nomadMetadataKeyAddress: true, nomadMetadataKeyRegion: true, nomadMetadataKeyDatacenter: true,
 	nomadMetadataKeyNodeID: true, nomadMetadataKeyPlatform: true, nomadMetadataKeySSHTarget: true,
 	nomadMetadataKeyWorkspaceRoot: true, nomadMetadataKeyAllocationRoot: true,
-	nomadMetadataKeyCPUMHz: true, nomadMetadataKeyMemoryMB: true, nomadMetadataKeyToken: true,
+	nomadMetadataKeyCPUMHz: true, nomadMetadataKeyMemoryMB: true, nomadMetadataKeyToken: true, nomadMetadataKeyLostAfter: true,
+	nomadMetadataKeyNodePool: true, nomadMetadataKeyPlacement: true, nomadMetadataKeyPinNodeID: true,
+	nomadMetadataKeyExcludeLoc: true, nomadMetadataKeyPreferLoc: true, nomadMetadataKeyMemoryMaxMB: true,
 
 	// Kubernetes connection and exact resource inventory.
 	MetadataKeyKubernetesAuthMode:               true,
@@ -748,6 +750,9 @@ type ExecutorCreateRequest struct {
 	// and attaches only its reference to launch metadata. Nomad must call this
 	// before dispatching the corresponding irreversible remote operation.
 	PersistNomadRuntimeSecret func(context.Context, string, string) error
+	// ListNomadInventory returns every retained typed Nomad state, including
+	// terminal rows. Nomad admission fails closed when it is nil or errors.
+	ListNomadInventory func(context.Context) ([]agentnomad.EnvironmentState, error)
 	// ReleaseRuntimeInventory removes this launch's provisional row after every
 	// created resource was rolled back. Implementations must use execution CAS.
 	ReleaseRuntimeInventory func(context.Context) error
@@ -797,6 +802,11 @@ type ExecutorInstance struct {
 	ContainerIP          string // Docker
 	StandaloneInstanceID string // Standalone
 	StandalonePort       int    // Standalone
+
+	// LocalWorktreeBranch is non-empty when the workspace lives on the Kandev
+	// host (a verified local pool node). Repositories with a local checkout are
+	// then provisioned as git worktrees on this per-environment branch.
+	LocalWorktreeBranch string
 
 	// Common fields
 	WorkspacePath   string

@@ -1,7 +1,7 @@
 ---
 id: "08-package-handoff"
 title: "Built runtime and contribution handoff"
-status: pending
+status: cancelled
 wave: 8
 depends_on:
   - "07-cleanup-quarantine"
@@ -100,4 +100,6 @@ Missing actual partition and native tooling remains unverified; the handoff must
 
 ## Results
 
-Pending. Implementation and verification evidence have not yet been recorded.
+Cancelled 2026-10-25 by the owner. The executor's destination is a worker pool,
+so the first handoff must be pool-capable. This scope moved into
+[Nomad worker pool task 03](../nomad-worker-pool/task-03-pool-proof-handoff.md).

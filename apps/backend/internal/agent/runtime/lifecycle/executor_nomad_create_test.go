@@ -123,42 +123,21 @@ func TestNomadStagingBarrierRemainsUnknownAndDoesNotRegisterOnRetry(t *testing.T
 	}
 }
 
-func TestNomadRegisteredAllocationBarrierResumesSameJob(t *testing.T) {
+func TestNomadRegisteredAllocationBarrierRetainsCleanupPending(t *testing.T) {
 	fixture := newNomadCreateFixture(t, false)
 	fixture.allocationsPending = true
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()
 	_, err := fixture.runtime.CreateInstance(ctx, fixture.request)
 	if err == nil || !strings.Contains(err.Error(), "wait for exact running Nomad allocation") {
 		t.Fatalf("CreateInstance() at pending allocation barrier = %v, want bounded wait", err)
 	}
 	state, err := nomad.EnvironmentStateFromMetadata(fixture.request.Metadata)
-	if err != nil || state.Phase != "registered" || state.JobCreateIndex == 0 || state.JobDefinitionIndex == 0 || state.AllocationID != "" {
-		t.Fatalf("allocation wait did not retain the exact registered operation: %+v, err=%v", state, err)
+	if err != nil || state.Phase != nomadPhaseCleanupPending || state.JobCreateIndex == 0 || state.JobDefinitionIndex == 0 || state.AllocationID != "" {
+		t.Fatalf("allocation wait did not retain the exact registered operation for cleanup: %+v, err=%v", state, err)
 	}
 	if fixture.registerCalls != 1 || fixture.createCalls != 0 {
 		t.Fatalf("pending allocation crossed extra launch boundaries: registrations=%d instances=%d", fixture.registerCalls, fixture.createCalls)
-	}
-
-	fixture.allocationsPending = false
-	fixture.fenceOK = true
-	fixture.request.PreviousExecutionID = fixture.request.InstanceID
-	instance, err := fixture.runtime.CreateInstance(context.Background(), fixture.request)
-	if err != nil {
-		t.Fatalf("resume original registered operation after allocation appears: %v", err)
-	}
-	if instance == nil || instance.InstanceID != fixture.request.InstanceID || fixture.registerCalls != 1 || fixture.createCalls != 1 {
-		t.Fatalf("allocation retry changed operation or repeated registration: instance=%+v registrations=%d creates=%d", instance, fixture.registerCalls, fixture.createCalls)
-	}
-	state, err = nomad.EnvironmentStateFromMetadata(fixture.request.Metadata)
-	if err != nil || state.Phase != "ready" || state.JobID == "" || state.AllocationID != "alloc-1" {
-		t.Fatalf("same-job allocation did not reach ready: %+v, err=%v", state, err)
-	}
-	fixture.runtime.mu.Lock()
-	connection := fixture.runtime.sessions[fixture.request.InstanceID]
-	fixture.runtime.mu.Unlock()
-	if connection != nil {
-		connection.closeHostResources()
 	}
 }
 

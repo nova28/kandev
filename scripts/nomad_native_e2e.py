@@ -37,7 +37,14 @@ REQUIRED_SCENARIOS = {
     "disconnect",
     "cleanup-positive",
     "cleanup-negative",
+    "pool-placement",
+    "pool-two-node",
+    "pool-node-quarantine",
+    "pool-queue",
+    "pool-partition",
+    "pool-refusals",
     "recovery",
+    "pre-ready-recovery",
     "distribution",
 }
 
@@ -197,7 +204,7 @@ def _verify_backend_launch_manifest(root: Path, home: Path, backend: Any) -> Non
 
 
 def validate_config(config: Any, run: Callable[..., Any] = subprocess.run) -> dict[str, str]:
-    allowed = {"schema_version", "fixture_only", "fixture_root", "kandev_home", "backend", "nomad", "ssh", "partition", "session", "recovery"}
+    allowed = {"schema_version", "fixture_only", "fixture_root", "kandev_home", "backend", "nomad", "ssh", "partition", "session", "recovery", "pre_ready_recovery"}
     if not isinstance(config, dict) or config.keys() - allowed:
         raise PreflightError("config has unsupported fields")
     required = {"schema_version", "fixture_only", "fixture_root", "kandev_home", "backend", "nomad", "ssh", "partition"}
@@ -376,16 +383,16 @@ def _run_attached_session(config: dict[str, Any]) -> dict[str, Any]:
         raise PreflightError("Nomad agentctl task is not running")
 
     pids = [session[key] for key in ("agentctl_pid", "acp_pid", "child_pid", "grandchild_pid")]
-    ps = _ssh_command(config, "ps -o pid=,ppid=,pgid=,rss=,lstart= -p " + ",".join(str(pid) for pid in pids))
+    ps = _ssh_command(config, "LC_ALL=C ps -o pid=,ppid=,pgid=,rss=,lstart= -p " + ",".join(str(pid) for pid in pids))
     local_pids = [session["nomad_client_pid"], session["kandev_backend_pid"]]
     local_ps = subprocess.run(
-        ["ps", "-o", "pid=,rss=,etime=,comm=", "-p", ",".join(str(pid) for pid in local_pids)],
+        ["env", "LC_ALL=C", "ps", "-o", "pid=,rss=,etime=,comm=", "-p", ",".join(str(pid) for pid in local_pids)],
         capture_output=True, text=True, timeout=5, check=False,
     )
     if ps.returncode != 0 or local_ps.returncode != 0:
         raise PreflightError("pinned fixture SSH process identity probe failed")
     local_starts = subprocess.run(
-        ["ps", "-o", "pid=,lstart=", "-p", ",".join(str(pid) for pid in local_pids)],
+        ["env", "LC_ALL=C", "ps", "-o", "pid=,lstart=", "-p", ",".join(str(pid) for pid in local_pids)],
         capture_output=True, text=True, timeout=5, check=False,
     )
     if local_starts.returncode != 0:
@@ -414,7 +421,7 @@ def _run_attached_session(config: dict[str, Any]) -> dict[str, Any]:
     agentctl_sha = hashlib.sha256(Path(session["agentctl_binary_path"]).read_bytes()).hexdigest()
     if kandev_sha != session["kandev_sha256"] or agentctl_sha != session["agentctl_sha256"]:
         raise PreflightError("fixture build artifact digest does not match the recorded binary")
-    remote_process_path = _ssh_command(config, f"ps -o comm= -p {session['agentctl_pid']}")
+    remote_process_path = _ssh_command(config, f"LC_ALL=C ps -o comm= -p {session['agentctl_pid']}")
     remote_agentctl_sha = _ssh_command(config, f"shasum -a 256 {shlex.quote(session['agentctl_runtime_path'])}")
     if remote_process_path.returncode != 0 or remote_process_path.stdout.strip() != session["agentctl_runtime_path"]:
         raise PreflightError("live agentctl executable does not match the fixture build")
@@ -564,11 +571,16 @@ def _nomad_recovery_snapshot(config: dict[str, Any], session: dict[str, Any], ex
     return {"job_id": job["ID"], "job_create_index": job["CreateIndex"], "job_definition_index": job["JobModifyIndex"], "allocation_id": allocation["ID"], "node_id": allocation["NodeID"]}
 
 
-def _nomad_inventory_snapshot(home: Path, session: dict[str, Any], expected: dict[str, Any]) -> dict[str, Any]:
+def _fixture_database(home: Path) -> str:
     manifest = json.loads((home / "supervisor" / "launch.json").read_text(encoding="utf-8"))
     database = manifest["env"].get("KANDEV_DATABASE_PATH")
     if not isinstance(database, str) or home not in Path(database).resolve(strict=True).parents:
         raise PreflightError("recovery database path is outside fixture HOME")
+    return database
+
+
+def _nomad_inventory_snapshot(home: Path, session: dict[str, Any], expected: dict[str, Any], require_captured: bool = False) -> dict[str, Any]:
+    database = _fixture_database(home)
     db = sqlite3.connect(f"file:{database}?mode=ro", uri=True, timeout=3)
     try:
         rows = db.execute("SELECT task_id, runtime, status, agent_execution_id, metadata FROM executors_running WHERE session_id = ?", (session["session_id"],)).fetchall()
@@ -596,7 +608,12 @@ def _nomad_inventory_snapshot(home: Path, session: dict[str, Any], expected: dic
         raise PreflightError("recovery durable Nomad operation identity changed")
     if not metadata.get("env_secret_id_AGENTCTL_AUTH_TOKEN") or not metadata.get("env_secret_id_AGENTCTL_BOOTSTRAP_NONCE"):
         raise PreflightError("recovery credential references are incomplete")
-    return {"runtime": runtime, "status": status, "execution_id": execution_id, **exact, "auth_token_ref_present": True, "bootstrap_nonce_ref_present": True}
+    snapshot = {"runtime": runtime, "status": status, "execution_id": execution_id, **exact, "auth_token_ref_present": True, "bootstrap_nonce_ref_present": True}
+    if require_captured:
+        if state.get("workspace_input_captured") is not True:
+            raise PreflightError("recovery durable Nomad state did not capture its workspace input")
+        snapshot["workspace_input_captured"] = True
+    return snapshot
 
 
 def _message_identity_snapshot(messages: list[dict[str, Any]]) -> list[tuple[str, str, str]]:
@@ -677,7 +694,7 @@ def _run_attached_recovery(config: dict[str, Any]) -> dict[str, Any]:
     if backend_path != session["kandev_binary_path"] or _local_process(backend_path, record["pid"])["pid"] != _listener_pid(manifest["port"]):
         raise PreflightError("fixture API listener is not the registered current Kandev child")
     local_before = _local_process(backend_path, record["pid"])
-    agent_before = _ssh_command(config, "ps -o pid=,ppid=,pgid=,rss=,lstart= -p " + ",".join(str(session[key]) for key in ("agentctl_pid", "acp_pid", "child_pid", "grandchild_pid")))
+    agent_before = _ssh_command(config, "LC_ALL=C ps -o pid=,ppid=,pgid=,rss=,lstart= -p " + ",".join(str(session[key]) for key in ("agentctl_pid", "acp_pid", "child_pid", "grandchild_pid")))
     if agent_before.returncode != 0 or len(agent_before.stdout.splitlines()) != 4:
         raise PreflightError("recovery agentctl process tree cannot be identity-checked")
     process_rows_before = {}
@@ -726,7 +743,7 @@ def _run_attached_recovery(config: dict[str, Any]) -> dict[str, Any]:
     nomad_after = _nomad_recovery_snapshot(config, session, expected)
     if inventory_after != inventory_before or nomad_after != nomad_before or replayed != prior_turns:
         raise PreflightError("backend restart changed the original Nomad operation or completed turn evidence")
-    agent_after = _ssh_command(config, "ps -o pid=,ppid=,pgid=,rss=,lstart= -p " + ",".join(str(session[key]) for key in ("agentctl_pid", "acp_pid", "child_pid", "grandchild_pid")))
+    agent_after = _ssh_command(config, "LC_ALL=C ps -o pid=,ppid=,pgid=,rss=,lstart= -p " + ",".join(str(session[key]) for key in ("agentctl_pid", "acp_pid", "child_pid", "grandchild_pid")))
     process_rows_after = {}
     if agent_after.returncode == 0:
         for line in agent_after.stdout.splitlines():
@@ -793,6 +810,272 @@ def _run_attached_recovery(config: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+PRE_READY_KEYS = {"process_label", "operation_id", "server_identity", "job_create_index", "job_definition_index", "expected_repo_count", "expected_file"}
+_ACP_SESSION_FIELDS = ("acp_session_id", "agent_session_id", "downstream_acp_session_id")
+
+
+def _pre_ready_contract(config: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    session = config.get("session")
+    expected = config.get("pre_ready_recovery")
+    if not isinstance(session, dict) or not isinstance(expected, dict):
+        raise PreflightError("pre-ready recovery requires exact session and pre_ready_recovery evidence")
+    required_session = {
+        "api_base", "ws_base", "nomad_http", "task_id", "session_id", "environment_id", "node_id", "node_name",
+        "job_id", "allocation_id", "workspace_path", "environment_generation", "agentctl_pid", "acp_pid",
+        "child_pid", "grandchild_pid", "nomad_client_pid", "kandev_backend_pid", "kandev_binary_path",
+    }
+    if session.keys() != required_session:
+        raise PreflightError("pre-ready recovery session identity contract is incomplete")
+    if expected.keys() != PRE_READY_KEYS:
+        raise PreflightError("pre-ready recovery evidence contract is incomplete")
+    for key in ("task_id", "session_id", "environment_id", "node_id"):
+        _uuid(session[key], f"pre_ready_recovery.session.{key}")
+    if not isinstance(session["environment_generation"], int) or session["environment_generation"] < 1:
+        raise PreflightError("pre-ready recovery environment generation is invalid")
+    for key in ("agentctl_pid", "acp_pid", "child_pid", "grandchild_pid", "nomad_client_pid", "kandev_backend_pid"):
+        if not isinstance(session[key], int) or session[key] <= 1:
+            raise PreflightError(f"pre-ready recovery session {key} is invalid")
+    if not isinstance(session["workspace_path"], str) or not session["workspace_path"].endswith(f"/g{session['environment_generation']}"):
+        raise PreflightError("pre-ready recovery workspace path does not match its generation")
+    count = expected["expected_repo_count"]
+    if not isinstance(count, int) or isinstance(count, bool) or count < 0:
+        raise PreflightError("pre-ready recovery expected_repo_count is invalid")
+    if not isinstance(expected["expected_file"], str) or not expected["expected_file"]:
+        raise PreflightError("pre-ready recovery expected_file is invalid")
+    return session, expected
+
+
+def _environment_rows(db: sqlite3.Connection, environment_id: str) -> tuple[tuple[Any, ...], int]:
+    rows = db.execute("SELECT status, workspace_path, ownership_generation FROM task_environments WHERE id = ?", (environment_id,)).fetchall()
+    if len(rows) != 1:
+        raise PreflightError("pre-ready recovery expected exactly one task environment row")
+    count = db.execute("SELECT COUNT(*) FROM task_environment_repos WHERE task_environment_id = ?", (environment_id,)).fetchone()[0]
+    return rows[0], count
+
+
+def check_pre_ready_environment(db: sqlite3.Connection, environment_id: str) -> int:
+    (status, workspace_path, generation), _ = _environment_rows(db, environment_id)
+    if status != "creating" or workspace_path:
+        raise PreflightError("pre-ready recovery environment is not in the creating state with an empty workspace path")
+    return generation
+
+
+def check_post_ready_environment(db: sqlite3.Connection, environment_id: str, inventory_workspace_path: str, generation_before: int, expected_repo_count: int) -> str:
+    """Returns "pending" until the environment is ready; raises when the ready row is wrong."""
+    (status, workspace_path, generation), repo_count = _environment_rows(db, environment_id)
+    if status != "ready":
+        return "pending"
+    if workspace_path != inventory_workspace_path:
+        raise PreflightError("recovered environment workspace path differs from the retained inventory workspace path")
+    if generation != generation_before:
+        raise PreflightError("recovered environment ownership generation changed")
+    if repo_count != expected_repo_count:
+        raise PreflightError("recovered environment repository row count differs from the expected count")
+    return "ready"
+
+
+def check_pre_ready_session(session_row: dict[str, Any], messages: list[dict[str, Any]]) -> None:
+    if session_row.get("state") != "CREATED":
+        raise PreflightError("pre-ready recovery session is not in the CREATED state")
+    if any(session_row.get(key) for key in _ACP_SESSION_FIELDS):
+        raise PreflightError("pre-ready recovery session already has an ACP session")
+    if any(item.get("author_type") == "user" for item in messages):
+        raise PreflightError("pre-ready recovery session already holds a user message")
+
+
+def _pre_ready_session_row(session: dict[str, Any]) -> dict[str, Any]:
+    sessions = _http_json(f"{session['api_base']}/tasks/{session['task_id']}/sessions").get("sessions", [])
+    current = [item for item in sessions if item.get("id") == session["session_id"]]
+    if len(current) != 1:
+        raise PreflightError("pre-ready recovery session is not uniquely listed")
+    return current[0]
+
+
+def _pre_ready_messages(session: dict[str, Any]) -> list[dict[str, Any]]:
+    return _http_json(f"{session['api_base']}/task-sessions/{session['session_id']}/messages").get("messages", [])
+
+
+def _remote_process_rows(config: dict[str, Any], session: dict[str, Any]) -> dict[int, dict[str, Any]]:
+    result = _ssh_command(config, "LC_ALL=C ps -o pid=,ppid=,pgid=,rss=,lstart= -p " + ",".join(str(session[key]) for key in ("agentctl_pid", "acp_pid", "child_pid", "grandchild_pid")))
+    rows: dict[int, dict[str, Any]] = {}
+    if result.returncode == 0:
+        for line in result.stdout.splitlines():
+            parts = line.split(None, 4)
+            if len(parts) == 5 and parts[0].isdigit():
+                rows[int(parts[0])] = {"ppid": int(parts[1]), "pgid": int(parts[2]), "started": parts[4]}
+    return rows
+
+
+def _workspace_read(session: dict[str, Any], expected_file: str) -> dict[str, Any]:
+    script = Path(__file__).with_name("nomad_native_e2e_ws.js")
+    payload = {"mode": "workspace-read", "ws_base": session["ws_base"], "session_id": session["session_id"], "task_id": session["task_id"], "expected_file": expected_file}
+    result = subprocess.run(["node", str(script)], input=json.dumps(payload), text=True, capture_output=True, timeout=30, check=False)
+    if result.returncode != 0:
+        raise PreflightError("normal workspace read after pre-ready recovery failed")
+    try:
+        return json.loads(result.stdout.strip().splitlines()[-1])
+    except (json.JSONDecodeError, IndexError) as exc:
+        raise PreflightError("workspace read result is unreadable") from exc
+
+
+def _await_recovered_environment(
+    read_db: Callable[[Callable[[sqlite3.Connection], Any]], Any],
+    read_inventory: Callable[[], dict[str, Any]],
+    *, environment_id: str, generation_before: int, expected_repo_count: int,
+    timeout: float = 120, clock: Callable[[], float] = time.monotonic, sleep: Callable[[float], Any] = time.sleep,
+) -> dict[str, Any]:
+    """Poll until the recovered environment is ready; returns the final inventory snapshot."""
+    deadline = clock() + timeout
+    while True:
+        inventory = read_inventory()
+        state = read_db(lambda db: check_post_ready_environment(db, environment_id, inventory["workspace_path"], generation_before, expected_repo_count))
+        if state == "ready":
+            return inventory
+        if clock() >= deadline:
+            raise PreflightError("recovered environment did not become ready before timeout")
+        sleep(0.5)
+
+
+def _check_session_untouched(session_row: dict[str, Any], messages_after: list[dict[str, Any]], messages_before: list[dict[str, Any]]) -> None:
+    check_pre_ready_session(session_row, messages_after)
+    if _message_identity_snapshot(messages_after) != _message_identity_snapshot(messages_before):
+        raise PreflightError("pre-ready recovery changed the durable message identities")
+
+
+def _check_workspace_read(read: dict[str, Any]) -> None:
+    if read.get("ok") is not True or read.get("contains_expected_file") is not True:
+        raise PreflightError("normal workspace read did not return the expected file")
+
+
+def _parse_checkout_heads(output: str) -> str:
+    """Return the single checkout HEAD printed by the read-only workspace probe."""
+    heads = [line.strip() for line in output.splitlines() if line.strip()]
+    if len(heads) != 1 or not re.fullmatch(r"[0-9a-f]{40}", heads[0]):
+        raise PreflightError("workspace did not report exactly one repository checkout HEAD")
+    return heads[0]
+
+
+def _check_workspace_head(head: str, expected_head: str | None) -> None:
+    # A URL repository has no local bare repo to compare against; the probe already proved a real commit ID.
+    if expected_head is not None and head != expected_head:
+        raise PreflightError("workspace repository HEAD does not match the fixture repository commit")
+
+
+def _run_attached_pre_ready_recovery(config: dict[str, Any]) -> dict[str, Any]:
+    validate_config(config)
+    root = _owned_private_root(config["fixture_root"])
+    home = _owned_private_directory(root, config["kandev_home"], "kandev_home")
+    session, expected = _pre_ready_contract(config)
+    database = _fixture_database(home)
+
+    def read_db(fn: Callable[[sqlite3.Connection], Any]) -> Any:
+        db = sqlite3.connect(f"file:{database}?mode=ro", uri=True, timeout=3)
+        try:
+            return fn(db)
+        finally:
+            db.close()
+
+    messages_before = _pre_ready_messages(session)
+    check_pre_ready_session(_pre_ready_session_row(session), messages_before)
+    generation_before = read_db(lambda db: check_pre_ready_environment(db, session["environment_id"]))
+    inventory_before = _nomad_inventory_snapshot(home, session, expected, require_captured=True)
+    nomad_before = _nomad_recovery_snapshot(config, session, expected)
+
+    spec = importlib.util.spec_from_file_location("owned_processes", Path(__file__).with_name("owned_processes.py"))
+    if spec is None or spec.loader is None:
+        raise PreflightError("fixture process registry is unavailable")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    registry = module.OwnedProcessRegistry(root)
+    record = next((item for item in registry.read_records() if item["label"] == expected["process_label"]), None)
+    if record is None or record["pid"] != session["kandev_backend_pid"]:
+        raise PreflightError("backend process label is not the exact fixture listener owner")
+    manifest = json.loads((home / "supervisor" / "launch.json").read_text(encoding="utf-8"))
+    backend_path = str(_executable(manifest.get("backend_executable"), "launch manifest backend executable"))
+    if backend_path != session["kandev_binary_path"] or _local_process(backend_path, record["pid"])["pid"] != _listener_pid(manifest["port"]):
+        raise PreflightError("fixture API listener is not the registered current Kandev child")
+    process_rows_before = _remote_process_rows(config, session)
+    if set(process_rows_before) != {session[key] for key in ("agentctl_pid", "acp_pid", "child_pid", "grandchild_pid")}:
+        raise PreflightError("recovery agentctl process identities are incomplete")
+    if _local_process(config["nomad"]["binary"], session["nomad_client_pid"])["pid"] != session["nomad_client_pid"]:
+        raise PreflightError("fixture Nomad client is absent before recovery")
+
+    if registry.stop(expected["process_label"], timeout=10) != "stopped":
+        raise PreflightError("fixture backend did not stop through its exact owned process record")
+    with socket.socket() as probe:
+        probe.settimeout(0.5)
+        if probe.connect_ex(("127.0.0.1", manifest["port"])) == 0:
+            raise PreflightError("fixture API port remained open after backend shutdown")
+    restarted = registry.start(expected["process_label"], [backend_path, *manifest["argv"]], cwd=home, env=manifest["env"])
+    deadline = time.monotonic() + 60
+    ready = False
+    while time.monotonic() < deadline:
+        try:
+            _http_json(f"{session['api_base']}/tasks/{session['task_id']}")
+            ready = True
+            break
+        except (OSError, urllib.error.URLError, json.JSONDecodeError):
+            time.sleep(0.25)
+    if not ready:
+        raise PreflightError("fixture backend did not recover its API before timeout")
+    if restarted["pid"] == record["pid"] or _listener_pid(manifest["port"]) != restarted["pid"]:
+        raise PreflightError("restarted API listener does not belong to a new owned backend process")
+
+    inventory_after = _await_recovered_environment(
+        read_db, lambda: _nomad_inventory_snapshot(home, session, expected, require_captured=True),
+        environment_id=session["environment_id"], generation_before=generation_before,
+        expected_repo_count=expected["expected_repo_count"],
+    )
+
+    _check_session_untouched(_pre_ready_session_row(session), _pre_ready_messages(session), messages_before)
+    nomad_after = _nomad_recovery_snapshot(config, session, expected)
+    if inventory_after != inventory_before or nomad_after != nomad_before:
+        raise PreflightError("pre-ready recovery changed the retained Nomad operation, allocation, or fence")
+    if _remote_process_rows(config, session) != process_rows_before:
+        raise PreflightError("pre-ready recovery did not preserve the exact remote runtime process tree")
+    if _local_process(config["nomad"]["binary"], session["nomad_client_pid"])["pid"] != session["nomad_client_pid"]:
+        raise PreflightError("Nomad client identity changed during Kandev backend recovery")
+
+    read = _workspace_read(session, expected["expected_file"])
+    _check_workspace_read(read)
+    check_pre_ready_session(_pre_ready_session_row(session), _pre_ready_messages(session))
+    report = {
+        "mode": "attached-real-pre-ready-recovery",
+        "backend_old_pid": record["pid"], "backend_new_pid": restarted["pid"],
+        "environment_status_before": "creating", "environment_status_after": "ready",
+        "job_id": nomad_after["job_id"], "allocation_id": nomad_after["allocation_id"],
+        "node_id": nomad_after["node_id"], "workspace_path": inventory_after["workspace_path"],
+        "server_identity": inventory_after["server_identity"],
+        "repo_count": expected["expected_repo_count"], "workspace_read_ok": True, "prompts_sent": 0,
+    }
+    return report
+
+
+def _fixture_module() -> Any:
+    # The fixture module shares this module's PreflightError and helpers, also when run as __main__.
+    sys.modules.setdefault("nomad_native_e2e", sys.modules[__name__])
+    import nomad_native_e2e_fixture
+    return nomad_native_e2e_fixture
+
+
+def _wo06_module() -> Any:
+    _fixture_module()
+    import nomad_native_e2e_wo06
+    return nomad_native_e2e_wo06
+
+
+def _wo07_module() -> Any:
+    _fixture_module()
+    import nomad_native_e2e_wo07
+    return nomad_native_e2e_wo07
+
+
+def _pool_module() -> Any:
+    _fixture_module()
+    import nomad_native_e2e_pool
+    return nomad_native_e2e_pool
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -802,12 +1085,32 @@ def main(argv: list[str] | None = None) -> int:
     run_parser.add_argument("--scenario", choices=sorted(REQUIRED_SCENARIOS), required=True)
     run_parser.add_argument("--require-real", action="store_true")
     run_parser.add_argument("--config", required=True)
+    run_parser.add_argument("--create-fixture", action="store_true", help="pre-ready-recovery, admission, disconnect, cleanup-positive and cleanup-negative: create a fresh fixture from a bootstrap config, crash, recover and clean up")
+    cleanup = commands.add_parser("cleanup-fixture", help="stop the session of an existing created fixture through the production path and verify teardown")
+    cleanup.add_argument("--fixture-root", required=True)
     args = parser.parse_args(argv)
+    if args.command == "cleanup-fixture":
+        return _fixture_module().cleanup_fixture_command(args.fixture_root)
+    if args.command == "run" and args.create_fixture:
+        if args.scenario not in ("pre-ready-recovery", "admission", "disconnect", "cleanup-positive", "cleanup-negative", "pool-placement", "pool-two-node", "pool-node-quarantine", "pool-queue", "pool-partition", "pool-refusals") or not args.require_real:
+            print("--create-fixture requires --require-real --scenario pre-ready-recovery|admission|disconnect|cleanup-positive|cleanup-negative|pool-placement|pool-two-node|pool-node-quarantine|pool-queue|pool-partition|pool-refusals", file=sys.stderr)
+            return 2
+        if args.scenario == "pool-partition":
+            _fixture_module()
+            import nomad_native_e2e_pool_partition
+            return nomad_native_e2e_pool_partition.create_fixture_command(args.config)
+        if args.scenario in ("pool-placement", "pool-two-node", "pool-node-quarantine", "pool-queue", "pool-refusals"):
+            return _pool_module().create_fixture_command(args.config, args.scenario)
+        if args.scenario in ("cleanup-positive", "cleanup-negative"):
+            return _wo07_module().create_fixture_command(args.config, args.scenario)
+        if args.scenario in ("admission", "disconnect"):
+            return _wo06_module().create_fixture_command(args.config, args.scenario)
+        return _fixture_module().create_fixture_command(args.config)
     if args.command == "run":
         if not args.require_real:
             print("run requires --require-real --scenario session", file=sys.stderr)
             return 2
-        if args.scenario not in ("session", "recovery"):
+        if args.scenario not in ("session", "recovery", "pre-ready-recovery"):
             print("run requires --require-real --scenario session; the selected scenario is not implemented", file=sys.stderr)
             return 2
         try:
@@ -817,10 +1120,12 @@ def main(argv: list[str] | None = None) -> int:
                 report = _run_attached_session(config)
             elif args.scenario == "recovery":
                 report = _run_attached_recovery(config)
+            elif args.scenario == "pre-ready-recovery":
+                report = _run_attached_pre_ready_recovery(config)
             else:
                 raise PreflightError("this real fixture runner does not implement the requested scenario")
         except (OSError, json.JSONDecodeError, PreflightError, subprocess.TimeoutExpired) as exc:
-            label = "recovery" if args.scenario == "recovery" else "session"
+            label = args.scenario if args.scenario != "pre-ready-recovery" else "pre-ready recovery"
             print(f"real {label} verification failed: {exc}", file=sys.stderr)
             return 2
         print(json.dumps(report, sort_keys=True))
