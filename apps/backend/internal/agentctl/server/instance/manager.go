@@ -36,14 +36,24 @@ var ErrManagerShuttingDown = errors.New("instance manager is shutting down")
 // Manager manages multiple agent instances.
 // It handles creation, tracking, and removal of agent instances,
 // each with their own HTTP server on a dedicated port.
+// errPortsBusy marks a bind failure on every port of the range: another process holds them.
+var errPortsBusy = errors.New("every port in the range is in use")
+
+const (
+	defaultPortBusyDelay    = 500 * time.Millisecond
+	defaultPortBusyAttempts = 20
+)
+
 type Manager struct {
-	config        *config.Config
-	logger        *logger.Logger
-	instances     map[string]*Instance
-	provisional   map[string]*provisionalInstance
-	portAlloc     *PortAllocator
-	serverFactory ServerFactory
-	mu            sync.RWMutex
+	portBusyDelay    time.Duration
+	portBusyAttempts int
+	config           *config.Config
+	logger           *logger.Logger
+	instances        map[string]*Instance
+	provisional      map[string]*provisionalInstance
+	portAlloc        *PortAllocator
+	serverFactory    ServerFactory
+	mu               sync.RWMutex
 
 	// reaperStop is closed by Shutdown to signal the idle reaper to exit.
 	// reaperStopOnce serializes the close so concurrent Shutdown calls can't
@@ -119,6 +129,9 @@ func NewManager(cfg *config.Config, log *logger.Logger) *Manager {
 		provisional: make(map[string]*provisionalInstance),
 		portAlloc:   NewPortAllocator(cfg.Ports.Base, cfg.Ports.Max),
 		reaperStop:  make(chan struct{}),
+
+		portBusyDelay:    defaultPortBusyDelay,
+		portBusyAttempts: defaultPortBusyAttempts,
 	}
 
 	if cfg.IdleTimeout > 0 {
@@ -164,7 +177,7 @@ func (m *Manager) CreateInstance(ctx context.Context, req *CreateRequest) (*Crea
 	// whole creation, including any wait for m.mu.
 	createStart := time.Now()
 
-	admission, err := m.admitCreate(ctx, req)
+	admission, err := m.admitCreateWithPortWait(ctx, req)
 	if err != nil {
 		return nil, err
 	}
@@ -214,6 +227,25 @@ func (m *Manager) CreateInstance(ctx context.Context, req *CreateRequest) (*Crea
 		ID:   inst.ID,
 		Port: inst.Port,
 	}, nil
+}
+
+// admitCreateWithPortWait retries admission while every port in the range is
+// held by a process outside this manager, for example the previous owner of a
+// single reserved port that is still shutting down. m.mu is released between
+// attempts and the wait ends with ctx or after portBusyAttempts retries.
+func (m *Manager) admitCreateWithPortWait(ctx context.Context, req *CreateRequest) (*createAdmission, error) {
+	delay, attempts := m.portBusyDelay, m.portBusyAttempts
+	for retry := 0; ; retry++ {
+		admission, err := m.admitCreate(ctx, req)
+		if err == nil || !errors.Is(err, errPortsBusy) || retry >= attempts {
+			return admission, err
+		}
+		select {
+		case <-ctx.Done():
+			return nil, fmt.Errorf("create instance abandoned while waiting for a free port: %w", ctx.Err())
+		case <-time.After(delay):
+		}
+	}
 }
 
 // admitCreate is the serialized part of creation. It refuses during shutdown
@@ -507,7 +539,9 @@ func (m *Manager) allocatePortAndListener(id string) (PortLease, net.Listener, e
 		}
 		return lease, ln, nil
 	}
-	return PortLease{}, nil, fmt.Errorf("failed to allocate an available port for instance %s", id)
+	// Forget the in-use marks so the next admission probes the range again.
+	m.portAlloc.ClearUnavailable()
+	return PortLease{}, nil, fmt.Errorf("failed to allocate an available port for instance %s: %w", id, errPortsBusy)
 }
 
 // resolveAgentCommand returns the effective agent command for a create request.
