@@ -1,5 +1,5 @@
 ---
-id: "11-session-token-broker-relay"
+id: "12-session-token-broker-relay"
 title: "Authenticate ordinary-session MCP and relay the Git broker"
 status: in_progress
 wave: 8

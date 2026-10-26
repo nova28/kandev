@@ -1,5 +1,5 @@
 ---
-id: "11-managed-git-isolation"
+id: "13-managed-git-isolation"
 title: "Isolate managed Git from repository-supplied code"
 status: pending
 wave: 11

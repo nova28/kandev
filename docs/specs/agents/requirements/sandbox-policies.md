@@ -124,6 +124,7 @@ Tasks retains launch failure, recovery, queue, and error-history ownership.
   Only current runtime evidence bound to the attempt and policy shall permit active status.
   A launch receipt, installed executable, provider declaration, or successful agent reply shall not suffice.
 - **AC-AGENTS-SANDBOX-008.3:** Each Dockview session tab shall expose its own execution indicator and Execution details action.
+  With `features.sandboxSessionSummary` on, the indicator follows AC-AGENTS-SANDBOX-012.14.
   A confirmed active sandbox shall use a shield. An ordinary wrapper shall use a neutral wrapper indicator.
   A failed required sandbox shall use a warning. Configured, starting, unknown, and stopped states shall not show an active shield.
 - **AC-AGENTS-SANDBOX-008.4:** Status from a sibling session or previous attempt shall not change the selected session's indicator.
