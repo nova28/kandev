@@ -49,6 +49,7 @@ const (
 	nomadCleanupReasonStopUnconfirmed      = "stop_unconfirmed"
 	nomadCleanupReasonReceiptMissing       = "receipt_missing"
 	nomadCleanupReasonFenceReleaseFailed   = "fence_release_failed"
+	nomadCleanupReasonWorkspaceRemove      = "workspace_remove_failed"
 	nomadCleanupReasonInventoryRelease     = "inventory_release_failed"
 	nomadCleanupReasonAbsentCheckpoint     = "absence_checkpoint_failed"
 	nomadCleanupReasonInterrupted          = "cleanup_interrupted"
@@ -408,6 +409,9 @@ func (c *nomadCleanup) observeStop(ctx context.Context) (reason string, pending 
 // finish releases the worker fence for exactly this environment, then the
 // inventory. Both are idempotent and retried from the persisted absent phase.
 func (c *nomadCleanup) finish(ctx context.Context) error {
+	if err := c.removeWorkspace(ctx); err != nil {
+		return c.retained(nomadCleanupReasonWorkspaceRemove)
+	}
 	if err := c.releaseFence(ctx); err != nil {
 		return c.retained(nomadCleanupReasonFenceReleaseFailed)
 	}
@@ -421,17 +425,40 @@ func (c *nomadCleanup) finish(ctx context.Context) error {
 	return nil
 }
 
+// removeWorkspace deletes a pool environment's workspace once the runtime is
+// proven absent. It runs before the fence is released, so a failure keeps the
+// environment retained with its workspace.
+func (c *nomadCleanup) removeWorkspace(ctx context.Context) error {
+	command, err := nomad.WorkspaceRemoveCommand(c.state)
+	if err != nil || command == "" {
+		return err
+	}
+	if err := c.ensureWorker(ctx); err != nil {
+		return err
+	}
+	_, _, err = c.worker.Run(ctx, command)
+	return err
+}
+
+func (c *nomadCleanup) ensureWorker(ctx context.Context) error {
+	if c.worker != nil {
+		return nil
+	}
+	worker, err := c.exec.dialNomadCleanupWorker(ctx, c.client, c.profile, c.state)
+	if err != nil {
+		return err
+	}
+	c.worker = worker
+	return nil
+}
+
 func (c *nomadCleanup) releaseFence(ctx context.Context) error {
 	command, err := nomad.FenceReleaseCommand(c.profile, c.state)
 	if err != nil {
 		return err
 	}
-	if c.worker == nil {
-		worker, err := c.exec.dialNomadCleanupWorker(ctx, c.client, c.profile, c.state)
-		if err != nil {
-			return err
-		}
-		c.worker = worker
+	if err := c.ensureWorker(ctx); err != nil {
+		return err
 	}
 	_, _, err = c.worker.Run(ctx, command)
 	return err

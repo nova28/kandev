@@ -54,6 +54,25 @@ class PoolScenario(wo07.Wo07Scenario):
         self.r.save_state(pool_state_root=self.node()["Meta"]["kandev.state_root"])
         return {**identity, "pool_state_root": self.r.state["pool_state_root"]}
 
+    def production_settled(self, env: dict[str, Any], pending: list[str]) -> dict[str, Any] | None:
+        """Cleanup is settled only once the pool workspace and the per-environment fence directory are gone as well."""
+        result = super().production_settled(env, pending)
+        if result is None:
+            return None
+        workspace = self.read_state(env).get("workspace_path")
+        state_root = self.r.state["pool_state_root"]
+        if not workspace or not workspace.startswith(state_root + "/"):
+            raise PreflightError("the recorded pool workspace is not under the node state root")
+        remaining = []
+        for label, path in (("workspace", workspace), ("fence directory", f"{state_root}/environments/{env['environment_id']}")):
+            code, _ = self.r.ssh(f"[ -e '{path}' ] || [ -L '{path}' ]")
+            if code == 0:
+                remaining.append(label)
+        if remaining:
+            pending.append(f"pool {', '.join(remaining)} remains")
+            return None
+        return {**result, "workspace_removed": True, "fence_directory_removed": True}
+
     def assert_placement(self, env: dict[str, Any]) -> dict[str, Any]:
         pool = self.cfg["pool"]
         job = self.r.nomad(f"/v1/job/{env['job_id']}")

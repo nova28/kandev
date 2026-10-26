@@ -121,3 +121,58 @@ func TestPoolFenceReleaseTouchesOnlyItsOwnEnvironment(t *testing.T) {
 		t.Fatalf("environment b fence changed: %v %q", err, got)
 	}
 }
+
+func TestPoolWorkspaceRemoveDeletesOnlyItsOwnWorkspace(t *testing.T) {
+	root := t.TempDir()
+	a, b := poolFenceState(t, root, "env-a"), poolFenceState(t, root, "env-b")
+	for _, s := range []EnvironmentState{a, b} {
+		if err := os.MkdirAll(filepath.Join(s.WorkspacePath, "repo"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	command, err := WorkspaceRemoveCommand(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ { // idempotent
+		if out, err := exec.Command("sh", "-c", command).CombinedOutput(); err != nil {
+			t.Fatalf("remove %d: %v %s", i, err, out)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(a.WorkspaceRoot, "environments", "env-a")); !os.IsNotExist(err) {
+		t.Fatalf("environment a workspace remains: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(b.WorkspacePath, "repo")); err != nil {
+		t.Fatalf("environment b workspace changed: %v", err)
+	}
+}
+
+func TestPoolWorkspaceRemoveRefusesSymlinksForeignPathsAndLegacy(t *testing.T) {
+	root := t.TempDir()
+	s := poolFenceState(t, root, "env-a")
+	target := t.TempDir()
+	if err := os.MkdirAll(filepath.Dir(s.WorkspacePath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, s.WorkspacePath); err != nil {
+		t.Fatal(err)
+	}
+	command, err := WorkspaceRemoveCommand(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if exec.Command("sh", "-c", command).Run() == nil {
+		t.Fatal("a symlinked workspace was removed")
+	}
+	if _, err := os.Stat(target); err != nil {
+		t.Fatalf("symlink target removed: %v", err)
+	}
+	foreign := s
+	foreign.WorkspacePath = filepath.Join(root, "elsewhere", "g1")
+	if _, err := WorkspaceRemoveCommand(foreign); err == nil {
+		t.Fatal("a workspace outside the environments directory was accepted")
+	}
+	if command, err := WorkspaceRemoveCommand(destroyState()); err != nil || command != "" {
+		t.Fatalf("legacy workspace removal = %q, %v; want none", command, err)
+	}
+}

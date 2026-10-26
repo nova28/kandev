@@ -1,4 +1,5 @@
 import unittest
+import unittest.mock
 
 import nomad_native_e2e_fixture as fixture
 import nomad_native_e2e_pool as pool
@@ -123,6 +124,32 @@ class OwnedFenceTest(unittest.TestCase):
         self.assertEqual(self.sha("env kandev-job-1\n"), hashlib.sha256(b"env kandev-job-1\n").hexdigest())
         self.assertIsNone(self.sha("env kandev-job-2\n"))
         self.assertIsNone(self.sha(None))
+
+
+class PoolSettledTest(unittest.TestCase):
+    def scenario(self, existing):
+        import nomad_native_e2e_wo07 as wo07
+        scn = pool.PoolScenario.__new__(pool.PoolScenario)
+        scn.guard = None
+        scn.read_state = lambda env: {"workspace_path": "/fx/worker/workspaces/environments/e1/g1"}
+        scn.r = type("R", (), {"state": {"pool_state_root": "/fx/worker"},
+                               "ssh": lambda self, cmd: (0 if any(p in cmd for p in existing) else 1, "")})()
+        base = lambda self, env, pending: {"phase": "absent"}
+        self.patch = unittest.mock.patch.object(wo07.Wo07Scenario, "production_settled", base, create=True)
+        self.patch.start()
+        self.addCleanup(self.patch.stop)
+        return scn
+
+    def test_settled_only_when_workspace_and_fence_directory_are_gone(self):
+        env = {"environment_id": "e1"}
+        done = self.scenario([]).production_settled(env, [])
+        self.assertTrue(done["workspace_removed"] and done["fence_directory_removed"])
+        pending = []
+        self.assertIsNone(self.scenario(["workspaces/environments"]).production_settled(env, pending))
+        self.assertIn("workspace", pending[0])
+        pending = []
+        self.assertIsNone(self.scenario(["/environments/e1'"]).production_settled(env, pending))
+        self.assertIn("fence directory", pending[0])
 
 
 if __name__ == "__main__":

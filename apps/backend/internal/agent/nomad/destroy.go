@@ -135,3 +135,19 @@ func FenceReleaseCommand(profile ProfileConfig, state EnvironmentState) (string,
 		`[ ! -L "$d" ] && [ -d "$d" ] && [ ! -L "$f" ] && [ -f "$f" ] && ` +
 		`[ "$(cat "$f")" = ` + shellQuote(fenceOwnerToken(state)) + ` ] && rm -f "$f" && rmdir "$d"` + parent, nil
 }
+
+// WorkspaceRemoveCommand returns a POSIX shell command that deletes a pool
+// environment's workspace and its now-empty environment directory. It refuses a
+// symlink and any path outside the state's workspace root. Legacy pinned
+// workers keep their workspace; it returns an empty command for them.
+func WorkspaceRemoveCommand(state EnvironmentState) (string, error) {
+	if state.PlacementMode != ModePool {
+		return "", nil
+	}
+	expected, err := EnvironmentWorkspacePath(state.WorkspaceRoot, state.EnvironmentID, state.Generation)
+	if err != nil || expected != state.WorkspacePath || filepath.Dir(filepath.Dir(state.WorkspacePath)) != filepath.Join(state.WorkspaceRoot, "environments") {
+		return "", errors.New("remove Nomad pool workspace: path differs from the immutable state")
+	}
+	return "d=" + shellQuote(state.WorkspacePath) + `; [ -L "$d" ] && exit 1; [ -e "$d" ] || exit 0; ` +
+		`rm -rf -- "$d" && { rmdir "$(dirname "$d")" 2>/dev/null || true; }`, nil
+}
