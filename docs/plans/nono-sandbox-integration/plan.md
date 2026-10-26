@@ -162,7 +162,7 @@ Each criterion listed in work-order frontmatter needs a behavioral assertion, no
 | SANDBOX-011.11, PLUGINS-SANDBOX-002.1-5 | `plugins/sandbox_darwin_conformance_test.go` on a real Mac with controls, provider repository suite, `acceptance.md` record |
 | SANDBOX-012.1-3, .6, .10-12, .14, .16 | `sandboxLaunchAdmission` and `prepareExecution` tests (Tasks 15, 19, 24): evaluation order, `not_evaluated` items, refusal record write/prune/failure, reason precedence, re-admission versus continuation, indicator matrix, executor table |
 | SANDBOX-012.4-5, .7 | Canaries `G1_mcp_unguarded_tool`, `G2_*`, `G3_*` (Task 23) over the Task 11 to 13 mechanisms |
-| SANDBOX-012.8-9, .15 | `process_label_test.go` (AST checker, label lifecycle), preview ticket and origin tests, `child_ceiling_test.go` (lock and concurrent create) |
+| SANDBOX-012.8-9, .15 | `process_label_test.go` (AST checker, label lifecycle), preview label tests, `child_ceiling_test.go` (lock and concurrent create) |
 | SANDBOX-012.13 | `cmd/sandbox-conformance` self-tests: control validity, result mapping, acceptance line and `--verify-release` |
 | TASK-LAUNCH-FAILURE-RECOVERY-005.1-5 | `bootstrap_attempt_recovery_test.go`: `TestBootstrapAttempt`, pending-launch controls, same-session retry, sibling isolation, exact queue dispatch |
 
@@ -196,7 +196,7 @@ No broad suite or generic review work order is added.
 - [ ] [Task 13: Isolate managed Git from repository-supplied code](task-13-managed-git-isolation.md)
 - [x] [Task 14: Support sandbox policies and Nono on macOS](task-14-macos-support.md)
 - [ ] [Task 15: Declare per-agent credential requirements](task-15-credential-registry.md)
-- [ ] [Task 16: Serve previews from a separate origin](task-16-preview-origin.md)
+- [x] [Task 16: Serve previews from a separate origin](task-16-preview-origin.md) (cancelled: moved to Out of scope)
 - [ ] [Task 17: Authenticate executor REST routes and report the real bind](task-17-executor-rest-auth-loopback.md)
 - [ ] [Task 18: Sandbox or label every session process](task-18-process-surface-labels.md)
 - [ ] [Task 19: Refuse and report instead of failing silently](task-19-degraded-states.md)
@@ -237,17 +237,17 @@ Tasks 04 to 10 belong to the #4769 author; Tasks 11 and up belong to this follow
 | 13 managed Git | none | none |
 | 14 macOS | 05, 06, 07, 10 | none |
 | 15 credential registry | 05 | 24 |
-| 16 preview origin | none | 24 |
+| 16 preview origin (cancelled) | none | none |
 | 17 REST auth and bind (agentctl only) | none | 24 |
 | 18 process surface | 05, 10 | 24 |
 | 19 degraded states | 04, 10 | 15, 17, 24 |
-| 20 harness and journey | 05, 07, 09 (09 depends on 02 and 08) | 19 |
+| 20 harness and journey | 05, 07, 09 (09 depends on 02 and 08) | 11, 12, 13, 18, 19, 21 |
 | 21 standalone integration | none | 12, 13; build also waits for both standalone changes to merge |
 | 22 child ceiling | 04 | 11 |
 | 24 summary foundation | 04, 10 | none |
-| 23 canary set and promotion | none | 11, 12, 13, 15 to 22 |
+| 23 canary set and promotion | none | 11, 12, 13, 15, 17 to 22 |
 
-Order to a usable end-to-end path (one agent, Local and Worktree, Linux and macOS), matching the `depends_on` lists: 05 provider lifecycle so a real agent launches; 24 foundation; then 15, 17 and 18 in parallel; then 19 so failures are visible; 20 journey for one agent; then 16 and 22; then 21, once both standalone changes have merged; then the remaining canaries of 23 and the second agent last, because 23 depends on 21. Task 16 may ship as its own cycle after 24: its only coupling is the 012.9 summary item, which reports `unsupported` without it.
+Order to a usable end-to-end path (one agent, Local and Worktree, Linux and macOS), matching the `depends_on` lists: 05 provider lifecycle so a real agent launches; 24 foundation; then 15, 17 and 18 in parallel; then 19 so failures are visible; then 22; then 21, once both standalone changes have merged; then 20, the journey for one agent, which depends on 21; then the remaining canaries of 23 and the second agent last. Task 16 (separate preview origin) is cancelled here; 012.9 reports `degraded` `preview_same_origin` until the follow-up card delivers it.
 
 Not in this package: the journey found operator traps (executor bindings are organization-scoped and a workspace-scoped policy or binding fails with an error that names neither cause; the policy list is empty unless a workspace id is passed). They are a separate fix and carry no acceptance criterion here.
 

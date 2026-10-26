@@ -8,7 +8,6 @@ depends_on:
   - "12-session-token-broker-relay"
   - "13-managed-git-isolation"
   - "15-credential-registry"
-  - "16-preview-origin"
   - "17-executor-rest-auth-loopback"
   - "18-process-surface-labels"
   - "19-degraded-states"
@@ -46,10 +45,10 @@ Implement every canary in the design table on the Task 20 framework and run the 
 
 ## Scope
 
-- All canaries of the design table with their controls, run with the suite's flag set (all four flags on, environment overrides). `profiles.yaml` is not in `conformance-scope.txt`; the promotion commit adds the artifacts and `acceptance.md` lines and flips the three prod flags, and `--verify-release` passes at that commit.
+- All canaries of the design table with their controls, run with the suite's flag set (all three flags on, environment overrides). `profiles.yaml` is not in `conformance-scope.txt`; the promotion commit adds the artifacts and `acceptance.md` lines and flips the prod flags, and `--verify-release` passes at that commit.
 - One full run per required promotion cell, recorded in `acceptance.md` with `--acceptance-line`.
-- Runtime flag promotion changes for the three new flags once `--verify-release` passes.
-- Promotion is one pull request setting `prod: true` for `features.sandboxPolicies` and the three new flags, whose required check runs `--verify-release` on its head; the `G1_pin_policy_change` control uses an operator-started launch after a binding change.
+- Runtime flag promotion changes for the two new flags once `--verify-release` passes.
+- Promotion is one pull request setting `prod: true` for `features.sandboxPolicies` and the two new flags, whose required check runs `--verify-release` on its head; the `G1_pin_policy_change` control uses an operator-started launch after a binding change.
 
 ## Acceptance
 
@@ -68,7 +67,7 @@ Each listed criterion in `docs/specs/agents/requirements/sandbox-session-conform
 
 ## Dependencies
 
-Depends on: 11-guarded-session-surface, 12-session-token-broker-relay, 13-managed-git-isolation, 15-credential-registry, 16-preview-origin, 17-executor-rest-auth-loopback, 18-process-surface-labels, 19-degraded-states, 20-conformance-suite, 21-standalone-integration, 22-child-grant-ceiling. See the dependency table in the plan.
+Depends on: 11-guarded-session-surface, 12-session-token-broker-relay, 13-managed-git-isolation, 15-credential-registry, 17-executor-rest-auth-loopback, 18-process-surface-labels, 19-degraded-states, 20-conformance-suite, 21-standalone-integration, 22-child-grant-ceiling. See the dependency table in the plan.
 
 ## Risks
 

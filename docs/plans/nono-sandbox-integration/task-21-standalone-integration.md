@@ -28,6 +28,7 @@ When the standalone MCP session token change and the standalone managed Git isol
 - Remove duplicated code from Tasks 12 and 13 that the standalone changes now own.
 - Update the journey steps and the canary mapping to the final names.
 
+- Export the broker environment list (managed credential keys and Git configuration entries) from `githubauth` as the single source the child environment injects (Task 19 reads it).
 - Write the attempt columns `guard_enforced` (guard present and the server-side class table registered for the session's MCP endpoint) and `git_isolation_active` at admission for items 012.4 and 012.7.
 
 ## External merge gates

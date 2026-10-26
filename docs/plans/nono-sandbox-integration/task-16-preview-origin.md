@@ -1,7 +1,7 @@
 ---
 id: "16-preview-origin"
 title: "Serve previews from a separate origin"
-status: pending
+status: cancelled
 wave: 10
 depends_on:
   - "24-summary-foundation"
@@ -54,4 +54,4 @@ Wildcard names are not available on every deployment; the disabled state must be
 
 ## Results
 
-Pending. Design only; no implementation is authorized for this work order yet.
+Cancelled in this package. The separate preview origin moved to Out of scope in the requirement; 012.9 is an honest `degraded` `preview_same_origin` label (Tasks 18 and 24) until a follow-up card delivers the origin. The ADR `2026-10-26-sandboxed-preview-origin` is deferred.

@@ -19,13 +19,13 @@ system_design:
 
 ## Summary
 
-Check requested child grants against the parent guard at creation, in the child-insert transaction, and refuse with `sandbox_outside_ceiling`.
+Check the child's resolved policy against the narrower of the parent and calling-task guards at creation, in the child-insert transaction, and refuse with `sandbox_outside_ceiling`. Requesting narrower grants is Out of scope.
 
 ## Scope
 
-- Optional `sandbox_grants` object on task creation; the pre-insert `InheritTaskGuard` and `AdmitTask` hook in `sandbox_creation.go` moves inside the insert transaction; typed error `sandbox_outside_ceiling`; role-and-access containment; inherit-exactly for a child requesting nothing; no ceiling for an unguarded parent.
+- The pre-insert `InheritTaskGuard` and `AdmitTask` hook in `sandbox_creation.go` moves inside the insert transaction; typed error `sandbox_outside_ceiling`; containment over every guard dimension via `noBroader` and `WithinCeiling`; no ceiling for an unguarded source.
 - Parent guard read in the insert transaction; launch-time `checkParentGuard` stays.
-- `sandbox_grants` request shape, `narrowing` stored in `sandbox_task_guards`, effective policy compiled at launch, `sandbox_grants_invalid` and `sandbox_grants_without_guard`, caller-task source kept, REST and MCP create-task surfaces, lock order workspace, step, parent row, new row.
+- Source task rows (parent, and caller for an MCP-created task) locked in ascending id before reading guards; the guard update takes the same lock and bumps the guard version; lock order workspace, step, source rows, new row.
 
 ## Acceptance
 
@@ -33,7 +33,7 @@ Each listed criterion in `docs/specs/agents/requirements/sandbox-session-conform
 
 ## Verification
 
-- Unit: wider grant refused with no child row; equal and narrower accepted; empty request inherits; unguarded parent; archived parent keeps its existing not-found error; two concurrent creations each evaluated at their own commit.
+- Unit: wider resolved policy refused with no child row; equal and narrower accepted; unguarded parent; parent and caller guards both applied; archived parent keeps its existing not-found error; two concurrent creations each evaluated at their own commit.
 
 ## Files likely touched
 

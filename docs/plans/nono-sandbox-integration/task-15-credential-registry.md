@@ -24,9 +24,9 @@ Add the agent credential registry and the admission check that refuses a sandbox
 ## Scope
 
 - Registry in `internal/agent/sandboxruntime` keyed by agent type and platform: methods `{kind, delivery}` plus `missing_markers`; entries for `claude-acp`, `codex-acp` and the e2e mock agent (method `none`), so a sandboxed mock launch is not refused `sandbox_credentials_unknown`.
-- Evaluation in `prepareExecution` after environment resolution, with `file_in_agent_state` read from the session agent state or the installation seed directory; check producing `sandbox_credentials_unsupported`, `sandbox_credentials_missing` and `sandbox_credentials_unknown` with the any-one-method rule.
+- Evaluation in `prepareExecution` after environment resolution, with `file_in_agent_state` read from the session's existing agent state only; check producing `sandbox_credentials_unsupported`, `sandbox_credentials_missing` and `sandbox_credentials_unknown` with the any-one-method rule.
 - Setup hint text for the refusal (names and paths only, localized in seven locales).
-- Seed directory `<Kandev home>/sandbox/agent-seed/<agent type>/` and the copy into a new session's agent state (regular files, no symlinks, mode 0600, no overwrite, after the admission read); build test rejecting an `env_key` that names an injected or core minimal variable.
+- Build test rejecting an `env_key` that names an injected or core minimal variable. Seed provisioning (a Kandev-owned seed directory and copy into agent state) is Out of scope; the remedy names the env key.
 
 ## Acceptance
 

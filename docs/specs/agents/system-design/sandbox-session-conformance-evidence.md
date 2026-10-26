@@ -6,9 +6,9 @@ requirements:
   - REQ-AGENTS-SANDBOX-012
 ---
 
-# Sandboxed session evidence, preview and release-record design
+# Sandboxed session evidence and release-record design
 
-Companion to the [sandboxed session system design](sandbox-session-conformance.md), which owns the requirement map and the shared vocabulary. This file owns the child grant request, the evidence recompute rules, the journey's expected states, the darwin result mapping, the preview ticket lifecycle and the release-record hash.
+Companion to the [sandboxed session system design](sandbox-session-conformance.md), which owns the requirement map and the shared vocabulary. This file owns the evidence recompute rules, the journey's expected states, the darwin result mapping and the release-record hash.
 
 ## Requirement-to-mechanism map
 
@@ -16,18 +16,14 @@ Companion to the [sandboxed session system design](sandbox-session-conformance.m
 | --- | --- | --- |
 | 012.14 | Evidence recompute, journey expected states | 24, 20 |
 | 012.13 | Darwin result mapping, `scope_hash` algorithm | 20, 23 |
-| 012.9 | Preview transition barrier, route shape, ticket lifecycle | 16 |
-| 012.15 | `sandbox_grants` request and effective guard | 22 |
-
-## Child grant request (012.15)
-
-The guard of record of a guarded task is a resolved policy revision plus an optional `narrowing` stored in its `sandbox_task_guards` row. `sandbox_grants` is accepted on the REST create-task request and the MCP create-task tool (one request type). Shape: an object with optional keys `grants` (array of `{role, access}`), `environment_keys` (array of strings), `network_destinations` (array of strings) and `provider` (string identity, equality only). A key that is absent or `null` is inherited; an array, even `[]`, is explicit, `[]` being the narrowest; an unknown key, a wrong type or an empty `provider` string is a 400 `sandbox_grants_invalid` with no row. A request whose creation has no ceiling (no guarded parent and no guarded caller task) is a 400 `sandbox_grants_without_guard` with no row.
-
-The ceiling is the narrowest of the parent guard and the MCP caller task guard, the sources `InheritTaskGuard` already reads; both are kept. The effective child policy is the child's bound resolved policy narrowed by the stored `narrowing` (a dimension with no narrowing is taken as bound); the containment test of `checkParentGuard` applies to the effective policy, so a child whose bound policy is wider than the ceiling but whose narrowing brings it inside is allowed, and one still outside is refused `sandbox_outside_ceiling`. At launch the effective policy is what compiles. An explicit empty request is created; if the provider cannot compile the resulting policy the launch is refused with the existing policy error and a refusal record, never silently widened. Lock order for the insert transaction is workspace, step, then the parent task row, then the new row; two task rows are locked in ascending id.
 
 ## Evidence recompute (012.14)
 
-Runtime items read these records on `evidence_restored` and `attempt_admitted`: 012.2 the persisted `launch_cause` and handshake record; 012.8 the persisted process labels; 012.9 the preview state in core; 012.10 the persisted environment report; 012.5 the `token` field of `/identity` and the persisted revocation record. Only 012.5 needs the instance; if the instance does not report a token state it stays `unknown` `evidence_unavailable`. A persisted revocation wins over the instance report. Events are applied in per-attempt sequence order under one mutex, so a delayed `evidence_lost` that arrives after `evidence_restored` carries a lower sequence and is dropped.
+Runtime items read these records on `evidence_restored` and `attempt_admitted`: 012.2 the persisted `launch_cause` and handshake record; 012.8 the persisted process labels; 012.9 the persisted preview state; 012.10 the persisted environment report; 012.5 the `mcp_token_fingerprint` field of the instance `/identity` and core's own-revocation record. Only 012.5 needs the instance; if it cannot be read the item stays `unknown` `evidence_unavailable`. A recorded own-revocation wins over the instance report. Events are applied in receipt order under one mutex, so a delayed `evidence_lost` that arrives after `evidence_restored` is applied first and then superseded.
+
+Core polls each live attempt's instance `/identity` every 10 s (Task 24 owns the probe); every poll carries a per-attempt counter taken when the request is sent, and a result whose counter is lower than the last applied poll is dropped, so a slow poll never overrides a newer one. `evidence_lost` fires after 30 s of consecutive failures or when the provider evidence stream ends before `attempt_ended`, and turns runtime items `unknown` `evidence_unavailable`; `evidence_restored` fires on the first successful poll or resumed stream and recomputes from the companion's sources unless the attempt has an `evidence_gap`.
+
+`evidence_gap` is a latch on the attempt: it is set when `evidence_lost` fires while a runtime item changed state during the outage, cannot be recomputed from the persisted records, and is cleared only by `attempt_ended`. While it is set, `evidence_restored` leaves the affected items `unknown` `evidence_unavailable`.
 
 ## Journey expected states (012.14)
 
@@ -37,24 +33,19 @@ The harness asserts the summary and indicator after each step on both hosts. The
 | --- | --- | --- |
 | fault: state root through a symlink or temp root | `refused` (`state_root_denied`) on the second instance | failed |
 | fault: agent binary outside the grant | `degraded` (012.2 `agent_binary_denied`), status `failed` | failed |
-| prompt reply read, native terminal, MCP tool call, commit and push, denial, approval | `confined` | shield |
-| user terminal opened | `degraded` (012.8 `process_unsandboxed`) | warning |
-| restart and resume | equals the replacement attempt's own items; items other than 012.2 and 012.8 equal the predecessor's | per the matrix |
+| prompt reply read, native terminal, MCP tool call, commit and push, denial, approval (all before the preview step) | `confined` | shield |
+| preview served | `degraded` (012.9 `preview_same_origin`) | warning |
+| user terminal opened | `degraded` (012.8 `process_unsandboxed`, sticky) | warning |
+| restart and resume | equals the replacement attempt's own items; items other than 012.2, 012.8 and 012.9 equal the predecessor's (a replacement starts with no preview served and no user process) | per the matrix |
 | cancel | frozen at its last value | not the shield (status not active) |
+
+The terminal step runs after approval so that the `confined` rows are asserted before any step that degrades the summary.
 
 On macOS the native terminal step is `passed` when `sandbox_transport_unsupported` is returned and leaves the summary `confined`; the denial step is `not_applicable` `denial_report_unsupported_host` (AC-AGENTS-SANDBOX-011.7). The effective-flags assertion before step one replaces a separate enable step.
 
 ## Darwin result mapping (012.13)
 
 The AC-AGENTS-SANDBOX-011.11 canaries map as follows. A `denied` canary with a valid control is `contained`; a sandboxed run that returns `allowed` is `escaped`; `control_failed` is `invalid`; `skipped` is `not_applicable` `host_os` only for a host-level reason, otherwise `error`; a crash or timeout is `error`. The `allowed` canaries (permitted write, MCP relay route, ACP stdio round trip, ownership) are wrapped as liveness checks `L_<name>` with states `holds`, `broken` or `error`; `broken` or `error` fails the cell, and a `broken` ownership check stops the run. Liveness checks are counted apart from canaries.
-
-## Preview (012.9)
-
-**Route shape.** The preview origin keeps the existing proxy layout below its root: `<task-token>.<baseDomain>/port-proxy/:sessionId/:port/*path`; the session and port come from the path and the session must belong to the origin's task. **Capability.** With authentication on, the existing port-proxy capability cookie check applies on the preview origin after ticket exchange. With authentication off no capability is minted, so the 256-bit task token in the host name is the only gate, which is the stated trust boundary.
-
-**Transition barrier.** UI-origin preview is refused for a task by a durable test, "the task has a guard or any attempt row", checked on every HTTP request and WebSocket upgrade, not by the origin row. Creating the origin row and the guard or attempt happen in one transaction; the row's failure leaves previews disabled (503 `preview_origin_unavailable`) and does not refuse the launch. A WebSocket registers in the task's socket set before the check at upgrade completion; a post-commit hook closes every registered UI-origin socket of the task, so a socket upgraded before the commit is closed and one upgraded after it fails the check.
-
-**Ticket lifecycle.** Tickets are stored as a SHA-256 digest with task id and expiry (60 s) and consumed by one delete-returning statement, so concurrent exchanges have one winner and the rest get 403. The exchange creates a preview session stored as a digest with task id, user and expiry (8 h); the cookie carries the raw value. Logout, deletion of the user and a change of the authenticated user delete that user's preview sessions; an expired row is rejected and pruned on use.
 
 ## Release-record hash (012.13)
 

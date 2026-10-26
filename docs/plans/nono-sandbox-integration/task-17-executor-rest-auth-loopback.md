@@ -19,12 +19,13 @@ system_design:
 
 ## Summary
 
-Prove every agentctl REST route is authenticated or on the fixed exemption list, report the real bind and `rest_auth` in `/identity`, and default sandboxed Local and Worktree instances to loopback. This work order is agentctl and launcher only; the admission refusals (`sandbox_bind_exposed`, `sandbox_rest_auth_unenforced`) are Task 19.
+Prove every agentctl REST route is authenticated or on the fixed exemption list, report the real bind and `rest_auth` in the instance `/identity`, and bind the sandboxed code-server to loopback. This work order is agentctl only; the admission refusals (`sandbox_bind_exposed`, `sandbox_rest_auth_unenforced`) are Task 19.
 
 ## Scope
 
-- Route-enumeration test against the exemption list on the existing `instanceAuth`; identical 401 body and constant-time comparison; `/identity` fields `bind` and `rest_auth`; launcher loopback default behind `features.agentctlLoopbackBind` (an explicit `agent.standaloneHost` wins); code-server loopback bind for sandboxed attempts.
-- No launcher change: `agent.standaloneHost` stays the single dial and listen key; `/identity` reports `bind` and `rest_auth`; code-server binds loopback for a sandboxed create request.
+- Route-enumeration test for the instance router against the exemption list on the existing `instanceAuth` (cleaned-path matching, `/git-credentials/` subtree for every method), and a second enumeration test holding the control router to its own four exemptions; identical 401 body and constant-time comparison.
+- Instance `/identity` fields `bind` (from the instance and control listeners), `rest_auth` and the existing `mcp_token_fingerprint`; the control `/identity` is unchanged.
+- No launcher change: `agent.standaloneHost` stays the single dial and listen key. Code-server binds loopback for a sandboxed create request while `features.agentctlLoopbackBind` is on (consulted per request, no restart).
 
 ## Acceptance
 
@@ -32,7 +33,7 @@ Each listed criterion in `docs/specs/agents/requirements/sandbox-session-conform
 
 ## Verification
 
-- Unit and integration: 401 for missing, wrong, malformed and stale credentials on every non-exempt route; `bind` computed from the real listener; `rest_auth` reported as `enforced` or `none`.
+- Unit and integration: 401 for missing, wrong, malformed and stale credentials on every non-exempt route; `bind` computed from the real instance and control listeners; `rest_auth` reported as `enforced` or `none`.
 - Canaries `G2_rest_no_credential` and `G2_nonloopback_bind` are implemented in Task 23.
 
 ## Files likely touched

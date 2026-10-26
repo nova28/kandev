@@ -7,7 +7,12 @@ depends_on:
   - "05-nono-provider-lifecycle"
   - "07-mcp-connectivity"
   - "09-acceptance-delivery"
+  - "11-guarded-session-surface"
+  - "12-session-token-broker-relay"
+  - "13-managed-git-isolation"
+  - "18-process-surface-labels"
   - "19-degraded-states"
+  - "21-standalone-integration"
 plan: "plan.md"
 requirements:
   - REQ-AGENTS-SANDBOX-012
@@ -28,7 +33,7 @@ Implement `cmd/sandbox-conformance`: the scripted operator journey with a real a
 - Journey driver, fixture generator with generated marker names, step bounds and not-applicable reasons from the closed list.
 - Canary framework: probe, control, `contained`/`escaped`/`invalid`/`not_applicable`/`error`; wrapping of the 011.11 darwin suite.
 - Self-hosted runner workflow (manual and scheduled, never forks, concurrency group per runner, cleanup trap), JSON artifact with `scope_hash`, `conformance-scope.txt`.
-- Journey expected summary and indicator after each step, the darwin result mapping with `L_<name>` liveness checks, and the `scope_hash` algorithm of the companion design; the journey asserts effective flags instead of an enable step.
+- Journey expected summary and indicator after each step, the darwin result mapping with `L_<name>` liveness checks, and the `scope_hash` algorithm of the companion design; the journey asserts the three effective flags instead of an enable step, runs the user terminal after approval and adds a preview step expecting `degraded` `preview_same_origin`; `--verify-release` also runs on a schedule against the default branch and binds the artifact digest to the committed artifact content.
 
 ## Acceptance
 
