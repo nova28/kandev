@@ -20,13 +20,13 @@ system_design:
 
 ## Summary
 
-When the standalone MCP-token and managed-Git changes land on main, rebase the combined branch onto their final names, flags and specs and re-run their canaries.
+When the standalone MCP session token change and the standalone managed Git isolation change (REQ-AGENTS-GITISOLATION) land on main, reconcile this branch with their final names, flags and specs.
 
 ## Scope
 
 - Reconcile requirement ids, flags and spec files with the merged standalone versions.
 - Remove duplicated code from Tasks 12 and 13 that the standalone changes now own.
-- Wire both into the conformance journey and canaries.
+- Update the journey steps and the canary mapping to the final names.
 
 ## Acceptance
 
@@ -34,7 +34,8 @@ Each listed criterion in `docs/specs/agents/requirements/sandbox-session-conform
 
 ## Verification
 
-- Both standalone test suites pass on the combined branch; canaries `G2_wrong_token` and `G3_repo_*` are `contained` with valid controls.
+- Both standalone test suites pass on the combined branch.
+- The canaries themselves are implemented and verified in Task 23.
 
 ## Files likely touched
 
@@ -44,11 +45,11 @@ Each listed criterion in `docs/specs/agents/requirements/sandbox-session-conform
 
 ## Dependencies
 
-Depends on: 12-session-token-broker-relay, 13-managed-git-isolation. See the dependency table in the system design.
+Depends on: 12-session-token-broker-relay, 13-managed-git-isolation. See the dependency table in the plan.
 
 ## Risks
 
-Blocked until both standalone PRs are merged; the shape may differ from Tasks 12 and 13 and this work order must be re-read before starting.
+Blocked until both standalone changes are merged; their shape may differ from Tasks 12 and 13, so this work order must be re-read before starting.
 
 ## Results
 

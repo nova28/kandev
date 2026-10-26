@@ -10,7 +10,6 @@ requirements:
   - REQ-AGENTS-SANDBOX-012
 acceptance_criteria:
   - AC-AGENTS-SANDBOX-012.11
-  - AC-AGENTS-SANDBOX-012.10
 system_design:
   - ../../specs/agents/system-design/sandbox-session-conformance.md
 ---
@@ -19,13 +18,13 @@ system_design:
 
 ## Summary
 
-Add the agent credential registry and the admission check that refuses a sandboxed launch whose agent credential cannot reach the child.
+Add the agent credential registry and the admission check that refuses a sandboxed launch whose agent credential cannot reach the child, and supply the diagnosis hints used by exit diagnosis.
 
 ## Scope
 
-- Registry in `internal/agent/sandboxruntime` keyed by agent type and platform, with `claude-acp` and `codex-acp` entries.
-- Admission check producing `sandbox_credentials_unsupported` and `sandbox_credentials_unknown`.
-- Setup hint text for the refusal (names and paths only, localized).
+- Registry in `internal/agent/sandboxruntime` keyed by agent type and platform: methods `{kind, delivery}` plus `missing_markers`; entries for `claude-acp` and `codex-acp`.
+- Admission check producing `sandbox_credentials_unsupported`, `sandbox_credentials_missing` and `sandbox_credentials_unknown` with the any-one-method rule.
+- Setup hint text for the refusal (names and paths only, localized in seven locales).
 
 ## Acceptance
 
@@ -33,8 +32,8 @@ Each listed criterion in `docs/specs/agents/requirements/sandbox-session-conform
 
 ## Verification
 
-- Unit: every kind on linux and darwin; unknown agent refuses; keychain-only agent refuses on darwin; values never appear in errors, logs or reports.
-- Real run: Claude Code and Codex on each host launch with their documented credential path or refuse with the right class (recorded in the conformance suite).
+- Unit: every kind on linux and darwin; any-one-method rule; empty env value is unsatisfied; absent or empty agent_state file is unsatisfied; unknown agent refuses; keychain-only agent refuses on darwin; values never appear in errors, logs or reports.
+- Real run: Claude Code and Codex on each host; measured entries recorded in `acceptance.md` before they ship.
 
 ## Files likely touched
 
@@ -44,11 +43,11 @@ Each listed criterion in `docs/specs/agents/requirements/sandbox-session-conform
 
 ## Dependencies
 
-Depends on: 05-nono-provider-lifecycle. See the dependency table in the system design.
+Depends on: 05-nono-provider-lifecycle. See the dependency table in the plan.
 
 ## Risks
 
-A wrong registry entry would block a working agent or admit one that cannot log in. Entries need a real-host measurement before they ship.
+A wrong registry entry would block a working agent or admit one that cannot log in. Entries are provisional until measured on a real host.
 
 ## Results
 

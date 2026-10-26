@@ -198,9 +198,11 @@ No broad suite or generic review work order is added.
 - [ ] [Task 19: Refuse and report instead of failing silently](task-19-degraded-states.md)
 - [ ] [Task 20: Build the sandbox conformance suite and release gate](task-20-conformance-suite.md)
 - [ ] [Task 21: Integrate the extracted token and managed Git pieces](task-21-standalone-integration.md)
+- [ ] [Task 22: Refuse a child task wider than its parent's guard](task-22-child-grant-ceiling.md)
+- [ ] [Task 23: Complete the canary set and the promotion record](task-23-canary-set-and-promotion.md)
 
 Execute sequentially in listed order: 01, 02, 03, 04, 05, 06, 07, 10, 08, 09, 14.
-Tasks 11, 12 and 13 have no dependency on the others and may run at any point. Task IDs remain stable after adding Tasks 10 to 14. Dependency lists state hard prerequisites, not permission to delegate.
+Task 13 has no dependency and may run at any point. Task 11 waits for Tasks 04 and 06 and Task 12 for Task 07; their `depends_on` lists are authoritative. Task IDs remain stable after adding Tasks 10 to 14. Dependency lists state hard prerequisites, not permission to delegate.
 The user retains model and implementation control in this primary session.
 
 ## Delivery
@@ -217,7 +219,31 @@ Use `gh pr create --draft --base main --body-file <prepared-file>` after authori
 Use the repository PR template. Identify #4538 as the merged prerequisite and distinguish host and plugin deliverables.
 Never commit or push to the former parent branch. Do not merge the follow-up PR.
 
-Tasks 15 to 21 implement REQ-AGENTS-SANDBOX-012 (sandboxed session) and the conformance suite that gates release; order and ownership are in the [system design](../../specs/agents/system-design/sandbox-session-conformance.md). Task 21 waits for the standalone MCP-token and managed-Git changes on main. No task from 15 on starts before that package is reviewed.
+Tasks 15 to 23 implement REQ-AGENTS-SANDBOX-012 (sandboxed session) and the conformance suite that gates release; the mechanisms are in the [system design](../../specs/agents/system-design/sandbox-session-conformance.md). Task 21 waits for the standalone MCP session token change and the standalone managed Git isolation change (REQ-AGENTS-GITISOLATION) on main. No task from 15 on starts before that package is reviewed.
+
+## Ownership and order for Tasks 11 to 23
+
+Tasks 04 to 10 belong to the #4769 author; Tasks 11 and up belong to this follow-up. "Done" on Task 14 means shipped on the combined branch; its prerequisites 05, 06, 07 and 10 are still open upstream.
+
+| Ours | Blocks on (Tasks 04 to 10) | Other prerequisites |
+| --- | --- | --- |
+| 11 guarded surface | 04, 06 | none |
+| 12 token and broker | 07 | none |
+| 13 managed Git | none | none |
+| 14 macOS | 05, 06, 07, 10 | none |
+| 15 credential registry | 05 | none |
+| 16 preview origin | none | none |
+| 17 REST auth and bind | 04 (Part B only) | none |
+| 18 process surface | 05, 10 | none |
+| 19 degraded states | 04, 10 | 15 |
+| 20 harness and journey | 05, 07, 09 | 19 |
+| 21 standalone integration | none | 12, 13 and both standalone changes merged |
+| 22 child ceiling | 04 | 11 |
+| 23 canary set and promotion | none | 11, 12, 13, 15 to 22 |
+
+Order to a usable end-to-end path (one agent, Local and Worktree, Linux and macOS): 05 provider lifecycle so a real agent launches; 19 so failures are visible; 15 so the agent can log in; 17 Part A; 18; 20 journey for one agent; then 16, 22, the remaining canaries of 23, the second agent, and 21 once both standalone changes have merged.
+
+Not in this package: the journey found operator traps (executor bindings are organization-scoped and a workspace-scoped policy or binding fails with an error that names neither cause; the policy list is empty unless a workspace id is passed). They are a separate fix and carry no acceptance criterion here.
 
 Tasks 11 to 14 build on this plan's branch and ship together in one follow-up PR that identifies #4769 as its base.
 

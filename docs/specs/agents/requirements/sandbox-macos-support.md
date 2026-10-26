@@ -61,6 +61,8 @@ Also excluded and deferred to a follow-up: a persisted launch-cause carrier and 
 
 The Linux behavior is unchanged: a description without an approval wire is still refused on Linux, a provider's `host_unsupported` answer keeps its existing handling on Linux, and Linux cgroup ownership is untouched.
 
+Amended by [REQ-AGENTS-SANDBOX-012](sandbox-session-conformance.md) (AC 011.2, 011.3, 011.4, Exclusions) when `features.sandboxSessionSummary` is on.
+
 ## Implementation plans
 
 - [Nono sandbox integration](../../../plans/nono-sandbox-integration/plan.md)

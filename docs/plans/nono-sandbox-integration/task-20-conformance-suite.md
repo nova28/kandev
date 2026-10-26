@@ -1,38 +1,33 @@
 ---
 id: "20-conformance-suite"
-title: "Build the sandbox conformance suite and release gate"
+title: "Build the sandbox conformance harness and journey"
 status: pending
 wave: 12
 depends_on:
   - "05-nono-provider-lifecycle"
   - "07-mcp-connectivity"
   - "09-acceptance-delivery"
+  - "19-degraded-states"
 plan: "plan.md"
 requirements:
   - REQ-AGENTS-SANDBOX-012
 acceptance_criteria:
-  - AC-AGENTS-SANDBOX-012.3
-  - AC-AGENTS-SANDBOX-012.4
-  - AC-AGENTS-SANDBOX-012.5
-  - AC-AGENTS-SANDBOX-012.7
-  - AC-AGENTS-SANDBOX-012.10
   - AC-AGENTS-SANDBOX-012.13
 system_design:
   - ../../specs/agents/system-design/sandbox-session-conformance.md
 ---
 
-# Task 20: Build the sandbox conformance suite and release gate
+# Task 20: Build the sandbox conformance harness and journey
 
 ## Summary
 
-Implement `cmd/sandbox-conformance`: the scripted operator journey with a real agent, paired canaries for every named escape, the matrix, the runner workflow and the result record.
+Implement `cmd/sandbox-conformance`: the scripted operator journey with a real agent, the canary framework with controls and result states, the runner workflow, the result record, `--acceptance-line` and `--verify-release`.
 
 ## Scope
 
-- Journey driver and fixture generator with generated marker names.
-- Canaries for every escape id in the design, each with a control and the `contained`/`escaped`/`invalid` result.
-- Self-hosted runner workflow (manual and scheduled, never on forks) and JSON artifact plus acceptance line.
-- Redaction: only marker ids, probe ids and outcomes are printed.
+- Journey driver, fixture generator with generated marker names, step bounds and not-applicable reasons from the closed list.
+- Canary framework: probe, control, `contained`/`escaped`/`invalid`/`not_applicable`/`error`; wrapping of the 011.11 darwin suite.
+- Self-hosted runner workflow (manual and scheduled, never forks, concurrency group per runner, cleanup trap), JSON artifact with `scope_hash`, `conformance-scope.txt`.
 
 ## Acceptance
 
@@ -40,22 +35,23 @@ Each listed criterion in `docs/specs/agents/requirements/sandbox-session-conform
 
 ## Verification
 
-- Suite self-tests with a fake agent: a canary whose control fails is `invalid` and fails the run; a deliberately weakened policy makes the matching canary `escaped`.
-- One full real run per cell of the promotion matrix, recorded in `acceptance.md`.
+- Suite self-tests with a fake agent: a failing control makes the canary `invalid` and fails the run; a timeout is `error`; a deliberately weakened policy makes the matching canary `escaped`.
+- Journey with one real agent on one host, recorded in `acceptance.md`.
 
 ## Files likely touched
 
 - `apps/backend/cmd/sandbox-conformance/`
 - `.github/workflows/sandbox-conformance.yml`
+- `docs/plans/nono-sandbox-integration/conformance-scope.txt`
 - `docs/plans/nono-sandbox-integration/acceptance.md`
 
 ## Dependencies
 
-Depends on: 05-nono-provider-lifecycle, 07-mcp-connectivity, 09-acceptance-delivery. See the dependency table in the system design.
+Depends on: 05-nono-provider-lifecycle, 07-mcp-connectivity, 09-acceptance-delivery, 19-degraded-states. See the dependency table in the plan.
 
 ## Risks
 
-Needs real agent credentials on runners; a run without a real agent must be labelled `partial` and cannot promote.
+Needs real agent credentials on runners; a run without a real agent is `partial` and cannot promote.
 
 ## Results
 

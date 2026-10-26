@@ -17,13 +17,13 @@ system_design:
 
 ## Summary
 
-Serve sandboxed-session previews from a per-task origin distinct from the UI, or disable the preview with a reason.
+Serve sandboxed-attempt previews (HTML preview and session port proxy) from a per-task origin distinct from the UI, or disable the preview with a reason.
 
 ## Scope
 
-- Per-task preview origin and cookie isolation in the preview proxy (`agentctl/server/api/workspace_preview.go` and backend routing).
-- `preview_origin_unavailable` state and UI message.
-- Flag `features.previewSeparateOrigin`, off by default.
+- Per-task origin `<token>.<preview.baseDomain>` and cookie isolation in the browser-facing proxy (`gateway/websocket/port_proxy.go`) and the publish handler (`agentctl/server/api/workspace_preview.go`).
+- New config key `preview.baseDomain`; assertions that it differs from and is not a parent of the UI host and that UI cookies are host-only.
+- `preview_origin_unavailable` state and UI message; flag `features.previewSeparateOrigin`, off by default; ADR `2026-10-26-sandboxed-preview-origin`.
 
 ## Acceptance
 
@@ -31,19 +31,21 @@ Each listed criterion in `docs/specs/agents/requirements/sandbox-session-conform
 
 ## Verification
 
-- Unit: origin differs from the UI origin; origins differ across tasks; the UI cookie is not sent to a preview.
-- Browser test on desktop and phone: a preview page cannot read UI storage; disabled state shows its reason.
+- Unit: origin differs from the UI origin; origins differ across tasks; token stable for a task and invalid after deletion; redirects and WebSockets stay on the preview origin.
+- Browser test on desktop and phone: a preview page cannot read UI cookies or storage; disabled state shows its reason.
 
 ## Files likely touched
 
+- `apps/backend/internal/gateway/websocket/port_proxy.go`
 - `apps/backend/internal/agentctl/server/api/workspace_preview.go`
+- `apps/backend/internal/common/config/catalog.go`
 - `apps/backend/internal/runtimeflags/registry.go`
 - `profiles.yaml`
 - `apps/web/components/task/`
 
 ## Dependencies
 
-None on #4769 work orders.
+None on other work orders.
 
 ## Risks
 

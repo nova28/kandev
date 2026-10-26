@@ -19,13 +19,13 @@ system_design:
 
 ## Summary
 
-Route every process Kandev starts for a session through one function that sandboxes it or records an `unsandboxed` label before it starts.
+Route every process Kandev starts for a session through one entry that sandboxes it or records an `unsandboxed` label before it starts.
 
 ## Scope
 
-- `ProcessKind` entry point in lifecycle for setup, cleanup, dev processes, language servers and terminals.
-- Labels in the launch snapshot and Execution details.
-- First delivery: scripts labelled `unsandboxed`; terminals follow the existing transport refusal.
+- `SandboxProcessKind` in `internal/agent/sandbox` mapped from `streams.ProcessKind` plus `language_server`, `terminal`, `code_server`, `helper`.
+- One start entry in lifecycle, scriptengine and agentctl process management; label written before the start; `process_label_unrecorded` on write failure.
+- Labels in the launch snapshot and Execution details; first delivery labels scripts `unsandboxed`; terminals follow the darwin refusal.
 
 ## Acceptance
 
@@ -33,22 +33,24 @@ Each listed criterion in `docs/specs/agents/requirements/sandbox-session-conform
 
 ## Verification
 
-- Unit: each kind is sandboxed or labelled; a kind with unknown state is labelled; label recorded before output.
-- Frontend: Execution details shows the label on desktop and phone with seven locales.
+- Unit: each kind is sandboxed or labelled; unknown state is labelled; label recorded before output; write failure aborts the start; shared processes carry the starting attempt's label.
+- Go-AST test fails on a process start outside the entry and an allowlist.
+- Frontend: Execution details shows the label on desktop and phone in seven locales.
 
 ## Files likely touched
 
 - `apps/backend/internal/agent/runtime/lifecycle/`
 - `apps/backend/internal/scriptengine/providers.go`
+- `apps/backend/internal/agent/sandbox/`
 - `apps/web/components/task/session-execution-details.tsx`
 
 ## Dependencies
 
-Depends on: 05-nono-provider-lifecycle, 10-execution-surfaces. See the dependency table in the system design.
+Depends on: 05-nono-provider-lifecycle, 10-execution-surfaces. See the dependency table in the plan.
 
 ## Risks
 
-Finding every start site is the risk; a lint-style test that fails on a direct process start outside the entry point is part of the work.
+Finding every start site is the risk; the AST test is part of the work.
 
 ## Results
 
