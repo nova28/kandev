@@ -218,7 +218,7 @@ func TestSSHNodeMismatchedHostKeyChangesContract(t *testing.T) {
 		ID: "node-ssh", NodePool: "kandev",
 		Attributes: map[string]string{"kernel.name": "darwin", "cpu.arch": "arm64"},
 		Meta: map[string]string{
-			nomad.MetaAttach: nomad.AttachSSH, nomad.MetaStateRoot: "/var/kandev", nomad.MetaSSHHost: "worker.internal",
+			nomad.MetaAttach: nomad.AttachSSH, nomad.MetaStateRoot: "/var/kandev", nomad.MetaSSHHost: "worker.example.test",
 			nomad.MetaSSHPort: "22", nomad.MetaSSHHostKeySHA256: poolTestHostKey,
 		},
 	}

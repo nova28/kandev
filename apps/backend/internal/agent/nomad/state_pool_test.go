@@ -17,7 +17,7 @@ func poolState(phase string) EnvironmentState {
 func placePool(s EnvironmentState) EnvironmentState {
 	s.NodeID, s.NodeAttach, s.StateRoot = "node-1", AttachSSH, "/var/kandev"
 	s.NodeContractSHA256 = strings.Repeat("b", 64)
-	s.SSHHost, s.SSHPort, s.SSHHostFingerprint = "neo.internal", 22, testHostKey
+	s.SSHHost, s.SSHPort, s.SSHHostFingerprint = "neo.example.test", 22, testHostKey
 	s.WorkspaceRoot, s.AllocationRoot = "/var/kandev/workspaces", "/var/kandev/pool/allocations"
 	s.WorkspacePath = "/var/kandev/workspaces/environments/env-1/g1"
 	return s
