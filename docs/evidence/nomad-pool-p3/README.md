@@ -82,7 +82,55 @@ Nomad-reserved port was still shutting down when C started (the scheduler frees 
 allocation's resources once its desired status is stop, before the client process has
 exited). The live rerun confirms or refutes it.
 
-## Pending
+## Final runs at 0d8ba484e9 (v0.98.0-64-g0d8ba484e9): all six passed
 
-`pool-queue`, `pool-refusals` and `pool-partition` are offline-tested; live results are
-appended here after the operator reruns them.
+One build (runtime bundle rebuilt from this commit, so it includes the agentctl port fix),
+one laptop two-node fixture, runs under `/private/tmp/ff-wo05-live.rO8x/runs/`:
+
+| Scenario | Run | Result |
+|---|---|---|
+| `pool-placement` (fresh profile, built runtime) | `nomad-e2e-fixture-reez1rci` | rc 0 |
+| `pool-two-node` | `nomad-e2e-fixture-2x9znhup` | rc 0 |
+| `pool-node-quarantine` | `nomad-e2e-fixture-ylar_aph` | rc 0 |
+| `pool-queue` | `nomad-e2e-fixture-n1t36jw8` | rc 0 |
+| `pool-refusals` | `nomad-e2e-fixture-8wbkzu80` | rc 0 |
+| `pool-partition` | `nomad-e2e-fixture-tpik2kqi` | rc 0 |
+
+After every run: no worker processes, no extra worktree, no allocation directory on either
+node. Afterwards both nodes are ready and eligible, the ssh host-key metadata is intact,
+the ssh client agent is running, and there are no live jobs and no quarantine variables.
+
+Fixture boundary: both Nomad clients run on one Mac (`cpu_total_compute=4000`, the local
+client reserves 1000 MHz / 2048 MB), with one server. Partition is therefore done by
+SIGSTOP/SIGCONT of the ssh client agent, not by a network cut; this proves the server-side
+behaviour (node leaves ready, allocation kept, no replacement, no new job, same allocation
+after the heal) but not a real network fault between machines. A multi-machine fleet is
+not covered.
+
+## Defects found across the rounds
+
+| Round | Defect | Kind | Fix |
+|---|---|---|---|
+| 1 | Allocation directory left after proven cleanup | product | `AllocationDirRemoveCommand` in the cleanup tail |
+| 1 | `pool-node-quarantine` teardown left B's worktree, branch and directories | runner | `remove_b_leftovers` |
+| 2 | Readmission left A's allocation directory | runner/docs | `readmit-remove-allocation-directory` step, public docs |
+| 2 | `pool-queue` stale env dict (KeyError `attach`) | runner | re-read `scn.envs["C"]` |
+| 2 | `pool-refusals` nulled the host-key metadata on teardown | runner | restore the original value |
+| 2 | `pool-partition` relay partitioned both clients on a one-server fixture | runner | SIGSTOP/SIGCONT of the ssh client agent |
+| 3 | Agentctl create failed on the single reserved port still held by the previous allocation | product | bounded, context-aware wait in `CreateInstance`; in-use marks cleared |
+| 3 | C's allocation directory left after a failed launch | runner | placement recorded before readiness |
+| 3 | `pool-refusals` left the node ineligible with cleanup in retry_wait | runner | documented readmission after the expected quarantine |
+| 3 | `pool-partition` probe raced the local reply; strict message equality on the partitioned session | runner | wait for a settled state; prefix check on the ssh session |
+
+## Decisions
+
+- AC-EXECUTORS-NOMADPOOL-001.3 is worded to Nomad's semantics (spread by lowest reserved
+  utilisation, reservation-based, not load-based); owner decision.
+- A refused launch quarantines the node (`runtime_identity_unrecorded`) by existing
+  contract; owner decision is to keep it. `pool-refusals` asserts the reason and performs
+  the documented readmission.
+
+## Not covered
+
+- Startup timing of the built runtime was not measured in these runs.
+- No multi-machine fleet, no real network partition, no Linux cgroup enforcement.

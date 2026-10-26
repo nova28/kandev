@@ -1,7 +1,7 @@
 ---
 id: "03-pool-proof-handoff"
 title: "Two-node proof and handoff"
-status: pending
+status: done
 wave: 3
 depends_on:
   - "02-pool-workspaces-fences"
@@ -77,4 +77,4 @@ None.
 
 ## Results
 
-Not started.
+Complete (2026-10-26). All six pool scenarios (`pool-placement`, `pool-two-node`, `pool-node-quarantine`, `pool-queue`, `pool-refusals`, `pool-partition`) passed rc 0 on one build (`0d8ba484e9`, v0.98.0-64) on the laptop two-node fixture; evidence, run ids, defects found per round and the fixture boundary are in `docs/evidence/nomad-pool-p3/README.md`. Contribution notes: `docs/evidence/nomad-pool-p3/contribution-notes.md` (not published). Not covered: startup timing, a multi-machine fleet and a real network partition.
