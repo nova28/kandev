@@ -64,14 +64,16 @@ class PoolScenario(wo07.Wo07Scenario):
         if not workspace or not workspace.startswith(state_root + "/"):
             raise PreflightError("the recorded pool workspace is not under the node state root")
         remaining = []
-        for label, path in (("workspace", workspace), ("fence directory", f"{state_root}/environments/{env['environment_id']}")):
+        for label, path in (("workspace", workspace), ("fence directory", f"{state_root}/environments/{env['environment_id']}"),
+                            ("allocation directory", f"{state_root}/pool/allocations/{env['job_id']}")):
             code, _ = self.r.ssh(f"[ -e '{path}' ] || [ -L '{path}' ]")
             if code == 0:
                 remaining.append(label)
         if remaining:
             pending.append(f"pool {', '.join(remaining)} remains")
             return None
-        return {**result, "workspace_removed": True, "fence_directory_removed": True}
+        return {**result, "workspace_removed": True, "fence_directory_removed": True,
+                  "allocation_directory_removed": True}
 
     def assert_placement(self, env: dict[str, Any]) -> dict[str, Any]:
         pool = self.cfg["pool"]
@@ -172,6 +174,12 @@ class TwoNodeScenario(PoolScenario):
             if code != 0 or env["environment_id"] in out:
                 raise PreflightError(f"environment {env['label']} left a worktree registration in the source repository")
         return {"kind": layout["kind"], "branch_removed": layout["kind"] == "worktree", "workspace_removed": True}
+
+    def remove_b_leftovers(self, env: dict[str, Any], layout: dict[str, Any]) -> dict[str, Any]:
+        """Operator teardown released the environment, so its worktree, branch and node directories are removed here and asserted gone."""
+        self.focus(env)
+        removed = self.remove_pool_leftovers(env, True)
+        return {**removed, **self.assert_pool_cleaned(env, layout)}
 
 
 def drive_pool_two_node(runner: fx.Runner, cfg: dict[str, Any], ops: fx.Ops, root: Path) -> dict[str, Any]:
@@ -276,11 +284,13 @@ def drive_pool_node_quarantine(runner: fx.Runner, cfg: dict[str, Any], ops: fx.O
             return {"node_a": node_x, "node_b": env_b["node_id"], "b_attach": env_b["attach"], "other_node_marker": False}
 
         scn.data["continued_placement"] = step("assert-b-placed-on-the-other-node", b_placed_elsewhere)
+        layout_b = step("assert-workspace-b", lambda: scn.workspace_layout(scn.envs["B"]))
         scn.focus(env_a)
         readmitted = wo07._readmit(runner, ops, step, scn, env_a, leader, snapshot, node_x, window)
         released = [scn.release("B", kill_first=False)]
         env_a["released"] = True
         scn.save_envs()
+        scn.data["b_leftovers"] = step("remove-and-assert-b-leftovers", lambda: scn.remove_b_leftovers(scn.envs["B"], layout_b))
         cleanup = step("teardown", lambda: scn.finish({"released": released}))
     finally:
         guard.restore()

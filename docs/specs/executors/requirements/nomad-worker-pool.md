@@ -52,8 +52,8 @@ machine for each task.
   the native Nomad executor.
 - **AC-EXECUTORS-NOMADPOOL-001.3:** Where a profile selects spread placement
   (the default), Nomad shall place each environment on the eligible node with
-  the fewest pool environments; where it selects binpack, Nomad shall fill a
-  node before using another. Placement shall be described as reservation-based,
+  the lowest reserved-resource utilisation; where it selects binpack, Nomad
+  shall fill a node before using another. Placement stays reservation-based,
   not live-load-based.
 - **AC-EXECUTORS-NOMADPOOL-001.4:** If no pool node can satisfy an environment's
   reservations, the system shall leave it queued, show it as waiting for

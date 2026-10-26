@@ -166,7 +166,7 @@ isolation, per-node quarantine, scratch path assertions.
 Live, on two local throwaway Nomad clients (one `local`, one `ssh` through a
 fixture sshd), with the self-creating runner:
 
-1. Spread places two environments on different nodes.
+1. Spread places each environment on the eligible node with the lowest reserved-resource utilisation (binpack fills a node first; placement is reservation-based, not live-load-based), so two environments land on different nodes.
 2. With one node full, a third environment queues, then places after release.
 3. Partitioning one node leaves the other node's environments untouched; no
    replacement is created.

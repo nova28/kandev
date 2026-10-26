@@ -268,10 +268,13 @@ class PoolSettledTest(unittest.TestCase):
         self.addCleanup(self.patch.stop)
         return scn
 
-    def test_settled_only_when_workspace_and_fence_directory_are_gone(self):
-        env = {"environment_id": "e1"}
+    def test_settled_only_when_workspace_fence_and_allocation_directories_are_gone(self):
+        env = {"environment_id": "e1", "job_id": "kandev-j1"}
         done = self.scenario([]).production_settled(env, [])
-        self.assertTrue(done["workspace_removed"] and done["fence_directory_removed"])
+        self.assertTrue(done["workspace_removed"] and done["fence_directory_removed"] and done["allocation_directory_removed"])
+        pending = []
+        self.assertIsNone(self.scenario(["pool/allocations/kandev-j1'"]).production_settled(env, pending))
+        self.assertIn("allocation directory", pending[0])
         pending = []
         self.assertIsNone(self.scenario(["workspaces/environments"]).production_settled(env, pending))
         self.assertIn("workspace", pending[0])
@@ -328,6 +331,16 @@ class LocalNodeTreeAndLeftoversTest(unittest.TestCase):
             self.assertNotEqual(sh(f"git -C {src} show-ref --verify --quiet refs/heads/kandev/pool/env1").returncode, 0)
             self.assertNotIn("env1", sh(f"git -C {src} worktree list --porcelain").stdout)
             self.assertFalse(os.path.exists(f"{root}/environments/env1") or os.path.exists(ws))
+
+    def test_remove_b_leftovers_removes_then_asserts_the_checks(self):
+        scn = pool.TwoNodeScenario.__new__(pool.TwoNodeScenario)
+        calls = []
+        scn.focus = lambda env: calls.append("focus")
+        scn.remove_pool_leftovers = lambda env, strict: calls.append("remove") or {"removed": True, "branch": "b"}
+        scn.assert_pool_cleaned = lambda env, layout: calls.append("assert") or {"kind": layout["kind"]}
+        report = scn.remove_b_leftovers({"label": "B"}, {"kind": "worktree"})
+        self.assertEqual(calls, ["focus", "remove", "assert"])
+        self.assertTrue(report["removed"] and report["kind"] == "worktree")
 
     def test_pool_leftovers_refuse_unsafe_paths(self):
         import nomad_native_e2e_wo06 as wo06
