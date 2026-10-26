@@ -263,6 +263,13 @@ class CleanupPositiveTest(Wo07Base):
     def test_operator_cleanup_during_the_wait_fails_the_run(self):
         self.assert_fails("operator cleanup was used", "await-production-cleanup", operator_during=True)
 
+    def test_failed_run_stops_the_runners_own_backend_and_keeps_the_fixture(self):
+        self.assert_fails("operator cleanup was used", "await-production-cleanup", operator_during=True)
+        evidence = json.loads((self.fixture_root() / "evidence.json").read_text())
+        self.assertEqual(evidence["stopped_on_failure"]["kandev-fixture"], "stopped")
+        self.assertTrue((self.fixture_root() / "fixture.json").exists())
+        self.assertIn("stopped", self.world.events)
+
     def test_operator_guard_records_each_operator_op_and_restores(self):
         ops = fixture.Ops()
         originals = {name: getattr(ops, name) for name in wo07.OPERATOR_OPS}

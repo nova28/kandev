@@ -466,7 +466,7 @@ def run_scenario(config: Any, scenario: str, ops: fx.Ops | None = None, **kwargs
 
     return fx.run_create_fixture(
         config, ops=ops, drive=DRIVES[scenario], mode=f"created-real-{scenario}", label=scenario,
-        check_config=check, state_extra=wo06._state_extra(scenario), **kwargs,
+        stop_owned_on_failure=True, check_config=check, state_extra=wo06._state_extra(scenario), **kwargs,
     )
 
 

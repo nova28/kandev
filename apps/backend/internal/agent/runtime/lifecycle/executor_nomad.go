@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -209,14 +210,16 @@ func (r *NomadExecutor) newNomadAdmissionClient(ctx context.Context, profile nom
 	return client, nil
 }
 
-func (r *NomadExecutor) StopInstance(ctx context.Context, instance *ExecutorInstance, force bool) error {
+func (r *NomadExecutor) StopInstance(ctx context.Context, instance *ExecutorInstance, _ bool) error {
 	if r == nil || instance == nil || instance.InstanceID == "" {
 		return errors.New("nomad stop requires the exact connected instance identity")
 	}
-	// Force and cleanup reasons destroy the environment through the positive
-	// cleanup workflow. An ordinary Stop only detaches this backend's transports
-	// and preserves the allocation and worker fence.
-	if force || shouldRunExecutorCleanup(instance.StopReason) {
+	// Only a direct archive, delete or rollback reason destroys the environment,
+	// through the positive cleanup workflow. Every other stop, including a
+	// forced one and the task-tree handoff that precedes the durable cleanup
+	// job, only detaches this backend's transports and preserves the allocation
+	// and worker fence for that job.
+	if nomadStopDestroys(instance.StopReason) {
 		return r.destroyOnStop(ctx, instance)
 	}
 	r.mu.Lock()
@@ -233,6 +236,17 @@ func (r *NomadExecutor) StopInstance(ctx context.Context, instance *ExecutorInst
 	r.mu.Unlock()
 	connection.closeHostResources()
 	return nil
+}
+
+// nomadStopDestroys reports whether a stop reason runs positive cleanup in the
+// stopping call. Cascade and task-tree reasons belong to the durable cleanup
+// job, which holds the environment claim.
+func nomadStopDestroys(reason string) bool {
+	switch strings.ToLower(strings.TrimSpace(reason)) {
+	case StopReasonCascadeArchive, StopReasonCascadeDelete, StopReasonTaskTreeArchived, StopReasonTaskTreeDeleted:
+		return false
+	}
+	return shouldRunExecutorCleanup(reason)
 }
 
 // destroyOnStop runs positive cleanup for a destructive stop. A connected

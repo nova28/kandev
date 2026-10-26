@@ -103,6 +103,7 @@ func TestNomadExecutorForceStopFailsClosedAndCloseOnlyDetaches(t *testing.T) {
 	instance := nomadStopTestInstance("operation-2", "task-2", "session-2", "allocation-2")
 	runtime := NewNomadExecutor(nil, nil, nil)
 	runtime.sessions[instance.InstanceID] = &nomadAgentctlConnection{instance: instance, controlForwarder: forward}
+	instance.StopReason = StopReasonSessionArchived
 
 	if err := runtime.StopInstance(context.Background(), instance, true); !errors.Is(err, ErrNomadExecutorNotReady) {
 		t.Fatalf("force StopInstance() = %v, want fail-closed error", err)

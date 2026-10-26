@@ -400,3 +400,40 @@ func TestNomadCleanupEvidenceAbsentFenceIsClassifiedAndQuarantined(t *testing.T)
 		t.Fatal("absent owner record must leave the worker quarantined")
 	}
 }
+
+func TestNomadCleanupEvidenceHandoffStopsAreTransportOnly(t *testing.T) {
+	for _, reason := range []string{StopReasonCascadeArchive, StopReasonCascadeDelete, StopReasonTaskTreeArchived, StopReasonTaskTreeDeleted, ""} {
+		for _, force := range []bool{false, true} {
+			instance := nomadStopTestInstance("operation-h", "task-h", "session-h", "allocation-h")
+			instance.StopReason = reason
+			coordinator := &recordingCleanupCoordinator{}
+			runtime := NewNomadExecutor(nil, nil, nil)
+			runtime.setCleanupCoordinator(coordinator)
+			runtime.sessions[instance.InstanceID] = &nomadAgentctlConnection{instance: instance}
+			if err := runtime.StopInstance(context.Background(), instance, force); err != nil || coordinator.instances != 0 {
+				t.Fatalf("reason %q force %v: err=%v destroy calls=%d, want transport-only", reason, force, err, coordinator.instances)
+			}
+			if _, kept := runtime.sessions[instance.InstanceID]; kept {
+				t.Fatalf("reason %q force %v: transport was not detached", reason, force)
+			}
+		}
+	}
+}
+
+func TestNomadCleanupEvidenceCascadeForceStopLeavesFenceForCleanupJob(t *testing.T) {
+	f := prepareNomadCleanupFixture(t)
+	instance := nomadStopTestInstance(f.request.InstanceID, f.request.TaskID, f.request.SessionID, "alloc-1")
+	instance.StopReason = StopReasonCascadeArchive
+	if err := f.runtime.StopInstance(context.Background(), instance, true); err != nil {
+		t.Fatalf("cascade force stop: %v", err)
+	}
+	if calls := f.fake.callLog(); indexOfCall(calls, "ssh:fence-release") >= 0 || indexOfCall(calls, "job:stop") >= 0 || f.cleanup.drainCalls != 0 {
+		t.Fatalf("cascade stop touched the runtime outside the claim: %v drain=%d", calls, f.cleanup.drainCalls)
+	}
+	if err := runNomadCleanupFixture(f); err != nil {
+		t.Fatalf("cleanup job after cascade stop: %v", err)
+	}
+	if got := f.lastCheckpoint(t); got.Phase != nomadPhaseAbsent || len(got.DrainReceiptDigest) != 64 || f.cleanup.drainCalls != 1 {
+		t.Fatalf("phase=%q receipt=%q drain=%d, want absent with one drain receipt", got.Phase, got.DrainReceiptDigest, f.cleanup.drainCalls)
+	}
+}

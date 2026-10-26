@@ -795,6 +795,20 @@ class Runner:
         }
         return retained
 
+    def stop_owned_processes(self) -> dict[str, str]:
+        """Stop the runner's own backend and git daemon through their exact owned records after a failed run.
+
+        The Nomad job, its agentctl and the node state stay for cleanup-fixture; only processes this runner started
+        end here, so a failed run never leaves a headless Kandev behind.
+        """
+        outcome: dict[str, str] = {}
+        for label in (PROCESS_LABEL, GIT_DAEMON_LABEL):
+            try:
+                outcome[label] = self.registry.stop(label, timeout=15)
+            except Exception:
+                outcome[label] = "unverified"
+        return outcome
+
     def _stop_daemon(self, daemon: dict[str, Any]) -> None:
         try:
             result = self.registry.stop(GIT_DAEMON_LABEL, timeout=15)
@@ -861,7 +875,7 @@ def run_create_fixture(config: Any, ops: Ops | None = None, out: Callable[[str],
                        run: Callable[..., Any] = subprocess.run, checkout_root: Path = bootstrap.CHECKOUT_ROOT,
                        drive: Callable[..., dict[str, Any]] | None = None, mode: str = "created-real-pre-ready-recovery",
                        label: str = "pre-ready recovery", check_config: Callable[[dict[str, Any]], Any] | None = None,
-                       state_extra: Callable[[dict[str, Any]], dict[str, Any]] | None = None) -> int:
+                       state_extra: Callable[[dict[str, Any]], dict[str, Any]] | None = None, stop_owned_on_failure: bool = False) -> int:
     """Shared create-fixture shell. The WO06 scenarios pass their own drive, label, config check and extra state."""
     ops = ops or Ops()
     err = err or (lambda text: print(text, file=sys.stderr))
@@ -894,6 +908,8 @@ def run_create_fixture(config: Any, ops: Ops | None = None, out: Callable[[str],
         steps = evidence.data["steps"]
         failed = next((item["name"] for item in reversed(steps) if item["status"] == "failed"), steps[-1]["name"] if steps else "materialize")
         evidence.data.update({"status": "failed", "failed_step": failed, "error": evidence.scrub(str(exc)), "finished": ops.wall()})
+        if runner is not None and stop_owned_on_failure:
+            evidence.data["stopped_on_failure"] = runner.stop_owned_processes()
         evidence.save()
         err(evidence.scrub(f"real {label} failed: {exc}"))
         out(evidence.render())
