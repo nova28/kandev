@@ -568,6 +568,7 @@ type Service struct {
 	quickChatDir                    string // Directory for quick-chat workspaces (e.g., ~/.kandev/quick-chat)
 	branchFetcher                   *branchFetcher
 	envDestroyer                    EnvironmentDestroyer
+	nomadDestroyer                  NomadEnvironmentDestroyer
 	wsGroupMembership               WorkspaceGroupMembershipReader
 	executorCapabilityProber        ExecutorCapabilityProber
 	checkoutCredentialPolicy        func(context.Context, string) (bool, error)

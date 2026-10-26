@@ -103,6 +103,9 @@ func provideWorktreeManager(dbPool *db.Pool, cfg *config.Config, log *logger.Log
 			},
 		})
 	}
+	if lifecycleMgr != nil {
+		taskSvc.SetNomadEnvironmentDestroyer(lifecycleMgr)
+	}
 	taskSvc.SetSSHTaskDirReclaimer(newSSHTaskDirReclaimerAdapter(log))
 
 	// Wire script message handler with adapters

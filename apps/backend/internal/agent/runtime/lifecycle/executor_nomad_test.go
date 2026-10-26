@@ -550,6 +550,7 @@ type nomadCreateFixture struct {
 	jobHistoryMissing    bool
 	fake                 *nomadAdmissionFake
 	inventory            []nomad.EnvironmentState
+	cleanup              nomadCleanupFixture
 }
 
 type nomadCreateSecretReader struct{}
@@ -596,6 +597,8 @@ func newNomadCreateFixture(t *testing.T, failRegistration bool) *nomadCreateFixt
 			_, _ = io.WriteString(w, `{"id":"execution-1","port":41231,"task_id":"task-1","session_id":"session-1","workspace_path":"`+filepath.Join(fixture.profile.WorkspaceRoot, "environments", "environment-1", "g3")+`","status":"running"}`)
 		case "/health":
 			_, _ = io.WriteString(w, `{"status":"ok"}`)
+		case "/api/v1/runtime/seal-and-drain":
+			fixture.cleanup.serveDrain(w, r, fixture)
 		default:
 			http.NotFound(w, r)
 		}
@@ -606,7 +609,7 @@ func newNomadCreateFixture(t *testing.T, failRegistration bool) *nomadCreateFixt
 		if r.Header.Get("X-Nomad-Token") != "fixture-token" {
 			t.Errorf("Nomad API request omitted resolved secret token")
 		}
-		if fixture.fake.serve(w, r) {
+		if fixture.fake.serve(w, r) || fixture.cleanup.serveNomad(w, r, fixture) {
 			return
 		}
 		switch {
@@ -708,6 +711,8 @@ func newNomadCreateFixture(t *testing.T, failRegistration bool) *nomadCreateFixt
 			return sshOK
 		case strings.HasPrefix(command, "shasum -a 256 "):
 			return sshOut(artifactDigest + "  fixture\n")
+		case strings.HasPrefix(command, "d=") || strings.HasPrefix(command, "rm -f -- "):
+			return fixture.cleanup.serveSSH(command, fixture)
 		default:
 			return sshFail("unexpected remote command")
 		}

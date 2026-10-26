@@ -1131,6 +1131,9 @@ func (r *Repository) DeleteTaskEnvironment(ctx context.Context, id string) error
 	if err := r.ensureKubernetesInventoryAbsent(ctx, tx, id); err != nil {
 		return err
 	}
+	if err := r.ensureNomadInventoryAbsent(ctx, tx, id); err != nil {
+		return err
+	}
 	if err := r.guardEnvironmentPhysicalClaims(ctx, tx, id); err != nil {
 		return err
 	}
@@ -1177,6 +1180,9 @@ func (r *Repository) DeleteTaskEnvironmentsByTask(ctx context.Context, taskID st
 	}
 	for _, environmentID := range environmentIDs {
 		if err := r.ensureKubernetesInventoryAbsent(ctx, tx, environmentID); err != nil {
+			return err
+		}
+		if err := r.ensureNomadInventoryAbsent(ctx, tx, environmentID); err != nil {
 			return err
 		}
 		if err := recoveryclaim.EnsureAvailableTx(ctx, r.db, tx, environmentID); err != nil {

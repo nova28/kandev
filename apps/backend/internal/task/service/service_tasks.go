@@ -3151,6 +3151,11 @@ func (s *Service) deleteTaskWithManagedClaim(
 	if err := s.prepareTaskDeletionResources(ctx, operationCtx, id, taskEnv, claim); err != nil {
 		return false, err
 	}
+	if taskEnv != nil && taskEnv.TaskID == id {
+		if err := s.teardownNomadEnvironment(operationCtx, taskEnv); err != nil {
+			return false, fmt.Errorf("tear down nomad environment before task delete: %w", err)
+		}
+	}
 
 	envCleanup := taskEnvironmentCleanup{
 		env: taskEnv, deleteRow: false, allowUnverifiedWorkspaceChanges: options.AllowUnverifiedWorkspaceChanges, discardWorktreeChanges: options.DiscardWorktreeChanges, workspaceCleanup: options.WorkspaceCleanup, retentionInventoryCaptured: options.retainsWorkspace(),

@@ -42,6 +42,23 @@ type NomadExecutor struct {
 	mu             sync.Mutex
 	sessions       map[string]*nomadAgentctlConnection
 	closed         bool
+
+	cleanup            nomadCleanupCoordinator
+	cleanupActive      map[string]struct{}
+	drainDeadline      time.Duration
+	stopConfirmTimeout time.Duration
+}
+
+func (r *NomadExecutor) setCleanupCoordinator(coordinator nomadCleanupCoordinator) {
+	r.mu.Lock()
+	r.cleanup = coordinator
+	r.mu.Unlock()
+}
+
+func (r *NomadExecutor) cleanupCoordinator() nomadCleanupCoordinator {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.cleanup
 }
 
 func NewNomadExecutor(resolver *AgentctlResolver, secretStore interface {
@@ -142,26 +159,34 @@ func (r *NomadExecutor) launchNewOperation(ctx context.Context, req *ExecutorCre
 	}
 	allocation, err := waitForNomadAllocation(ctx, nomadClient, profile.Namespace, state)
 	if err != nil {
-		return nil, err
+		return nil, r.abortRegisteredNomadLaunch(ctx, req, &state, err)
 	}
 	state = allocation
 	if err := checkpointNomadState(ctx, req, &state); err != nil {
-		return nil, fmt.Errorf("checkpoint running Nomad allocation: %w", err)
+		return nil, r.abortRegisteredNomadLaunch(ctx, req, &state, fmt.Errorf("checkpoint running Nomad allocation: %w", err))
 	}
 	bootstrapCtx, cancelBootstrap := context.WithTimeout(ctx, nomadBootstrapTimeout)
 	defer cancelBootstrap()
 	connection, err := connectNomadAgentctlOverSSHWithTunnel(bootstrapCtx, sshClient, profile, &state, req, nonce, r.logger, apiTunnel)
 	if err != nil {
-		state.Phase = nomadPhaseCleanupPending
-		state.Revision++
-		_ = checkpointNomadState(context.Background(), req, &state)
-		return nil, err
+		return nil, r.abortRegisteredNomadLaunch(ctx, req, &state, err)
 	}
 	closeSSH = false
 	if err := r.storeNomadConnection(req.InstanceID, connection, "nomad executor closed while connecting to the retained operation"); err != nil {
 		return nil, err
 	}
 	return connection.instance, nil
+}
+
+// abortRegisteredNomadLaunch records the cleanup intent for a launch that
+// failed after its job was registered, rolls it back, and returns cause
+// unchanged.
+func (r *NomadExecutor) abortRegisteredNomadLaunch(ctx context.Context, req *ExecutorCreateRequest, state *nomad.EnvironmentState, cause error) error {
+	state.Phase = nomadPhaseCleanupPending
+	state.Revision++
+	_ = checkpointNomadState(context.Background(), req, state)
+	r.rollbackNomadLaunch(ctx, req)
+	return cause
 }
 
 func (r *NomadExecutor) admitNomadLaunch(ctx context.Context, req *ExecutorCreateRequest, profile nomad.ProfileConfig) error {
@@ -184,15 +209,15 @@ func (r *NomadExecutor) newNomadAdmissionClient(ctx context.Context, profile nom
 	return client, nil
 }
 
-func (r *NomadExecutor) StopInstance(_ context.Context, instance *ExecutorInstance, force bool) error {
+func (r *NomadExecutor) StopInstance(ctx context.Context, instance *ExecutorInstance, force bool) error {
 	if r == nil || instance == nil || instance.InstanceID == "" {
 		return errors.New("nomad stop requires the exact connected instance identity")
 	}
-	// Destructive stops remain fail-closed until the drain/absence workflow is
-	// implemented. Ordinary Stop may end the agentctl session, then detach this
-	// backend's SSH transports while preserving the allocation and worker fence.
+	// Force and cleanup reasons destroy the environment through the positive
+	// cleanup workflow. An ordinary Stop only detaches this backend's transports
+	// and preserves the allocation and worker fence.
 	if force || shouldRunExecutorCleanup(instance.StopReason) {
-		return ErrNomadExecutorNotReady
+		return r.destroyOnStop(ctx, instance)
 	}
 	r.mu.Lock()
 	connection, exists := r.sessions[instance.InstanceID]
@@ -208,6 +233,36 @@ func (r *NomadExecutor) StopInstance(_ context.Context, instance *ExecutorInstan
 	r.mu.Unlock()
 	connection.closeHostResources()
 	return nil
+}
+
+// destroyOnStop runs positive cleanup for a destructive stop. A connected
+// operation must match the requested instance; a detached one is cleaned from
+// its retained inventory row.
+func (r *NomadExecutor) destroyOnStop(ctx context.Context, instance *ExecutorInstance) error {
+	coordinator := r.cleanupCoordinator()
+	if coordinator == nil {
+		return ErrNomadExecutorNotReady
+	}
+	r.mu.Lock()
+	connection, exists := r.sessions[instance.InstanceID]
+	mismatch := exists && connection != nil && !sameNomadConnectedInstance(connection.instance, instance)
+	r.mu.Unlock()
+	if mismatch {
+		return errors.New("nomad stop does not match the current connected operation")
+	}
+	return coordinator.DestroyInstance(ctx, instance)
+}
+
+// rollbackNomadLaunch cleans up a launch whose job was registered but whose
+// connection failed. The original launch error is never replaced.
+func (r *NomadExecutor) rollbackNomadLaunch(ctx context.Context, req *ExecutorCreateRequest) {
+	coordinator := r.cleanupCoordinator()
+	if coordinator == nil {
+		return
+	}
+	if err := coordinator.DestroyLaunch(ctx, req); err != nil {
+		r.logger.Warn("nomad launch rollback retained cleanup", zap.String("execution_id", req.InstanceID))
+	}
 }
 
 func sameNomadConnectedInstance(current, requested *ExecutorInstance) bool {
@@ -419,6 +474,9 @@ func (r *NomadExecutor) RecoverInstances(ctx context.Context, records []*models.
 		if record == nil || record.Runtime != executor.NameNomad || isTerminalExecutorRunningStatus(record.Status) {
 			continue
 		}
+		if handled := r.resumeNomadCleanupRecord(ctx, record); handled {
+			continue
+		}
 		instance, err := r.recoverReadyNomadRecord(ctx, record)
 		if err != nil {
 			r.logger.Warn("Nomad runtime recovery deferred; retained allocation and inventory were not changed",
@@ -428,6 +486,21 @@ func (r *NomadExecutor) RecoverInstances(ctx context.Context, records []*models.
 		instances = append(instances, instance)
 	}
 	return instances, nil
+}
+
+// resumeNomadCleanupRecord repeats the idempotent tail of a retained cleanup. A
+// failure leaves the retained inventory and quarantine untouched for the next pass.
+func (r *NomadExecutor) resumeNomadCleanupRecord(ctx context.Context, record *models.ExecutorRunning) bool {
+	coordinator := r.cleanupCoordinator()
+	if coordinator == nil {
+		return false
+	}
+	handled, err := coordinator.ResumeCleanup(ctx, record)
+	if err != nil {
+		r.logger.Warn("Nomad cleanup resume deferred; retained inventory and quarantine were not changed",
+			zap.String("session_id", record.SessionID))
+	}
+	return handled
 }
 
 func (r *NomadExecutor) recoverReadyNomadRecord(ctx context.Context, record *models.ExecutorRunning) (*ExecutorInstance, error) {

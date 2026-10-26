@@ -32,6 +32,7 @@ import sys
 import tempfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 from dataclasses import dataclass, field
@@ -286,6 +287,38 @@ def _default_kill_exact(ssh: Callable[[str], tuple[int, str]], identity: dict[st
     return "killed"
 
 
+def _default_signal_pid(ssh: Callable[[str], tuple[int, str]], pid: int, sig: str) -> str:
+    """Send STOP or CONT to one remote pid over the existing ssh channel. Callers verify the process identity first."""
+    if sig not in ("STOP", "CONT"):
+        raise PreflightError("only STOP and CONT may be sent to a fixture process")
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 1:
+        raise PreflightError("refusing to signal a process without a recorded pid")
+    code, _ = ssh(f"kill -{sig} {pid}")
+    if code != 0:
+        raise PreflightError(f"signalling process {pid} failed")
+    return "signalled"
+
+
+_QUARANTINE_VARIABLE = re.compile(r"kandev/quarantine/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+
+
+def _default_nomad_delete_variable(address: str, token: str, namespace: str, path: str) -> str:
+    """Operator removal of one node quarantine Variable; any other variable path is refused. Returns removed or absent."""
+    if not _QUARANTINE_VARIABLE.fullmatch(path):
+        raise PreflightError("refusing to delete a Nomad variable that is not a node quarantine marker")
+    quoted = urllib.parse.quote(path, safe="")
+    request = urllib.request.Request(f"{address}/v1/var/{quoted}?namespace={namespace}", method="DELETE", headers={"X-Nomad-Token": token, "Accept": "application/json"})
+    try:
+        with _NOMAD_OPENER.open(request, timeout=15):
+            return "removed"
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return "absent"
+        raise PreflightError(f"Nomad variable DELETE failed with status {exc.code}") from None
+    except (OSError, urllib.error.URLError):
+        raise PreflightError("Nomad variable DELETE is unreachable") from None
+
+
 def _default_prompt(payload: dict[str, Any]) -> dict[str, Any]:
     """Send one inert prompt through the normal message API (the same driver the recovery scenario uses)."""
     script = Path(__file__).with_name("nomad_native_e2e_recovery.js")
@@ -352,6 +385,8 @@ class Ops:
     kill_exact: Callable[[Callable[[str], tuple[int, str]], dict[str, Any], list[str]], str] = _default_kill_exact
     nomad_set_eligibility: Callable[[str, str, str, str, bool], Any] = _default_nomad_set_eligibility
     relay_factory: Callable[[tuple[str, int], tuple[str, int]], Any] | None = None
+    signal_pid: Callable[[Callable[[str], tuple[int, str]], int, str], str] = _default_signal_pid
+    nomad_delete_variable: Callable[[str, str, str, str], str] = _default_nomad_delete_variable
     scenario_timeout: float = 300.0
     poll_interval: float = 1.0
 

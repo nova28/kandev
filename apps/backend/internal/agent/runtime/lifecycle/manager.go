@@ -537,6 +537,7 @@ func NewManager(
 		passthroughMCPActiveClaims:     make(map[string]map[string]passthroughMCPFileClaim),
 		passthroughMCPActiveExecutions: make(map[string]map[string]*AgentExecution),
 	}
+	mgr.bindNomadCleanup()
 	// Initialize stream manager with callbacks that delegate to manager methods
 	// mcpHandler will be set later via SetMCPHandler.
 	// stopCh is shared with the manager so workspace-stream backoff drains on Stop.

@@ -96,13 +96,14 @@ func (r *Repository) validateNomadExecutorCheckpointOwner(ctx context.Context, t
 }
 
 const (
-	nomadPhaseIntent         = "intent"
-	nomadPhaseRegistered     = "registered"
-	nomadPhaseAllocated      = "allocated"
-	nomadPhaseReady          = "ready"
-	nomadPhaseCleanupPending = "cleanup_pending"
-	nomadPhaseQuarantined    = "quarantined"
-	nomadPhaseAbsent         = "absent"
+	nomadPhaseIntent           = "intent"
+	nomadPhaseRegistered       = "registered"
+	nomadPhaseAllocated        = "allocated"
+	nomadPhaseReady            = "ready"
+	nomadPhaseCleanupPending   = "cleanup_pending"
+	nomadPhaseQuarantined      = "quarantined"
+	nomadPhaseAbsent           = "absent"
+	nomadPhaseOperatorReleased = nomad.PhaseOperatorReleased
 )
 
 func (r *Repository) checkpointNomadExecutorRow(ctx context.Context, tx *sqlx.Tx, running *models.ExecutorRunning, incoming nomad.EnvironmentState, now time.Time) error {
@@ -224,13 +225,14 @@ func mergeNomadMetadata(current, incomingMetadata map[string]interface{}, state 
 
 func validNomadStateTransition(from, to string) bool {
 	allowed := map[string]map[string]bool{
-		nomadPhaseIntent:         {nomadPhaseIntent: true, nomadPhaseRegistered: true, nomadPhaseCleanupPending: true, nomadPhaseQuarantined: true},
-		nomadPhaseRegistered:     {nomadPhaseRegistered: true, nomadPhaseAllocated: true, nomadPhaseCleanupPending: true, nomadPhaseQuarantined: true},
-		nomadPhaseAllocated:      {nomadPhaseAllocated: true, nomadPhaseReady: true, nomadPhaseCleanupPending: true, nomadPhaseQuarantined: true},
-		nomadPhaseReady:          {nomadPhaseReady: true, nomadPhaseCleanupPending: true, nomadPhaseQuarantined: true},
-		nomadPhaseCleanupPending: {nomadPhaseCleanupPending: true, nomadPhaseQuarantined: true, nomadPhaseAbsent: true},
-		nomadPhaseQuarantined:    {nomadPhaseQuarantined: true, nomadPhaseAbsent: true},
-		nomadPhaseAbsent:         {nomadPhaseAbsent: true},
+		nomadPhaseIntent:           {nomadPhaseIntent: true, nomadPhaseRegistered: true, nomadPhaseCleanupPending: true, nomadPhaseQuarantined: true},
+		nomadPhaseRegistered:       {nomadPhaseRegistered: true, nomadPhaseAllocated: true, nomadPhaseCleanupPending: true, nomadPhaseQuarantined: true},
+		nomadPhaseAllocated:        {nomadPhaseAllocated: true, nomadPhaseReady: true, nomadPhaseCleanupPending: true, nomadPhaseQuarantined: true},
+		nomadPhaseReady:            {nomadPhaseReady: true, nomadPhaseCleanupPending: true, nomadPhaseQuarantined: true},
+		nomadPhaseCleanupPending:   {nomadPhaseCleanupPending: true, nomadPhaseQuarantined: true, nomadPhaseAbsent: true, nomadPhaseOperatorReleased: true},
+		nomadPhaseQuarantined:      {nomadPhaseQuarantined: true, nomadPhaseAbsent: true, nomadPhaseOperatorReleased: true},
+		nomadPhaseAbsent:           {nomadPhaseAbsent: true},
+		nomadPhaseOperatorReleased: {nomadPhaseOperatorReleased: true},
 	}
 	return allowed[from][to]
 }

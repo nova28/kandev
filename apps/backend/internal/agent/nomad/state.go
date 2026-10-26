@@ -12,6 +12,33 @@ import (
 	"time"
 )
 
+// PhaseOperatorReleased is the terminal phase of a retained environment whose
+// absence an operator attested by hand. It is never proof of absence.
+const PhaseOperatorReleased = "operator_released"
+
+// OperatorAttestation is the operator's manual statement that the retained
+// runtime is gone and the worker fence is removed.
+type OperatorAttestation struct {
+	ProcessTreeAbsent    bool   `json:"process_tree_absent"`
+	JobStoppedPurgeFalse bool   `json:"job_stopped_purge_false"`
+	FenceRemoved         bool   `json:"fence_removed"`
+	Operator             string `json:"operator"`
+}
+
+// Complete reports whether every attested fact holds and an operator is named.
+func (a OperatorAttestation) Complete() bool {
+	return a.ProcessTreeAbsent && a.JobStoppedPurgeFalse && a.FenceRemoved && strings.TrimSpace(a.Operator) != ""
+}
+
+// OperatorAttestationDigest is the SHA-256 of the canonical attestation bound
+// to the exact retained environment identity.
+func OperatorAttestationDigest(state EnvironmentState, attestation OperatorAttestation) string {
+	canonical := fmt.Sprintf("%s\x00%s\x00%d\x00%s\x00%t\x00%t\x00%t\x00%s", state.NodeID, state.EnvironmentID, state.Generation,
+		state.JobID, attestation.ProcessTreeAbsent, attestation.JobStoppedPurgeFalse, attestation.FenceRemoved, attestation.Operator)
+	digest := sha256.Sum256([]byte(canonical))
+	return hex.EncodeToString(digest[:])
+}
+
 var digestPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 type EnvironmentState struct {
@@ -55,6 +82,9 @@ type EnvironmentState struct {
 	DrainReceiptDigest     string `json:"drain_receipt_digest,omitempty"`
 	DrainReceiptGeneration int64  `json:"drain_receipt_generation,omitempty"`
 	QuarantineState        string `json:"quarantine_state,omitempty"`
+	// OperatorAttestationDigest binds an operator_released state to the
+	// operator's manual absence attestation. It is empty in every other phase.
+	OperatorAttestationDigest string `json:"operator_attestation_digest,omitempty"`
 	// DisconnectLostAfterSeconds is the immutable disconnect window of the job.
 	// Zero is a retained environment created before the window was configurable.
 	DisconnectLostAfterSeconds int64 `json:"disconnect_lost_after_seconds,omitempty"`
@@ -135,7 +165,7 @@ func (s EnvironmentState) validateJobEvidence() error {
 
 func (s EnvironmentState) validatePhaseAndIndexes() error {
 	switch s.Phase {
-	case "intent", "registered", "allocated", "ready", "cleanup_pending", "quarantined", "absent":
+	case "intent", "registered", "allocated", "ready", "cleanup_pending", "quarantined", "absent", PhaseOperatorReleased:
 	default:
 		return fmt.Errorf("nomad environment state has invalid phase")
 	}
@@ -147,7 +177,19 @@ func (s EnvironmentState) validatePhaseAndIndexes() error {
 	if err := s.validateRuntimeIndexes(); err != nil {
 		return err
 	}
+	if err := s.validateOperatorAttestation(); err != nil {
+		return err
+	}
 	return s.validateDrainReceipt()
+}
+
+func (s EnvironmentState) validateOperatorAttestation() error {
+	released := s.Phase == PhaseOperatorReleased
+	if released != (s.OperatorAttestationDigest != "") ||
+		(released && !digestPattern.MatchString(s.OperatorAttestationDigest)) {
+		return fmt.Errorf("nomad operator release requires exactly one attestation digest")
+	}
+	return nil
 }
 
 func (s EnvironmentState) validateRuntimeIndexes() error {

@@ -107,3 +107,11 @@ Success is scoped to trusted managed groups. Terminal allocation, missing PID, c
 ## Results
 
 Pending. Implementation and verification evidence have not yet been recorded.
+
+## Implementation notes (offline complete, live proof pending)
+
+- Owner decisions: plain `session.stop` stays transport-only; archive, delete, reset and launch rollback run cleanup. The claim id is folded into the receipt digest only. Readmission is `POST /api/v1/executors/nomad/readmit` (admin only), moving a retained row to the terminal `operator_released` phase; it never writes `absent`, never changes eligibility or the marker.
+- Cleanup order: checkpoint `cleanup_pending`, seal and drain with the recorded server identity, persist receipt digest, remove the staged bootstrap env file, stop the job with purge=false, confirm one terminal allocation on the original ready node, checkpoint `absent`, release the fence by owner compare, release inventory. Any failure leaves `cleanup_pending` and quarantines the node; recovery never drains again.
+- Owner rows are retained by service teardown, sqlite environment and task delete guards, and the task delete cascade.
+- Deferred: absent tombstones are re-resumed on each boot (idempotent, one SSH dial per row); a persisted released marker needs an `EnvironmentState` field.
+- Live runner: `scripts/nomad-native-e2e run --require-real --create-fixture --scenario cleanup-positive|cleanup-negative --config "$KANDEV_NOMAD_TEST_CONFIG"`.

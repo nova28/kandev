@@ -849,7 +849,7 @@ class MainDispatchTest(Wo06Base):
     def test_create_fixture_accepts_the_three_scenarios_and_rejects_others(self):
         err = []
         import contextlib, io
-        for scenario in ("session", "recovery", "cleanup-positive"):
+        for scenario in ("session", "recovery"):
             buf = io.StringIO()
             with contextlib.redirect_stderr(buf):
                 self.assertEqual(main(["run", "--scenario", scenario, "--require-real", "--create-fixture", "--config", "/nonexistent"]), 2)

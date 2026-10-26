@@ -650,6 +650,18 @@ retry a failed connection immediately, and it does not move, reconfigure, or
 otherwise repair a host that has become unreachable or changed address;
 fixing the host or the connection settings remains an operator action.
 
+## Nomad worker quarantine and readmission
+
+Archiving, deleting or resetting a task that owns a Nomad environment runs proven cleanup: the runtime is sealed and drained, a receipt is stored, the job is stopped without purging, allocations are confirmed terminal on the original node, and the worker fence is released. Plain session stop only detaches the transport.
+
+If any step cannot be proven (drain failure or timeout, lost reply, changed runtime, lost node, unexpected allocation), Kandev keeps the environment as `cleanup_pending`, marks the node ineligible and records a quarantine marker. Nothing is re-enabled automatically, and task or environment deletion is refused while the record is retained.
+
+To readmit a quarantined worker, do all three steps yourself:
+
+1. Verify outside Kandev that no process from the environment remains (for example after a controlled reboot with a changed boot id), stop the job without purge, and remove the worker fence only after checking that it names this environment.
+2. Call `POST /api/v1/executors/nomad/readmit` with `node_id`, `environment_id`, `generation`, `job_id` and an `attestation` object (`process_tree_absent`, `job_stopped_purge_false`, `fence_removed`, all `true`, plus `operator`). Kandev keeps the record and marks it `operator_released`. It never changes node eligibility or the marker.
+3. Delete the `kandev/quarantine/<node-id>` Nomad variable and re-enable the node with `nomad node eligibility -enable`.
+
 ## Lifecycle and cleanup
 
 The task environment reports `creating`, `ready`, `stopped`, or `failed`; individual execution records have finer states. Stop is deliberately not synonymous with destroy for resumable Docker, Kubernetes, and Sprites environments.

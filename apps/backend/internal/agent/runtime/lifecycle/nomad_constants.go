@@ -1,5 +1,7 @@
 package lifecycle
 
+import "github.com/kandev/kandev/internal/agent/nomad"
+
 // Nomad environment phases persisted in the typed inventory state.
 const (
 	nomadPhaseIntent         = "intent"
@@ -7,6 +9,10 @@ const (
 	nomadPhaseAllocated      = "allocated"
 	nomadPhaseReady          = "ready"
 	nomadPhaseCleanupPending = "cleanup_pending"
+	nomadPhaseQuarantined    = "quarantined"
+	nomadPhaseAbsent         = "absent"
+
+	nomadPhaseOperatorReleased = nomad.PhaseOperatorReleased
 )
 
 // nomadAllocationClientStatusRunning is the Nomad client status of a running allocation.

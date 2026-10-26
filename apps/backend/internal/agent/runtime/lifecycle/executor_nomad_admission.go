@@ -58,7 +58,8 @@ func admitAgainstRetainedInventory(ctx context.Context, req *ExecutorCreateReque
 		return fmt.Errorf("%w: retained inventory could not be read: %w", ErrNomadWorkerQuarantined, err)
 	}
 	for _, other := range states {
-		if other.NodeID != profile.NodeID || (other.EnvironmentID == req.TaskEnvironmentID && other.ExecutionID == req.InstanceID) {
+		if other.NodeID != profile.NodeID || other.Phase == nomadPhaseOperatorReleased ||
+			(other.EnvironmentID == req.TaskEnvironmentID && other.ExecutionID == req.InstanceID) {
 			continue
 		}
 		if other.QuarantineState == nomad.QuarantinePending || other.QuarantineState == nomad.QuarantineMarked ||
@@ -69,8 +70,8 @@ func admitAgainstRetainedInventory(ctx context.Context, req *ExecutorCreateReque
 	return nil
 }
 
-// quarantineWorker and reconcilePendingNomadQuarantine are offline building
-// blocks with no production trigger; callers must not invoke them from launch.
+// quarantineWorker and reconcilePendingNomadQuarantine are triggered only by
+// cleanup and recovery, never by launch admission.
 // quarantineWorker persists the pending interlock before any control call, then
 // completes the node mutation. A control failure leaves the pending interlock.
 func (r *NomadExecutor) quarantineWorker(ctx context.Context, req *ExecutorCreateRequest, profile nomad.ProfileConfig, client *nomad.Client, state *nomad.EnvironmentState, reason string) error {

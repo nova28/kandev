@@ -1058,6 +1058,12 @@ def _wo06_module() -> Any:
     return nomad_native_e2e_wo06
 
 
+def _wo07_module() -> Any:
+    _fixture_module()
+    import nomad_native_e2e_wo07
+    return nomad_native_e2e_wo07
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -1067,16 +1073,18 @@ def main(argv: list[str] | None = None) -> int:
     run_parser.add_argument("--scenario", choices=sorted(REQUIRED_SCENARIOS), required=True)
     run_parser.add_argument("--require-real", action="store_true")
     run_parser.add_argument("--config", required=True)
-    run_parser.add_argument("--create-fixture", action="store_true", help="pre-ready-recovery, admission and disconnect: create a fresh fixture from a bootstrap config, crash, recover and clean up")
+    run_parser.add_argument("--create-fixture", action="store_true", help="pre-ready-recovery, admission, disconnect, cleanup-positive and cleanup-negative: create a fresh fixture from a bootstrap config, crash, recover and clean up")
     cleanup = commands.add_parser("cleanup-fixture", help="stop the session of an existing created fixture through the production path and verify teardown")
     cleanup.add_argument("--fixture-root", required=True)
     args = parser.parse_args(argv)
     if args.command == "cleanup-fixture":
         return _fixture_module().cleanup_fixture_command(args.fixture_root)
     if args.command == "run" and args.create_fixture:
-        if args.scenario not in ("pre-ready-recovery", "admission", "disconnect") or not args.require_real:
-            print("--create-fixture requires --require-real --scenario pre-ready-recovery|admission|disconnect", file=sys.stderr)
+        if args.scenario not in ("pre-ready-recovery", "admission", "disconnect", "cleanup-positive", "cleanup-negative") or not args.require_real:
+            print("--create-fixture requires --require-real --scenario pre-ready-recovery|admission|disconnect|cleanup-positive|cleanup-negative", file=sys.stderr)
             return 2
+        if args.scenario in ("cleanup-positive", "cleanup-negative"):
+            return _wo07_module().create_fixture_command(args.config, args.scenario)
         if args.scenario in ("admission", "disconnect"):
             return _wo06_module().create_fixture_command(args.config, args.scenario)
         return _fixture_module().create_fixture_command(args.config)
