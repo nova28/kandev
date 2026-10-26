@@ -36,6 +36,7 @@ const (
 	nomadCleanupReasonIdentityUnrecorded   = "runtime_identity_unrecorded"
 	nomadCleanupReasonWorkerUnreachable    = "worker_unreachable"
 	nomadCleanupReasonFenceMismatch        = "worker_fence_mismatch"
+	nomadCleanupReasonFenceAbsent          = "worker_fence_absent"
 	nomadCleanupReasonRuntimeUnreachable   = "runtime_unreachable"
 	nomadCleanupReasonDrainUnsupported     = "drain_unsupported"
 	nomadCleanupReasonIdentityChanged      = "server_identity_changed"
@@ -241,6 +242,9 @@ func (c *nomadCleanup) drain(ctx context.Context) (*agentctl.RuntimeDrainReceipt
 	}
 	c.worker = worker
 	if err := verifyNomadWorkerFence(ctx, worker, c.profile, c.state); err != nil {
+		if errors.Is(err, errNomadWorkerFenceAbsent) {
+			return nil, nomadCleanupReasonFenceAbsent
+		}
 		return nil, nomadCleanupReasonFenceMismatch
 	}
 	forwarder, err := StartPortForward(worker, c.state.ControlPort, c.exec.logger)

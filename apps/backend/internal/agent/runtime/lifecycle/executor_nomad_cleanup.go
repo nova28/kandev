@@ -59,8 +59,8 @@ func (m *Manager) DestroyNomadEnvironment(ctx context.Context, environmentID str
 	for _, record := range records {
 		req, err := m.nomadCleanupRequestForRecord(ctx, record)
 		if err == nil {
-			err = m.withNomadCleanupClaim(ctx, req, func(claimed context.Context, claimID string) error {
-				return exec.destroyNomadOperation(claimed, req, claimID)
+			err = m.withFreshNomadCleanupClaim(ctx, req, func(claimed context.Context, claimID string, fresh *ExecutorCreateRequest) error {
+				return exec.destroyNomadOperation(claimed, fresh, claimID)
 			})
 		}
 		failures = append(failures, err)
@@ -124,7 +124,9 @@ func (c *managerNomadCleanup) DestroyInstance(ctx context.Context, instance *Exe
 	if err != nil {
 		return err
 	}
-	return c.destroy(ctx, req)
+	return c.manager.withFreshNomadCleanupClaim(ctx, req, func(claimed context.Context, claimID string, fresh *ExecutorCreateRequest) error {
+		return c.executor.destroyNomadOperation(claimed, fresh, claimID)
+	})
 }
 
 func (c *managerNomadCleanup) DestroyLaunch(ctx context.Context, req *ExecutorCreateRequest) error {
@@ -154,8 +156,8 @@ func (c *managerNomadCleanup) ResumeCleanup(ctx context.Context, record *models.
 	if err != nil {
 		return true, err
 	}
-	return true, c.manager.withNomadCleanupClaim(ctx, req, func(claimed context.Context, claimID string) error {
-		return c.executor.resumeNomadCleanup(claimed, req, claimID)
+	return true, c.manager.withFreshNomadCleanupClaim(ctx, req, func(claimed context.Context, claimID string, fresh *ExecutorCreateRequest) error {
+		return c.executor.resumeNomadCleanup(claimed, fresh, claimID)
 	})
 }
 
@@ -242,6 +244,37 @@ func (m *Manager) withNomadCleanupClaim(ctx context.Context, req *ExecutorCreate
 	}
 	defer m.releaseNomadCleanupClaim(store, claim)
 	return fn(recoveryclaim.WithClaim(ctx, claim), claim.OperationID)
+}
+
+// withFreshNomadCleanupClaim runs fn under the cleanup claim with the request
+// rebuilt from the inventory row as it stands once the claim is held. A cleanup
+// that waited on a competing holder therefore resumes from that holder's
+// receipt and absence instead of the state read before the wait.
+func (m *Manager) withFreshNomadCleanupClaim(
+	ctx context.Context, req *ExecutorCreateRequest, fn func(context.Context, string, *ExecutorCreateRequest) error,
+) error {
+	return m.withNomadCleanupClaim(ctx, req, func(claimed context.Context, claimID string) error {
+		fresh, err := m.claimedNomadCleanupRequest(claimed, req)
+		if err != nil {
+			return err
+		}
+		return fn(claimed, claimID, fresh)
+	})
+}
+
+func (m *Manager) claimedNomadCleanupRequest(ctx context.Context, req *ExecutorCreateRequest) (*ExecutorCreateRequest, error) {
+	reader, ok := m.runningWriter.(executorRunningReader)
+	if !ok {
+		return nil, errors.New("nomad cleanup: running inventory is unavailable")
+	}
+	record, err := reader.GetExecutorRunningBySessionID(ctx, req.SessionID)
+	if err != nil {
+		return nil, fmt.Errorf("nomad cleanup: re-read running inventory: %w", err)
+	}
+	if record == nil || record.AgentExecutionID != req.InstanceID {
+		return nil, fmt.Errorf("nomad cleanup: %w", models.ErrExecutionRotated)
+	}
+	return m.nomadCleanupRequestForRecord(ctx, record)
 }
 
 func (m *Manager) releaseNomadCleanupClaim(store nomadCleanupClaimStore, claim *models.TaskEnvironmentRecoveryClaim) {

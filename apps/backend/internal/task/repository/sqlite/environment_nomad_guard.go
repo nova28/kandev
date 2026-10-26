@@ -89,3 +89,17 @@ func (r *Repository) HasNomadEnvironmentInventory(ctx context.Context, environme
 	}
 	return false, err
 }
+
+// ensureNomadRunningRowReleasable refuses to delete the executors_running row
+// of a session whose Nomad inventory is still retained.
+func (r *Repository) ensureNomadRunningRowReleasable(ctx context.Context, tx *sqlx.Tx, sessionID string) error {
+	retained, err := r.anyNomadInventoryRetained(ctx, tx, `
+		SELECT COALESCE(metadata, '') FROM executors_running WHERE runtime = ? AND session_id = ?`, sessionID)
+	if err != nil {
+		return err
+	}
+	if retained {
+		return fmt.Errorf("%w: session %s", ErrNomadInventoryRetained, sessionID)
+	}
+	return nil
+}

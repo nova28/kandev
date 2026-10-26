@@ -624,6 +624,9 @@ func (r *Repository) DeleteExecutorRunningBySessionID(ctx context.Context, sessi
 	if err := lockAgentDeliveryWrites(ctx, tx, r.db.DriverName(), []string{sessionID}, nil); err != nil {
 		return err
 	}
+	if err := r.ensureNomadRunningRowReleasable(ctx, tx, sessionID); err != nil {
+		return err
+	}
 	result, err := tx.ExecContext(ctx, r.db.Rebind(`DELETE FROM executors_running WHERE session_id = ?`), sessionID)
 	if err != nil {
 		return err
@@ -875,6 +878,9 @@ func (r *Repository) DeleteExecutorRunningIfCurrent(
 		return err
 	}
 	if err := lockAgentDeliveryWrites(ctx, tx, r.db.DriverName(), []string{sessionID}, nil); err != nil {
+		return err
+	}
+	if err := r.ensureNomadRunningRowReleasable(ctx, tx, sessionID); err != nil {
 		return err
 	}
 	query := `DELETE FROM executors_running WHERE session_id = ? AND agent_execution_id = ?`

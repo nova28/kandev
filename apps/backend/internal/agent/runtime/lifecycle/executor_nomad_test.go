@@ -542,6 +542,7 @@ type nomadCreateFixture struct {
 	createCalls          int
 	preexistingInstance  bool
 	fenceOK              bool
+	fenceAbsent          bool
 	loseRegisterResponse bool
 	failBootstrapWrite   bool
 	allocationsPending   bool
@@ -689,6 +690,9 @@ func newNomadCreateFixture(t *testing.T, failRegistration bool) *nomadCreateFixt
 		case strings.HasPrefix(command, "f="):
 			if fixture.fenceOK {
 				return sshOut("verified\n")
+			}
+			if fixture.fenceAbsent {
+				return sshOut("absent\n")
 			}
 			return sshFail("fence mismatch")
 		case strings.HasPrefix(command, "mkdir -p "):

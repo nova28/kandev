@@ -72,3 +72,32 @@ func TestNomadCleanupEvidenceTaskDeleteCascadeRetainsOwner(t *testing.T) {
 		t.Fatalf("absent inventory must allow task delete: %v", err)
 	}
 }
+
+func TestNomadCleanupEvidenceRunningRowDeleteGuard(t *testing.T) {
+	ctx := context.Background()
+	for _, phase := range []string{"ready", nomadPhaseCleanupPending, nomadPhaseQuarantined} {
+		t.Run(phase+" retains", func(t *testing.T) {
+			fx := newPublishFixture(t)
+			setNomadPhase(t, fx, phase)
+			if err := fx.repo.DeleteExecutorRunningBySessionID(ctx, publishSessionID); !errors.Is(err, ErrNomadInventoryRetained) {
+				t.Fatalf("DeleteExecutorRunningBySessionID error = %v, want ErrNomadInventoryRetained", err)
+			}
+			running, err := fx.repo.GetExecutorRunningBySessionID(ctx, publishSessionID)
+			if err != nil {
+				t.Fatalf("retained row must survive: %v", err)
+			}
+			err = fx.repo.DeleteExecutorRunningIfCurrent(ctx, publishSessionID, running.AgentExecutionID, running.UpdatedAt)
+			if !errors.Is(err, ErrNomadInventoryRetained) {
+				t.Fatalf("DeleteExecutorRunningIfCurrent error = %v, want ErrNomadInventoryRetained", err)
+			}
+		})
+	}
+	t.Run("absent tombstone is deletable", func(t *testing.T) {
+		fx := newPublishFixture(t)
+		setNomadPhase(t, fx, nomadPhaseCleanupPending)
+		setNomadPhase(t, fx, nomadPhaseAbsent)
+		if err := fx.repo.DeleteExecutorRunningBySessionID(ctx, publishSessionID); err != nil {
+			t.Fatalf("absent tombstone must be deletable: %v", err)
+		}
+	})
+}

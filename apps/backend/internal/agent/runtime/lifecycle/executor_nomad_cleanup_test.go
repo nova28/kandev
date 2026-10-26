@@ -12,6 +12,7 @@ import (
 	"go.uber.org/zap/zaptest/observer"
 
 	"github.com/kandev/kandev/internal/agent/nomad"
+	"github.com/kandev/kandev/internal/agentruntime"
 	"github.com/kandev/kandev/internal/common/logger"
 	"github.com/kandev/kandev/internal/task/models"
 	"github.com/kandev/kandev/internal/task/recoveryclaim"
@@ -329,5 +330,73 @@ func TestNomadCleanupEvidenceClaimIsDeterministicAndReleased(t *testing.T) {
 	run()
 	if first != seen || !strings.HasSuffix(first, nomadCleanupClaimSuffix) || writer.released != 2 {
 		t.Fatalf("claim %q then %q, released %d", first, seen, writer.released)
+	}
+}
+
+type rereadClaimWriter struct {
+	claimStoreWriter
+	row *models.ExecutorRunning
+}
+
+func (w *rereadClaimWriter) GetExecutorRunningBySessionID(context.Context, string) (*models.ExecutorRunning, error) {
+	return w.row, nil
+}
+
+func TestNomadCleanupEvidenceClaimedCleanupReReadsCompetingHoldersAbsence(t *testing.T) {
+	f := prepareNomadCleanupFixture(t)
+	state, err := nomad.EnvironmentStateFromMetadata(f.request.Metadata)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.Phase = nomadPhaseAbsent
+	state.DrainReceiptDigest = strings.Repeat("a", 64)
+	state.DrainReceiptGeneration = state.Generation
+	state.Revision++
+	metadata := cloneRemoteRecoveryRecord(&models.ExecutorRunning{Metadata: f.request.Metadata}).Metadata
+	if err := nomad.PutEnvironmentState(metadata, state); err != nil {
+		t.Fatal(err)
+	}
+	writer := &rereadClaimWriter{row: &models.ExecutorRunning{
+		SessionID: f.request.SessionID, TaskID: f.request.TaskID, AgentExecutionID: f.request.InstanceID,
+		Runtime: agentruntime.RuntimeNomad, Metadata: metadata,
+	}}
+	manager := &Manager{runningWriter: writer, logger: newTestLogger()}
+	err = manager.withFreshNomadCleanupClaim(context.Background(), f.request,
+		func(_ context.Context, _ string, fresh *ExecutorCreateRequest) error {
+			got, err := nomad.EnvironmentStateFromMetadata(fresh.Metadata)
+			if err != nil {
+				return err
+			}
+			if got.Phase != nomadPhaseAbsent || got.DrainReceiptDigest != state.DrainReceiptDigest {
+				t.Fatalf("claimed request phase=%q receipt=%q, want the competing holder's absence", got.Phase, got.DrainReceiptDigest)
+			}
+			return nil
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer.row.AgentExecutionID = "another-execution"
+	err = manager.withFreshNomadCleanupClaim(context.Background(), f.request,
+		func(context.Context, string, *ExecutorCreateRequest) error {
+			t.Fatal("rotated execution must not run cleanup")
+			return nil
+		})
+	if !errors.Is(err, models.ErrExecutionRotated) {
+		t.Fatalf("rotated execution error = %v", err)
+	}
+}
+
+func TestNomadCleanupEvidenceAbsentFenceIsClassifiedAndQuarantined(t *testing.T) {
+	f := prepareNomadCleanupFixture(t)
+	f.fenceOK, f.fenceAbsent = false, true
+	err := runNomadCleanupFixture(f)
+	if !errors.Is(err, ErrNomadCleanupRetained) || !strings.Contains(err.Error(), nomadCleanupReasonFenceAbsent) {
+		t.Fatalf("cleanup = %v, want retained with %s", err, nomadCleanupReasonFenceAbsent)
+	}
+	if f.cleanup.drainCalls != 0 || f.cleanup.stopCalls != 0 {
+		t.Fatalf("drain=%d stop=%d without an owner record", f.cleanup.drainCalls, f.cleanup.stopCalls)
+	}
+	if state := f.lastCheckpoint(t); state.QuarantineState == "" {
+		t.Fatal("absent owner record must leave the worker quarantined")
 	}
 }

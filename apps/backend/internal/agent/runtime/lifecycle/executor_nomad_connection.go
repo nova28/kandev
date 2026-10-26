@@ -325,6 +325,10 @@ func nomadHandshakeHTTPStatus(message string) (int, bool) {
 	return status, parseErr == nil
 }
 
+// errNomadWorkerFenceAbsent reports that the worker holds no owner record at
+// all, as opposed to a record that belongs to something else.
+var errNomadWorkerFenceAbsent = errors.New("verify Nomad worker fence: no owner record is present")
+
 func verifyNomadWorkerFence(ctx context.Context, client *ssh.Client, profile nomad.ProfileConfig, state nomad.EnvironmentState) error {
 	if client == nil || state.AllocationID == "" || state.NodeID != profile.NodeID || state.JobID == "" ||
 		state.OperationID == "" || state.InputDigest == "" {
@@ -337,12 +341,19 @@ func verifyNomadWorkerFence(ctx context.Context, client *ssh.Client, profile nom
 		state.OperationID, state.InputDigest, state.JobID,
 	}, ":") + "\n" + state.AllocationID
 	command := "f=" + shellQuote(fenceOwnerPath) +
-		`; [ ! -L "$f" ] && [ -f "$f" ] && [ "$(stat -f %Lp "$f")" = 600 ] && [ "$(cat "$f")" = ` + shellQuote(owner) + ` ] && printf verified`
+		`; if [ -L "$f" ]; then :; elif [ ! -e "$f" ]; then printf absent` +
+		`; elif [ -f "$f" ] && [ "$(stat -f %Lp "$f")" = 600 ] && [ "$(cat "$f")" = ` + shellQuote(owner) + ` ]; then printf verified; fi`
 	output, _, err := runSSHCommand(ctx, client, command)
-	if err != nil || strings.TrimSpace(output) != "verified" {
+	if err != nil {
 		return errors.New("verify Nomad worker fence: exact private owner record is unavailable")
 	}
-	return nil
+	switch strings.TrimSpace(output) {
+	case "verified":
+		return nil
+	case "absent":
+		return errNomadWorkerFenceAbsent
+	}
+	return errors.New("verify Nomad worker fence: exact private owner record is unavailable")
 }
 
 func deleteNomadAgentctlInstance(control *agentctl.ControlClient, instanceID string) {
