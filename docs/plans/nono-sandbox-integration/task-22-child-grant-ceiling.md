@@ -25,6 +25,7 @@ Check requested child grants against the parent guard at creation, in the child-
 
 - Optional `sandbox_grants` object on task creation; the pre-insert `InheritTaskGuard` and `AdmitTask` hook in `sandbox_creation.go` moves inside the insert transaction; typed error `sandbox_outside_ceiling`; role-and-access containment; inherit-exactly for a child requesting nothing; no ceiling for an unguarded parent.
 - Parent guard read in the insert transaction; launch-time `checkParentGuard` stays.
+- `sandbox_grants` request shape, `narrowing` stored in `sandbox_task_guards`, effective policy compiled at launch, `sandbox_grants_invalid` and `sandbox_grants_without_guard`, caller-task source kept, REST and MCP create-task surfaces, lock order workspace, step, parent row, new row.
 
 ## Acceptance
 

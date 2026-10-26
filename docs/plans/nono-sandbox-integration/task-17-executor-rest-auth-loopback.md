@@ -24,6 +24,7 @@ Prove every agentctl REST route is authenticated or on the fixed exemption list,
 ## Scope
 
 - Route-enumeration test against the exemption list on the existing `instanceAuth`; identical 401 body and constant-time comparison; `/identity` fields `bind` and `rest_auth`; launcher loopback default behind `features.agentctlLoopbackBind` (an explicit `agent.standaloneHost` wins); code-server loopback bind for sandboxed attempts.
+- No launcher change: `agent.standaloneHost` stays the single dial and listen key; `/identity` reports `bind` and `rest_auth`; code-server binds loopback for a sandboxed create request.
 
 ## Acceptance
 

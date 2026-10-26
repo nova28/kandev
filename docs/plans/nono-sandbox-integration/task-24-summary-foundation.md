@@ -27,6 +27,7 @@ Foundation that Tasks 15, 16, 17, 18 and 19 build on: flags, summary types and e
 - Attempt columns `guard_enforced` and `git_isolation_active` (written by Task 21) read by items 012.4 and 012.7. Item, state and reason types, the summary computation and the event contract (`attempt_admitted`, `process_started`, `preview_state_changed`, `exit_diagnosed`, `token_revoked`, `git_policy_changed`, `evidence_lost`, `attempt_ended`).
 - Table `sandbox_launch_refusals` with the retention of 20 per session, written only while the summary flag is on, hidden when it is off.
 - An ordered admission-check registry in the requirement's evaluation order that Tasks 15 and 19 register checks into.
+- Events also include `handshake_completed`, `evidence_restored` and `process_start_failed`; per-attempt sequence numbers and serial application; the 10 s `/identity` evidence probe (30 s to `evidence_lost`); summary item set is the 14 guarantee items; the indicator matrix row for `degraded` with any non-failed status.
 
 ## Acceptance
 

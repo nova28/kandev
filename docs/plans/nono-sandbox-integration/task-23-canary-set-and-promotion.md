@@ -49,6 +49,7 @@ Implement every canary in the design table on the Task 20 framework and run the 
 - All canaries of the design table with their controls, run with the suite's flag set (all four flags on, environment overrides). `profiles.yaml` is not in `conformance-scope.txt`; the promotion commit adds the artifacts and `acceptance.md` lines and flips the three prod flags, and `--verify-release` passes at that commit.
 - One full run per required promotion cell, recorded in `acceptance.md` with `--acceptance-line`.
 - Runtime flag promotion changes for the three new flags once `--verify-release` passes.
+- Promotion is one pull request setting `prod: true` for `features.sandboxPolicies` and the three new flags, whose required check runs `--verify-release` on its head; the `G1_pin_policy_change` control uses an operator-started launch after a binding change.
 
 ## Acceptance
 

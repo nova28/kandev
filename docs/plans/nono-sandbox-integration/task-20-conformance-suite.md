@@ -28,6 +28,7 @@ Implement `cmd/sandbox-conformance`: the scripted operator journey with a real a
 - Journey driver, fixture generator with generated marker names, step bounds and not-applicable reasons from the closed list.
 - Canary framework: probe, control, `contained`/`escaped`/`invalid`/`not_applicable`/`error`; wrapping of the 011.11 darwin suite.
 - Self-hosted runner workflow (manual and scheduled, never forks, concurrency group per runner, cleanup trap), JSON artifact with `scope_hash`, `conformance-scope.txt`.
+- Journey expected summary and indicator after each step, the darwin result mapping with `L_<name>` liveness checks, and the `scope_hash` algorithm of the companion design; the journey asserts effective flags instead of an enable step.
 
 ## Acceptance
 

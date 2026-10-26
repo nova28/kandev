@@ -26,6 +26,7 @@ Serve sandboxed-attempt previews (HTML preview and session port proxy) from a pe
 - New config key `preview.baseDomain`; assertions that it differs from and is not a parent of the UI host and that UI cookies are host-only.
 - Isolation for any task with a guard or any sandboxed attempt ever; table `task_preview_origins` with a lazily created 256-bit token; `POST /api/v1/tasks/:id/preview-ticket` single-use ticket (60 s) exchanged for a host-only cookie; 403 and 503 `preview_origin_unavailable` and 404 on a deleted task, for HTTP and WebSocket.
 - `preview_origin_unavailable` state and UI message; flag `features.previewSeparateOrigin` (registered by Task 24, off by default); ADR `2026-10-26-sandboxed-preview-origin`.
+- Transition barrier (durable "guard or any attempt" test on every request and upgrade, socket registry, post-commit close), route shape `/port-proxy/:sessionId/:port/*path` under the origin, auth-off gate by the task token, and the ticket and preview-session lifecycle (digest storage, delete-returning single use, deletion on logout or user change) of the companion design.
 
 ## Acceptance
 

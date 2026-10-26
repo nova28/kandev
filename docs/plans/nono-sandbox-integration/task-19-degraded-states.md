@@ -39,6 +39,7 @@ Replace the backend abort and the `unknown` launch failure with typed refusals, 
 - Re-admission on new-process resume, recovery and replacement (012.3), writing a refusal record on refusal; continuation runs no admission.
 - Executor capability table: only Local and Worktree supported; Settings availability gains `executors`.
 - The flag and the refusal table come from Task 24; the 012.1 keep-serving fix is not gated.
+- Export the core minimal and injected environment lists as one source and add `environment.shadowed`; define `SystemReadRoots` per host OS for `executable_readable`; run the `executor_unsupported` part of 012.12 before instance creation; read `/identity` once per launch (5 s) shared by 012.16, 012.6 and the 011.2 host test; refusal cleanup order (revoke token, delete instance, log failures); refusal-record item states and the reasons `rest_auth_none` and `token_unsupported`.
 
 ## Acceptance
 
