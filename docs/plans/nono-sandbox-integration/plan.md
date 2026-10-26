@@ -244,7 +244,7 @@ Tasks 04 to 10 belong to the #4769 author; Tasks 11 and up belong to this follow
 | 20 harness and journey | 05, 07, 09 (09 depends on 02 and 08) | 11, 12, 13, 18, 19, 21 |
 | 21 standalone integration | none | 12, 13; build also waits for both standalone changes to merge |
 | 22 child ceiling (cancelled) | none | none |
-| 24 summary foundation | 04, 10 | none |
+| 24 summary foundation | 04, 10, 12 | none |
 | 23 canary set and promotion | none | 11, 12, 13, 15, 17 to 21 |
 
 Order to a usable end-to-end path (one agent, Local and Worktree, Linux and macOS), matching the `depends_on` lists: 05 provider lifecycle so a real agent launches; 24 foundation; then 15, 17 and 18 in parallel; then 19 so failures are visible; then 21, once both standalone changes have merged; then 20, the journey for one agent, which depends on 21; then the remaining canaries of 23 and the second agent last. Task 16 (separate preview origin) is cancelled here; 012.9 reports `degraded` `preview_same_origin` until the follow-up card delivers it.
