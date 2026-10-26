@@ -135,6 +135,9 @@ type taskEnvironmentCleanup struct {
 	deleteRow                       bool
 	preserveBranches                bool
 	discardWorktreeChanges          bool
+	// keepNomadInventory keeps Nomad inventory rows through an archive: the
+	// absent tombstone and its drain receipt outlive the archived task.
+	keepNomadInventory bool
 	// agentHistory is set only for Quick Chat deletion.
 	agentHistory []agentHistoryTarget
 }
@@ -3927,6 +3930,15 @@ func (s *Service) confirmedDeadLocalRow(ctx context.Context, sessionID string) *
 	return running
 }
 
+// holdsNomadInventoryRow reports whether the session's executors_running row is
+// Nomad inventory, which archive cleanup never deletes: the absent tombstone and
+// its drain receipt are the durable cleanup evidence, and a retained row is the
+// cleanup authority itself.
+func (s *Service) holdsNomadInventoryRow(ctx context.Context, sessionID string) bool {
+	running, err := s.executors.GetExecutorRunningBySessionID(ctx, sessionID)
+	return err == nil && running != nil && running.Runtime == agentruntime.RuntimeNomad
+}
+
 // performTaskCleanup handles post-deletion cleanup operations.
 // Handles worktree cleanup, executor_running records, and quick-chat workspace directories.
 // Agent stopping is handled separately in the DeleteTask background goroutine.
@@ -3966,6 +3978,9 @@ func (s *Service) performTaskCleanup(
 		}
 		if cause := context.Cause(ctx); cause != nil {
 			return append(errs, cause)
+		}
+		if envCleanup.keepNomadInventory && s.holdsNomadInventoryRow(ctx, sessionID) {
+			continue
 		}
 		if err := s.executors.DeleteExecutorRunningBySessionID(ctx, sessionID); err != nil {
 			if errors.Is(err, models.ErrExecutorRunningNotFound) {

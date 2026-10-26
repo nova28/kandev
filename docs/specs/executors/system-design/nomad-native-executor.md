@@ -159,29 +159,29 @@ State declares version, namespace/region/datacenter, immutable job ID/create
 index, original operation/input digest, environment ID/generation, execution
 identity, allocation UUID/create index, NodeID, platform, admitted SSH target and
 pinned host fingerprint, exact allocation/workspace roots, reserved control and
-instance ports, agentctl ServerIdentity, phase and scoped drain evidence.
-Optional allocation/runtime fields are absent until observed, never invented.
-Persist credential references in the existing secret store, not secret values or
-SSH private keys in metadata. Profile edits cannot mutate a retained snapshot.
+instance ports, agentctl ServerIdentity, phase and drain evidence.
+Optional allocation/runtime fields stay absent until observed.
+Persist credential references in the secret store, never secret values or SSH
+private keys in metadata. Profile edits cannot mutate a retained snapshot.
 
 A job ID hashes environment ID + generation + original operation + installation
-identity. Names are never reused for successors. Job metadata holds full
+identity. Names are never reused. Job metadata holds the
 non-secret identity/input digest. Register with enforce-index and zero index;
-validate an existing exact job/spec on conflict. Stop lacks compare-and-delete
-in Nomad, so immutable names are necessary in addition to pre-stop identity
-checks. Allocation UUID and NodeID, not reusable node names/IP/labels, establish
-continuity. More than one allocation or an unexpected successor is unknown.
+validate an existing job/spec on conflict. Stop lacks compare-and-delete,
+so immutable names complement pre-stop identity checks. Allocation UUID and NodeID, not reusable node names/IPs/labels, establish
+continuity. More than one allocation, or a successor, is unknown.
 
 Checkpoint ownership and operation intent before dispatch, job identity after
-register, allocation identity before runtime bootstrap, then bootstrapping/ready.
-An ambiguous register response can have committed. Recover the original job
-using the original ID/digest, never blindly register a replacement. Same operation
+register, allocation identity before bootstrap, then bootstrapping/ready.
+An ambiguous register response can have committed. Recover the original job by
+ID/digest, never by blindly registering a replacement. Same operation
 with changed input conflicts. Missing job after a possibly committed request,
 empty allocation list, GCed history and unavailable control plane are unknown.
-Only positive evidence that no submit was attempted can establish pre-allocation
-absence. Keep small CAS-protected Nomad operation fences/tombstones and dedicated
-node quarantine markers as safety interlocks, not another resource inventory;
-history GC cannot erase them implicitly.
+Only positive evidence that no submit was attempted establishes pre-allocation
+absence. Keep small CAS-protected Nomad operation fences/tombstones and node quarantine
+markers as safety interlocks, not another inventory; history GC cannot erase them. The inventory row stays as the `absent`
+tombstone with its drain receipt until environment deletion; a missing row
+is never absence.
 
 ### Exact environment workspace
 
