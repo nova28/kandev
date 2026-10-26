@@ -656,6 +656,8 @@ A Nomad profile that names neither `node_id` nor `ssh_target` is a pool profile.
 
 A node is usable only when it publishes the Kandev node contract as Nomad client metadata: `kandev.attach` (`ssh` or `local`), `kandev.state_root`, and for `ssh` nodes `kandev.ssh_host`, `kandev.ssh_port` and `kandev.ssh_host_key_sha256`. A `local` node is the machine Kandev runs on. It must also publish `kandev.host_identity_sha256`, the sha256 of the token in `<kandev home>/data/nomad-host-identity`, reserve CPU and memory for Kandev, and keep its state root outside the Kandev home. A local node that fails any check is refused and never reached over SSH.
 
+Workspaces differ by node. On an `ssh` node agentctl makes a fresh checkout of each repository under the node's state root. On a `local` node (the Kandev host) Kandev adds a git worktree of its own checkout for each repository that has one, on the branch `kandev/pool/<environment-id>`; repositories without a local checkout still get a fresh checkout. Proven cleanup removes the worktree, deletes that branch and prunes the source repository. If any of those steps fails, the workspace and the branch stay in place and the node remains quarantined.
+
 `scripts/nomad-pool-onboard` prints the client block for a node. It creates the local token when needed and never edits Nomad configuration:
 
 ```bash

@@ -803,6 +803,11 @@ type ExecutorInstance struct {
 	StandaloneInstanceID string // Standalone
 	StandalonePort       int    // Standalone
 
+	// LocalWorktreeBranch is non-empty when the workspace lives on the Kandev
+	// host (a verified local pool node). Repositories with a local checkout are
+	// then provisioned as git worktrees on this per-environment branch.
+	LocalWorktreeBranch string
+
 	// Common fields
 	WorkspacePath   string
 	Metadata        map[string]interface{}

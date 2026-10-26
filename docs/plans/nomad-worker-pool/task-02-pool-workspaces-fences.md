@@ -78,4 +78,4 @@ None.
 
 ## Results
 
-In progress. Offline and ssh-node live proof done (`docs/evidence/nomad-pool-p2/`, build a1c7afce42): per-environment fence, TMPDIR scratch, workspace removal on proven cleanup, per-node quarantine scope. Remaining: local-node git worktree (REQ-003.1), then its live proof in P3.
+In progress. Offline and ssh-node live proof done (`docs/evidence/nomad-pool-p2/`, build a1c7afce42): per-environment fence, TMPDIR scratch, workspace removal on proven cleanup, per-node quarantine scope. Local-node git worktree (REQ-003.1) is implemented with offline tests (`workspace_local_worktree.go`, `WorkspaceRemoveCommand`); its live proof is in P3's two-node run.

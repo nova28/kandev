@@ -2360,6 +2360,9 @@ func (m *Manager) launchInternal(ctx context.Context, req *LaunchRequest) (*Agen
 	if rt.RequiresCloneURL() && len(reqWithWorktree.RepoSpecs()) >= minimumRepos && execInstance != nil && execInstance.Client != nil {
 		projection, projectionErr := remoteWorkspaceProjectionFromLaunch(&reqWithWorktree, includePrimaryRemoteRepository)
 		if projectionErr == nil {
+			projection, projectionErr = provisionLocalPoolWorktrees(ctx, &reqWithWorktree, execInstance, projection)
+		}
+		if projectionErr == nil {
 			projectionErr = materializeWorkspaceRepositories(ctx, execInstance.Client, projection)
 		}
 		if projectionErr != nil {

@@ -192,6 +192,9 @@ func (conn *nomadAgentctlConnection) establish(
 		AuthToken:      control.AuthToken(),
 		BootstrapNonce: bootstrapNonce,
 	}
+	if state.PlacementMode == nomad.ModePool && state.NodeAttach == nomad.AttachLocal {
+		conn.instance.LocalWorktreeBranch = nomad.PoolWorktreeBranch(state.EnvironmentID)
+	}
 	log.Info("connected to Nomad-owned agentctl", zap.String("server_identity", identity.ServerIdentity))
 	return nil
 }
