@@ -59,6 +59,19 @@ class PoolBootstrapTest(Wo06Base):
         with self.assertRaises(PreflightError):
             self.validate()
 
+    def test_ssh_client_is_optional_and_validated(self):
+        self.assertIsNone(self.validate()["ssh_client"])
+        conf = self.parent / "ssh-client.hcl"
+        conf.write_text("client {}\n")
+        conf.chmod(0o600)
+        self.config["ssh_client"] = {"pid": 4242, "config": str(conf)}
+        self.assertEqual(self.validate()["ssh_client"], {"pid": 4242, "config": str(conf)})
+        for value in ({"pid": 4242}, {"pid": 1, "config": str(conf)}, {"pid": True, "config": str(conf)},
+                      {"pid": 4242, "config": "rel.hcl"}, {"pid": 4242, "config": str(conf), "x": 1}, "x"):
+            self.config["ssh_client"] = value
+            with self.assertRaises(PreflightError, msg=str(value)):
+                self.validate()
+
     def test_pool_rejections(self):
         bad = [{}, {"placement": "spread"}, {"node_pool": "bad pool"}, {"node_pool": "kandev", "placement": "random"},
                {"node_pool": "kandev", "node_id": "x"}, {"node_pool": "kandev", "ssh_user": "a@b"},

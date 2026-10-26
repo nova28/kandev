@@ -251,7 +251,7 @@ class FakeDriverScenario(FakeQueue):
         return {"inventory": {}, "nomad": "nomad", "tree": [], "fence": "fence" + label}
 
     def workspace_layout(self, env):
-        return {"kind": "worktree"}
+        return {"kind": "worktree", "attach": env["attach"]}
 
     def kandev_jobs(self):
         return set()

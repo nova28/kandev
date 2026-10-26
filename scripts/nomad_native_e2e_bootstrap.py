@@ -25,7 +25,7 @@ _TOP_REQUIRED = {
     "schema_version", "kandev_binary", "nomad", "ssh", "workspace_root", "allocation_root",
     "cpu_mhz", "memory_mb", "repository", "expected_file", "temp_root_parent",
 }
-_TOP_OPTIONAL = {"agent_profile_name", "partition", "pool"}
+_TOP_OPTIONAL = {"agent_profile_name", "partition", "pool", "ssh_client"}
 _POOL_KEYS = {"node_pool", "placement", "ssh_user", "memory_max_mb", "host_identity_token_file"}
 _NOMAD_KEYS = {"address", "token_file", "namespace", "region", "datacenter", "node_id", "platform"}
 _SSH_KEYS = {"target", "port", "host_fingerprint", "identity_file"}
@@ -182,6 +182,17 @@ def validate_pool(value: Any) -> dict[str, Any]:
     return result
 
 
+def validate_ssh_client(value: Any) -> dict[str, Any]:
+    """The fixture's ssh-node Nomad client agent: pool-partition stops and continues exactly this process."""
+    if not isinstance(value, dict) or value.keys() != {"pid", "config"}:
+        raise PreflightError("ssh_client must contain exactly pid and config")
+    pid = _positive_int(value["pid"], "ssh_client.pid")
+    if pid <= 1:
+        raise PreflightError("ssh_client.pid is invalid")
+    config = _private_regular_file(value["config"], "ssh_client.config", max_size=1 << 20)
+    return {"pid": pid, "config": str(config)}
+
+
 def validate_bootstrap(config: Any, run: Callable[..., Any] = subprocess.run, checkout_root: Path = CHECKOUT_ROOT) -> dict[str, Any]:
     """Returns a normalized copy; raises PreflightError before anything is created."""
     if not isinstance(config, dict) or config.keys() - (_TOP_REQUIRED | _TOP_OPTIONAL) or _TOP_REQUIRED - config.keys():
@@ -237,4 +248,5 @@ def validate_bootstrap(config: Any, run: Callable[..., Any] = subprocess.run, ch
         "agent_profile_name": profile_name,
         "partition": validate_partition(config["partition"], address) if "partition" in config else None,
         "pool": validate_pool(config["pool"]) if "pool" in config else None,
+        "ssh_client": validate_ssh_client(config["ssh_client"]) if "ssh_client" in config else None,
     }

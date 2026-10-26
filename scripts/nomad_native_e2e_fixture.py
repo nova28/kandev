@@ -258,6 +258,21 @@ def _default_kill_group(pgid: int) -> None:
         pass
 
 
+def _default_process_command(pid: int) -> str | None:
+    """Command line of a local pid, or None when it does not exist."""
+    out = subprocess.run(["ps", "-p", str(pid), "-ww", "-o", "command="], capture_output=True, text=True, env={**os.environ, "LC_ALL": "C"}, check=False).stdout
+    return out.strip() or None
+
+
+def _default_signal_local(pid: int, sig: str) -> None:
+    """Send STOP or CONT to one local pid. Callers verify the process identity first."""
+    if sig not in ("STOP", "CONT"):
+        raise PreflightError("only STOP and CONT may be sent to a fixture process")
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 1 or pid == os.getpid():
+        raise PreflightError("refusing to signal this pid")
+    os.kill(pid, signal.SIGSTOP if sig == "STOP" else signal.SIGCONT)
+
+
 def _default_nomad_stop(address: str, token: str, namespace: str, job_id: str) -> Any:
     """Operator end of one fixture job: purge is always false so the job and its allocations stay inspectable."""
     if not _JOB_ID.fullmatch(job_id):
@@ -421,6 +436,8 @@ class Ops:
     nomad_set_eligibility: Callable[[str, str, str, str, bool], Any] = _default_nomad_set_eligibility
     relay_factory: Callable[[tuple[str, int], tuple[str, int]], Any] | None = None
     signal_pid: Callable[[Callable[[str], tuple[int, str]], int, str], str] = _default_signal_pid
+    process_command: Callable[[int], str | None] = _default_process_command
+    signal_local: Callable[[int, str], None] = _default_signal_local
     nomad_delete_variable: Callable[[str, str, str, str], str] = _default_nomad_delete_variable
     scenario_timeout: float = 300.0
     poll_interval: float = 1.0

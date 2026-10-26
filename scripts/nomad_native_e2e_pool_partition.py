@@ -1,10 +1,12 @@
-"""Pool partition scenario: one node of a two-node pool is cut off from the Nomad server, the other is untouched.
+"""Pool partition scenario: the ssh node of a two-node pool is cut off from the Nomad server, the local node is untouched.
 
-pool-partition launches two environments (one per node), partitions the ssh node's Nomad client with the runner's TCP
-relay and proves, while partitioned and after the heal, that the local environment is unchanged and still answers a
-prompt, while the ssh environment keeps its single original allocation with no replacement and no new job. It then
-archives both through production cleanup. The fixture's ssh-node Nomad client must use the relay's listen address
-(partition.listen) as its servers address, so the relay sits between that client and the server RPC.
+pool-partition launches two environments (one per node) and freezes the ssh node's Nomad client agent with SIGSTOP, so it
+stops heartbeating while the shared server and the other client keep running. While frozen and after SIGCONT it proves
+that the local environment is unchanged and still answers a prompt, while the ssh environment keeps its single original
+allocation with no replacement and no new job. It then archives both through production cleanup. The agent's pid and
+config path come from the bootstrap `ssh_client` block and its command line is verified before every signal; its raw_exec
+allocations run under a separate executor process and keep running while the agent is frozen. A single-node relay cannot
+do this on a one-server fixture because the server RPC is shared by every client.
 """
 
 from __future__ import annotations
@@ -22,15 +24,42 @@ from nomad_native_e2e import PreflightError
 
 SCENARIO = "pool-partition"
 PROBE_PROMPT = "For this inert partition check, output exactly WO05_PARTITION_LOCAL_PROBE"
-ISOLATION_FAILURE = "the ssh node never left ready during the partition: the client was not isolated (RPC bypass)"
+ISOLATION_FAILURE = "the ssh node never left ready while its Nomad client agent was stopped"
+FROZEN_NOTE = ("the ssh node Nomad client agent (pid {pid}) may still be stopped; run `kill -CONT {pid}` after confirming "
+               "`ps -p {pid} -o command=` shows the nomad agent started with {config}")
 
 
 def check_scenario_config(cfg: dict[str, Any]) -> None:
     pool.check_scenario_config(cfg, "pool-two-node")
-    partition = cfg.get("partition")
-    if not isinstance(partition, dict) or not partition.get("listen") or not partition.get("upstream"):
-        raise PreflightError("pool-partition requires a partition block (listen, upstream) in the bootstrap config; "
-                             "the ssh node's Nomad client must use partition.listen as its servers address")
+    client = cfg.get("ssh_client")
+    if not isinstance(client, dict) or not client.get("pid") or not client.get("config"):
+        raise PreflightError("pool-partition requires an ssh_client block (pid, config) in the bootstrap config naming the "
+                             "ssh node's Nomad client agent process")
+
+
+class ClientFreezer:
+    """STOP and CONT of one recorded Nomad client agent. The process identity is verified before every signal."""
+
+    def __init__(self, ops: fx.Ops, client: dict[str, Any]):
+        self.ops, self.pid, self.config, self.partitioned = ops, int(client["pid"]), str(client["config"]), False
+
+    def verify(self) -> None:
+        command = self.ops.process_command(self.pid)
+        if command is None:
+            raise PreflightError(f"ssh node Nomad client agent pid {self.pid} is not running")
+        words = command.split()
+        if "agent" not in words or not any(Path(w).name == "nomad" for w in words) or self.config not in command:
+            raise PreflightError(f"pid {self.pid} is not the recorded Nomad client agent; refusing to signal it")
+
+    def partition(self) -> None:
+        self.verify()
+        self.partitioned = True
+        self.ops.signal_local(self.pid, "STOP")
+
+    def heal(self) -> None:
+        self.verify()
+        self.ops.signal_local(self.pid, "CONT")
+        self.partitioned = False
 
 
 class PartitionScenario(pool.TwoNodeScenario):
@@ -91,7 +120,7 @@ class PartitionScenario(pool.TwoNodeScenario):
         return after
 
 
-def _partition_steps(runner: fx.Runner, cfg: dict[str, Any], ops: fx.Ops, scn: PartitionScenario, relay: Any, guard: wo07.OperatorGuard) -> dict[str, Any]:
+def _partition_steps(runner: fx.Runner, cfg: dict[str, Any], ops: fx.Ops, scn: PartitionScenario, freezer: ClientFreezer, guard: wo07.OperatorGuard) -> dict[str, Any]:
     step = runner.step
     scn.data["node"] = step("verify-node-identity", scn.verify_node_identity)
     step("poll-node-ready", lambda: scn.poll(scn.node_ready, "Nomad node is not ready and eligible"))
@@ -129,7 +158,7 @@ def _partition_steps(runner: fx.Runner, cfg: dict[str, Any], ops: fx.Ops, scn: P
         return status
 
     def partition() -> None:
-        relay.partition()
+        freezer.partition()
 
         def isolated() -> bool:
             observe("during")
@@ -147,7 +176,7 @@ def _partition_steps(runner: fx.Runner, cfg: dict[str, Any], ops: fx.Ops, scn: P
     step("partition-and-assert-isolation", partition)
 
     def heal() -> dict[str, Any]:
-        relay.heal()
+        freezer.heal()
         scn.poll(lambda: scn.node_info(remote["node_id"]) == ("ready", "eligible"), "the ssh node did not return to ready and eligible after the partition healed")
         status = scn.poll(lambda: (lambda s: s if s not in (None, "unknown") else None)(observe("healed")),
                           "allocation of the ssh environment stayed unknown after the partition healed")
@@ -182,25 +211,23 @@ def drive_pool_partition(runner: fx.Runner, cfg: dict[str, Any], ops: fx.Ops, ro
     check_scenario_config(cfg)
     guard = wo07.OperatorGuard(ops)
     scn = PartitionScenario(runner, cfg, SCENARIO, guard)
-    relay = None
+    freezer = ClientFreezer(ops, cfg["ssh_client"])
     try:
-        relay = wo06._make_relay(ops, cfg)
-        cleanup = _partition_steps(runner, cfg, ops, scn, relay, guard)
+        cleanup = _partition_steps(runner, cfg, ops, scn, freezer, guard)
     except Exception as exc:
-        # The relay is healed and keeps serving so cleanup-fixture can reach the client; it dies with this process.
-        note = wo06.RELAY_INSTRUCTION.format(upstream=cfg["partition"]["upstream"])
-        if relay is not None:
+        note = FROZEN_NOTE.format(pid=freezer.pid, config=freezer.config)
+        if freezer.partitioned:
             try:
-                relay.heal()
+                freezer.heal()
+                note = "the ssh node Nomad client agent was continued"
             except Exception as heal_exc:
-                note += f" (the relay could not be healed: {heal_exc})"
-            scn.data["relay_partitioned_at_exit"] = bool(getattr(relay, "partitioned", False))
-        scn.data["relay_note"] = note
+                note += f" (it could not be continued: {heal_exc})"
+        scn.data["client_stopped_at_exit"] = freezer.partitioned
+        scn.data["client_note"] = note
         raise PreflightError(f"{exc}; {note}") from exc
     finally:
         guard.restore()
-    scn.data["relay_partitioned_at_exit"] = bool(getattr(relay, "partitioned", False))
-    relay.stop()
+    scn.data["client_stopped_at_exit"] = freezer.partitioned
     return {"scenario": scn.name, "pool": True, "partition": True, "production_cleanup": True, "operator_cleanup_used": False,
             "release": "none", "cleanup": cleanup, "observed_statuses": scn.data["observed_statuses"], "environments": wo07._env_report(scn)}
 

@@ -40,6 +40,7 @@ from nomad_native_e2e import PreflightError
 SCENARIO = "pool-refusals"
 HOST_KEY_META = "kandev.ssh_host_key_sha256"
 IDENTITY_META = "kandev.host_identity_sha256"
+ROLLBACK_QUARANTINE_REASON = "runtime_identity_unrecorded"  # a rolled-back launch with no recorded runtime identity quarantines its node
 WRONG_HOST_KEY = "SHA256:" + "A" * 43
 HOST_KEY_CAUSES = ("host key changed", "host key mismatch")
 IDENTITY_CAUSES = ("the node host identity does not match this host",)
@@ -65,7 +66,7 @@ def check_scenario_config(cfg: dict[str, Any]) -> None:
 
 
 class NodeMeta:
-    """Overrides and unsets the host key entry of one node's dynamic metadata (POST /v1/client/metadata)."""
+    """Overrides and restores the host key entry of one node's dynamic metadata (POST /v1/client/metadata)."""
 
     def __init__(self, address: str, token: str, region: str, opener: Any = None):
         self.address, self.token, self.region = address, token, region
@@ -186,7 +187,7 @@ class RefusalScenario(pool.TwoNodeScenario):
     def override_host_key(self) -> dict[str, Any]:
         node_id, original = self.nodes["ssh"]["id"], self.nodes["ssh"]["meta"][HOST_KEY_META]
         self.override = {"node_id": node_id, "key": HOST_KEY_META, "original": original, "override": WRONG_HOST_KEY, "applied": True,
-                         "restored": False, "restore_with": f"nomad node meta apply -node-id {node_id} -unset {HOST_KEY_META}"}
+                         "restored": False, "restore_with": f"nomad node meta apply -node-id {node_id} {HOST_KEY_META}={original}"}
         self.save_restore_record()
         self.meta.apply(node_id, WRONG_HOST_KEY)
         self.poll(lambda: self.meta_value(node_id) == WRONG_HOST_KEY,
@@ -197,7 +198,7 @@ class RefusalScenario(pool.TwoNodeScenario):
         record = self.override
         if record is None or record["restored"]:
             return "not needed"
-        self.meta.apply(record["node_id"], None)
+        self.meta.apply(record["node_id"], record["original"])
         self.poll(lambda: self.meta_value(record["node_id"]) == record["original"],
                   f"the original {HOST_KEY_META} is not visible again in the node metadata before timeout")
         record["restored"] = True
@@ -364,11 +365,15 @@ class RefusalScenario(pool.TwoNodeScenario):
         self.focus(env)
         self.archive(task)
         settled, notes = self.try_production_cleanup(env)
-        marker = self.get_or_none(wo06.quarantine_marker_path(env["node_id"], self.nomad_cfg["namespace"]))
+        marker_path = wo06.quarantine_marker_path(env["node_id"], self.nomad_cfg["namespace"])
+        marker = self.get_or_none(marker_path)
+        quarantine = None
         if marker is not None:
-            raise PreflightError(f"{case['name']}: a quarantine marker exists for the node after the refusal; "
-                                 f"{wo06.quarantine_operator_step(env['node_id'], self.nomad_cfg['namespace'])}")
-        if settled is not None:
+            if ROLLBACK_QUARANTINE_REASON not in json.dumps(marker):
+                raise PreflightError(f"{case['name']}: a quarantine marker exists for the node with a reason other than "
+                                     f"{ROLLBACK_QUARANTINE_REASON}; {wo06.quarantine_operator_step(env['node_id'], self.nomad_cfg['namespace'])}")
+            quarantine = {"reason": ROLLBACK_QUARANTINE_REASON, "marker": f"kandev/quarantine/{env['node_id']}"}
+        if settled is not None and quarantine is None:
             result = {"path": "production-archive-cleanup", "production": settled}
         else:
             retained = self.state_summary(self.read_state(env))
@@ -376,6 +381,10 @@ class RefusalScenario(pool.TwoNodeScenario):
             leftovers = self.remove_pool_leftovers(env, True)
             result = {"path": "operator-teardown", "retained_state": retained, "production_note": notes, "released": released,
                       "leftovers": leftovers}
+            if quarantine is not None:
+                self.ops.nomad_delete_variable(self.nomad_cfg["address"], self.r.token, self.nomad_cfg["namespace"], quarantine["marker"])
+                self.poll(lambda: self.get_or_none(marker_path) is None, f"{case['name']}: the quarantine marker still exists after deletion")
+                result["quarantine"] = {**quarantine, "marker_deleted": True}
         self.focus(env)
         if self.tree(env):
             raise PreflightError(f"{case['name']}: worker processes remain after the task ended")

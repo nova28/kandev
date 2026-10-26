@@ -64,11 +64,15 @@ node can add a git worktree of it.
 invocation of `scripts/nomad-native-e2e run --require-real --create-fixture --scenario <name>`.
 
 - `pool-queue` sizes the profile memory per run so each node holds one environment. No extra setup.
-- `pool-partition` needs a `partition` block (`listen`, `upstream`) in the runner config, and the
-  ssh node's Nomad client must use `servers = ["<partition.listen>"]` so the runner's relay sits
-  between that client and the server RPC (`upstream` is the real RPC address). The local client
-  connects directly. If the ssh node never leaves `ready` after the partition, the run fails with
-  an RPC-bypass message. The run sends one inert prompt to the local environment while partitioned.
+- `pool-partition` needs an `ssh_client` block (`pid`, `config`) in the runner config naming the
+  ssh node's Nomad client agent process and its config file. The runner verifies the pid's
+  command line (a `nomad agent` process started with that config path) before every signal,
+  freezes it with SIGSTOP, waits for the ssh node to leave `ready`, and always sends SIGCONT
+  afterwards, including on failure. The ssh node's raw_exec allocations run under a separate
+  executor process and keep running while the agent is frozen. A relay in front of the server
+  RPC cannot isolate one client on a one-server fixture, so the relay stays only for the
+  single-node WO06 disconnect scenario. The run sends one inert prompt to the local
+  environment while the ssh agent is frozen.
 - `pool-refusals` overrides the ssh node's `kandev.ssh_host_key_sha256` through Nomad dynamic node
   metadata (Nomad 1.5 or later; the runner's token needs `node:write`), and swaps the run-home
   host identity token (read on every launch, so no backend restart). It needs one eligible local

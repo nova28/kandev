@@ -7,7 +7,7 @@ import nomad_native_e2e_pool_partition as pp
 from nomad_native_e2e import PreflightError
 
 CFG = {"nomad": {"address": "http://127.0.0.1:4646"}, "pool": {"node_pool": "kandev"},
-       "partition": {"listen": "127.0.0.1:45001", "upstream": "127.0.0.1:45002"}}
+       "ssh_client": {"pid": 4242, "config": "/fx/ssh-client.hcl"}}
 ENVS = {
     "A": {"label": "A", "attach": "local", "state_root": "/l", "node_id": "n-local", "job_id": "job-l", "allocation_id": "al-l",
           "environment_id": "env-l", "session_id": "s-l", "task_id": "t-l"},
@@ -53,27 +53,26 @@ class World:
             self.tree["env-s"] = [(7, "q")]
 
 
-class Relay:
-    def __init__(self, world, fail_heal=False):
-        self.world, self.calls, self.partitioned, self.fail_heal = world, [], False, fail_heal
+class Process:
+    """Fake local nomad client agent: ps output plus signal log wired into the world."""
 
-    def start(self):
-        self.calls.append("start")
-
-    def partition(self):
-        self.calls.append("partition")
-        self.partitioned = True
-        self.world.on_partition()
-
-    def heal(self):
-        self.calls.append("heal")
-        if self.fail_heal:
-            raise OSError("boom")
+    def __init__(self, world, command="/fx/bin/nomad agent -config=/fx/ssh-client.hcl", fail_cont=False):
+        self.world, self.command, self.calls, self.fail_cont = world, command, [], fail_cont
         self.partitioned = False
-        self.world.on_heal()
 
-    def stop(self):
-        self.calls.append("stop")
+    def process_command(self, pid):
+        return self.command
+
+    def signal(self, pid, sig):
+        self.calls.append((pid, sig))
+        if sig == "STOP":
+            self.partitioned = True
+            self.world.on_partition()
+        else:
+            if self.fail_cont:
+                raise OSError("boom")
+            self.partitioned = False
+            self.world.on_heal()
 
 
 def make_runner(world, ops):
@@ -147,7 +146,7 @@ class FakeScn(pp.PartitionScenario):
 
 
 class PartitionBase(unittest.TestCase):
-    def run_drive(self, cfg=CFG, fail_heal=False, probe_accepted=True, probe_adds=True, **flags):
+    def run_drive(self, cfg=CFG, fail_heal=False, probe_accepted=True, probe_adds=True, command=None, **flags):
         world = World(**flags)
         ticks = iter(range(10000))
         ops = fx.Ops()
@@ -155,8 +154,8 @@ class PartitionBase(unittest.TestCase):
         ops.clock = lambda: next(ticks)
         ops.scenario_timeout, ops.poll_interval = 30, 0
         ops.nomad_stop = lambda *a: None
-        self.relay = Relay(world, fail_heal)
-        ops.relay_factory = lambda listen, upstream: self.relay
+        self.proc = Process(world, fail_cont=fail_heal, **({"command": command} if command else {}))
+        ops.process_command, ops.signal_local = self.proc.process_command, self.proc.signal
 
         def prompt(payload):
             world.prompts.append(payload["session_id"])
@@ -182,14 +181,14 @@ class PartitionBase(unittest.TestCase):
 
 
 class ConfigTest(unittest.TestCase):
-    def test_partition_block_is_required(self):
+    def test_ssh_client_block_is_required(self):
         pp.check_scenario_config(CFG)
-        for cfg in ({**CFG, "partition": None}, {**CFG, "partition": {"listen": "x"}},
-                    {k: v for k, v in CFG.items() if k != "partition"}, {k: v for k, v in CFG.items() if k != "pool"}):
+        for cfg in ({**CFG, "ssh_client": None}, {**CFG, "ssh_client": {"pid": 4}},
+                    {k: v for k, v in CFG.items() if k != "ssh_client"}, {k: v for k, v in CFG.items() if k != "pool"}):
             with self.assertRaises(PreflightError):
                 pp.check_scenario_config(cfg)
 
-    def test_drive_refuses_before_touching_anything_without_partition(self):
+    def test_drive_refuses_before_touching_anything_without_ssh_client(self):
         t = PartitionBase()
         with self.assertRaises(PreflightError):
             t.run_drive(cfg={"nomad": CFG["nomad"], "pool": CFG["pool"]})
@@ -202,7 +201,7 @@ class DriveTest(PartitionBase):
     def test_happy_path(self):
         report = self.run_drive()
         self.assertTrue(report["production_cleanup"] and not report["operator_cleanup_used"])
-        self.assertEqual(self.relay.calls, ["start", "partition", "heal", "stop"])
+        self.assertEqual(self.proc.calls, [(4242, "STOP"), (4242, "CONT")])
         self.assertEqual(self.world.prompts, ["s-l"])
         self.assertEqual([x for x in self.world.log if x[0] == "archive"], [("archive", "t-l"), ("archive", "t-s")])
         self.assertEqual(sorted(x[1] for x in self.world.log if x[0] == "cleaned"), ["A", "B"])
@@ -211,9 +210,26 @@ class DriveTest(PartitionBase):
         self.assertIn(("during", "disconnected"), phases)
         self.assertEqual(self.runner.evidence.data["after_heal"]["ssh_allocation_client_status"], "running")
 
-    def test_relay_bypass_when_the_node_never_leaves_ready(self):
-        message = self.fails("the client was not isolated (RPC bypass)", bypass=True)
-        self.assertEqual(self.relay.calls[-1], "heal")
+    def test_client_never_leaving_ready_fails_and_continues_it(self):
+        self.fails("never left ready while its Nomad client agent was stopped", bypass=True)
+        self.assertEqual(self.proc.calls[-1], (4242, "CONT"))
+        self.assertFalse(self.runner.evidence.data["client_stopped_at_exit"])
+
+    def test_identity_mismatch_refuses_to_signal(self):
+        for command in ("/usr/bin/sleep 100", "/fx/bin/nomad agent -config=/other.hcl", "/fx/bin/nomad version /fx/ssh-client.hcl"):
+            self.fails("not the recorded Nomad client agent", command=command)
+            self.assertEqual(self.proc.calls, [])
+
+    def test_vanished_process_refuses(self):
+        world = World()
+        proc = Process(world)
+        proc.process_command = lambda pid: None
+        ops = fx.Ops()
+        ops.process_command, ops.signal_local = proc.process_command, proc.signal
+        with self.assertRaises(PreflightError) as ctx:
+            pp.ClientFreezer(ops, CFG["ssh_client"]).partition()
+        self.assertIn("is not running", str(ctx.exception))
+        self.assertEqual(proc.calls, [])
 
     def test_local_env_drift_fails(self):
         self.fails("remote process tree of environment A changed", local_tree=True)
@@ -241,16 +257,16 @@ class DriveTest(PartitionBase):
     def test_ssh_tree_changed_after_heal(self):
         self.fails("remote process tree of environment B changed", ssh_tree_after=True)
 
-    def test_relay_healed_not_stopped_with_note_on_failure(self):
-        message = self.fails("dies with it", bypass=True)
-        self.assertIn("127.0.0.1:45002", message)
-        self.assertEqual(self.relay.calls, ["start", "partition", "heal"])
-        self.assertFalse(self.relay.partitioned)
-        self.assertFalse(self.runner.evidence.data["relay_partitioned_at_exit"])
+    def test_failure_note_names_the_client_and_continue_command(self):
+        message = self.fails("was continued", ssh_lost=True)
+        self.assertEqual(self.proc.calls, [(4242, "STOP"), (4242, "CONT")])
+        self.assertFalse(self.proc.partitioned)
 
-    def test_unhealable_relay_is_reported(self):
-        self.fails("could not be healed: boom", fail_heal=True, bypass=True)
-        self.assertTrue(self.runner.evidence.data["relay_partitioned_at_exit"])
+    def test_unresumable_client_is_reported_with_the_manual_command(self):
+        message = self.fails("could not be continued: boom", fail_heal=True, bypass=True)
+        self.assertIn("kill -CONT 4242", message)
+        self.assertIn("/fx/ssh-client.hcl", message)
+        self.assertTrue(self.runner.evidence.data["client_stopped_at_exit"])
 
     def test_operator_cleanup_fails_the_run_and_restores_ops(self):
         original = fx.Ops.nomad_stop

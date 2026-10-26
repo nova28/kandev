@@ -51,7 +51,23 @@ the quarantined environment A's allocation directory stayed on the ssh node. Kee
 while quarantined is correct; the readmission procedure now deletes it once absence is
 verified (`readmit-remove-allocation-directory` step, public docs updated).
 
+## Second live round at c8d432d2f9: findings and fixes
+
+| Scenario | Result | Finding | Fix |
+|---|---|---|---|
+| `pool-node-quarantine` | rc 0 | none | none |
+| `pool-queue` | rc 2 | runner: stale env dict, KeyError `attach` at `assert-workspace-c` | re-read `scn.envs["C"]` |
+| `pool-refusals` | rc 2 | a refused launch leaves a quarantine marker; teardown set the dynamic node meta to null | see below |
+| `pool-partition` | rc 2 | relay on the server RPC partitioned both clients | SIGSTOP/SIGCONT of the ssh client agent |
+
+Refusal quarantine: the marker is written by the rollback of a launch that never recorded a
+runtime identity (reason `runtime_identity_unrecorded`), which is existing contract. The
+runner now expects that reason, deletes the marker through operator teardown, and restores
+the node's original host-key meta value instead of nulling it. Skipping quarantine for a
+provable pre-staging refusal would need a new "never staged" state and is left as an owner
+decision.
+
 ## Pending
 
-Runner scenarios `pool-queue`, `pool-partition` and `pool-refusals` replace the manual
-procedures; offline-tested, live results are appended here after the operator runs them.
+`pool-queue`, `pool-refusals` and `pool-partition` are offline-tested; live results are
+appended here after the operator reruns them.

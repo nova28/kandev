@@ -226,7 +226,7 @@ def drive_pool_queue(runner: fx.Runner, cfg: dict[str, Any], ops: fx.Ops, root: 
         step("assert-cleaned-a", lambda: scn.assert_pool_cleaned(env_a, layouts["A"]))
         _await_c_ready(scn, step, task_c, env_a)
         scn.data["b_untouched"] = step("assert-b-untouched-after-c-placed", lambda: scn.assert_untouched("B", task_b, snap_b))
-        layouts["C"] = step("assert-workspace-c", lambda: scn.workspace_layout(env_c))
+        layouts["C"] = step("assert-workspace-c", lambda: scn.workspace_layout(scn.envs["C"]))
         for label, task in (("B", task_b), ("C", task_c)):
             step(f"archive-task-{label.lower()}", lambda t=task: scn.archive(t))
         for label in ("B", "C"):

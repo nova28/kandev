@@ -57,7 +57,7 @@ class Sim:
             return json.loads(json.dumps(self.nodes[path.rsplit("/", 1)[1]]))
         if path.startswith("/v1/var/"):
             if any(node_id in path for node_id in self.markers):
-                return {"Path": "marker"}
+                return {"Path": "marker", "Items": {"reason": getattr(self, "marker_text", "x")}}
             raise PreflightError("Nomad GET failed with status 404")
         if path.startswith("/v1/job/") and path.endswith("/allocations"):
             return [{"ID": "al1", "NodeID": self.tasks_node(), "ClientStatus": "failed"}]
@@ -120,7 +120,7 @@ class FakeMeta:
     def apply(self, node_id, value):
         self.sim.calls.append(("meta", node_id, value))
         meta = self.sim.nodes[node_id]["Meta"]
-        if value is None:
+        if value is None or value == REAL_KEY:
             if self.sim.flags.get("unset_fails"):
                 raise PreflightError("Nomad dynamic node metadata change is unreachable")
             meta["kandev.ssh_host_key_sha256"] = REAL_KEY
@@ -134,7 +134,7 @@ def make_runner(sim):
     runner = SimpleNamespace(home=sim.home, token=NOMAD_TOKEN, state=sim.state, evidence=sim.evidence, api=sim.api, nomad=sim.nomad,
                              inventory=sim.inventory)
     ticks = iter(range(10 ** 6))
-    runner.ops = SimpleNamespace(nomad_set_eligibility=sim.set_eligibility, retention_settle=0.0, scenario_timeout=1.0, poll_interval=0.0,
+    runner.ops = SimpleNamespace(nomad_set_eligibility=sim.set_eligibility, retention_settle=0.0, nomad_delete_variable=lambda address, token, namespace, path: sim.markers.discard(path.rsplit('/', 1)[1]) or 'deleted', scenario_timeout=1.0, poll_interval=0.0,
                                  clock=lambda: float(next(ticks)), sleep=lambda s: None)
     runner.save_state = lambda **kw: sim.state.update(kw)
     runner.use_node = lambda attach, root: None
@@ -274,8 +274,8 @@ class HappyPathTest(DriveBase):
         calls = self.sim.calls
         self.assertEqual(calls[0], ("eligibility", LOCAL, False))
         self.assertEqual(calls[1], ("meta", SSH, refusals.WRONG_HOST_KEY))
-        self.assertIn(("meta", SSH, None), calls)
-        self.assertLess(calls.index(("meta", SSH, None)), calls.index(("eligibility", SSH, False)))
+        self.assertIn(("meta", SSH, REAL_KEY), calls)
+        self.assertLess(calls.index(("meta", SSH, REAL_KEY)), calls.index(("eligibility", SSH, False)))
         self.assertEqual(calls.count(("eligibility", LOCAL, True)), 1)
         self.assertEqual(calls.count(("eligibility", SSH, True)), 1)
 
@@ -310,7 +310,7 @@ class FailureTest(DriveBase):
 
     def test_second_case_missing_the_cause_fails_and_restores_the_token(self):
         self.assert_fails("no refusal naming 'the node host identity does not match this host'", bad={2: "no_cause"})
-        self.assertIn(("meta", SSH, None), self.sim.calls)
+        self.assertIn(("meta", SSH, REAL_KEY), self.sim.calls)
 
     def test_agentctl_on_the_node_fails(self):
         self.assert_fails("agentctl is running on the ssh node", agentctl_on="ssh")
@@ -335,7 +335,7 @@ class FailureTest(DriveBase):
     def test_leftovers_that_cannot_be_removed_fail(self):
         self.assert_fails("could not be removed", leftovers=True)
 
-    def test_quarantine_marker_after_the_refusal_fails_and_is_not_overridden(self):
+    def refusal_case(self, marker_text):
         sim = Sim(self._tmp.name)
         self.sim = sim
         scn = fake_scenario_class(sim)(make_runner(sim), {"pool": {"host_identity_token_file": "/f"}}, "x", FakeMeta(sim))
@@ -343,10 +343,22 @@ class FailureTest(DriveBase):
         task = sim.launch()
         scn.envs["R1"] = {"label": "R1", "node_id": SSH, "attach": "ssh", "state_root": "/ssh-root", "job_id": JOB, "environment_id": ENV_ID}
         sim.markers.add(SSH)
+        sim.marker_text = marker_text
+        return scn, task
+
+    def test_a_marker_with_another_reason_fails_and_is_not_deleted(self):
+        scn, task = self.refusal_case("drain_failed")
         with self.assertRaises(PreflightError) as ctx:
             scn.end_case(refusals.WRONG_KEY_CASE, task)
-        self.assertIn("quarantine marker exists", str(ctx.exception))
-        self.assertIn(SSH, str(ctx.exception))
+        self.assertIn("reason other than", str(ctx.exception))
+        self.assertIn(SSH, self.sim.markers)
+
+    def test_the_rollback_quarantine_is_released_and_its_marker_deleted(self):
+        scn, task = self.refusal_case(refusals.ROLLBACK_QUARANTINE_REASON)
+        result = scn.end_case(refusals.WRONG_KEY_CASE, task)
+        self.assertEqual(result["path"], "operator-teardown")
+        self.assertTrue(result["quarantine"]["marker_deleted"])
+        self.assertNotIn(SSH, self.sim.markers)
 
     def test_eligibility_left_when_a_marker_exists_at_restore(self):
         sim = Sim(self._tmp.name)
@@ -380,7 +392,7 @@ class RestoreFailureTest(DriveBase):
 
     def test_restore_is_idempotent_after_a_clean_restore(self):
         self.drive()
-        self.assertEqual(self.sim.calls.count(("meta", SSH, None)), 1)
+        self.assertEqual(self.sim.calls.count(("meta", SSH, REAL_KEY)), 1)
 
 
 class NodeMetaTest(unittest.TestCase):
