@@ -166,8 +166,8 @@ silently erase records, kill unidentified processes or re-enable a node.
 - [x] [Task 03: Native launch and secure SSH connection](task-03-native-connection.md)
 - [x] [Task 04: Real no-model session](task-04-real-session.md)
 - [ ] [Task 05: Ambiguous-operation and restart recovery](task-05-recovery.md)
-- [ ] [Task 06: Capacity and actual client disconnect](task-06-admission-disconnect.md)
-- [ ] [Task 07: Cooperative cancellation and quarantine](task-07-cleanup-quarantine.md)
+- [x] [Task 06: Capacity and actual client disconnect](task-06-admission-disconnect.md)
+- [x] [Task 07: Cooperative cancellation and quarantine](task-07-cleanup-quarantine.md)
 - [ ] [Task 08: Built runtime and contribution handoff](task-08-package-handoff.md) (cancelled; replaced by the [Nomad worker pool plan](../nomad-worker-pool/plan.md))
 
 Execute 01 -> 02 -> 03 -> 04 -> 05 -> 06 -> 07 sequentially, then continue with the

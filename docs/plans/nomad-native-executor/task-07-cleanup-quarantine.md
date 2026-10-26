@@ -1,7 +1,7 @@
 ---
 id: "07-cleanup-quarantine"
 title: "Cooperative cancellation and quarantine"
-status: pending
+status: done
 wave: 7
 depends_on:
   - "06-admission-disconnect"
@@ -106,7 +106,7 @@ Success is scoped to trusted managed groups. Terminal allocation, missing PID, c
 
 ## Results
 
-Pending. Implementation and verification evidence have not yet been recorded.
+Complete (2026-10-26). Real-worker proof in `docs/evidence/nomad-wo07/`: run 7 passed `cleanup-positive` and `cleanup-negative` on build `ffc77bb52d` against a local throwaway Nomad fixture, after six earlier runs that each found a defect (listed there). The offline Verification block passes; on macOS run the `task/service` tests with `TMPDIR=/private/tmp`.
 
 ## Implementation notes (offline complete, live proof pending)
 
