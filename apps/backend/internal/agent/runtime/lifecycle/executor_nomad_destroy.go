@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"go.uber.org/zap"
-	"golang.org/x/crypto/ssh"
 
 	"github.com/kandev/kandev/internal/agent/nomad"
 	agentctl "github.com/kandev/kandev/internal/agent/runtime/agentctl"
@@ -65,7 +64,7 @@ type nomadCleanup struct {
 	state   nomad.EnvironmentState
 	claimID string
 	client  *nomad.Client
-	worker  *ssh.Client
+	worker  nomadWorkerTransport
 }
 
 // destroyNomadOperation runs positive cleanup for one retained environment. It
@@ -106,7 +105,7 @@ func (r *NomadExecutor) newNomadCleanup(ctx context.Context, req *ExecutorCreate
 	if err != nil || state.ExecutionID != req.InstanceID || state.EnvironmentID == "" || state.EnvironmentID != req.TaskEnvironmentID {
 		return nil, errors.New("nomad cleanup requires the exact retained environment identity")
 	}
-	profile, err := nomadProfileFromMetadata(req.Metadata)
+	profile, err := nomadEffectiveProfile(req.Metadata, state)
 	if err != nil || profile.NodeID != state.NodeID || profile.WorkspaceRoot != state.WorkspaceRoot {
 		return nil, errors.New("nomad cleanup profile differs from the retained worker identity")
 	}
@@ -236,18 +235,18 @@ func (c *nomadCleanup) drainAndSettle(ctx context.Context) error {
 
 // drain seals the exact recorded runtime and waits for its managed teardown.
 func (c *nomadCleanup) drain(ctx context.Context) (*agentctl.RuntimeDrainReceipt, string) {
-	worker, err := c.exec.dialPinnedNomadWorker(ctx, c.profile)
+	worker, err := c.exec.dialNomadCleanupWorker(ctx, c.client, c.profile, c.state)
 	if err != nil {
 		return nil, nomadCleanupReasonWorkerUnreachable
 	}
 	c.worker = worker
-	if err := verifyNomadWorkerFence(ctx, worker, c.profile, c.state); err != nil {
+	if err := verifyNomadWorkerFenceOver(ctx, worker, c.profile, c.state); err != nil {
 		if errors.Is(err, errNomadWorkerFenceAbsent) {
 			return nil, nomadCleanupReasonFenceAbsent
 		}
 		return nil, nomadCleanupReasonFenceMismatch
 	}
-	forwarder, err := StartPortForward(worker, c.state.ControlPort, c.exec.logger)
+	forwarder, err := worker.Forward(c.state.ControlPort, c.exec.logger)
 	if err != nil {
 		return nil, nomadCleanupReasonRuntimeUnreachable
 	}
@@ -317,7 +316,7 @@ func (c *nomadCleanup) removeBootstrapEnvironment(ctx context.Context) {
 		return
 	}
 	if c.worker == nil {
-		worker, err := c.exec.dialPinnedNomadWorker(ctx, c.profile)
+		worker, err := c.exec.dialNomadCleanupWorker(ctx, c.client, c.profile, c.state)
 		if err != nil {
 			c.exec.logger.Warn("nomad cleanup left the staged bootstrap environment file",
 				zap.String("reason", "bootstrap_secret_removal_failed"), zap.String("execution_id", c.state.ExecutionID))
@@ -325,7 +324,7 @@ func (c *nomadCleanup) removeBootstrapEnvironment(ctx context.Context) {
 		}
 		c.worker = worker
 	}
-	if _, _, err := runSSHCommand(ctx, c.worker, "rm -f -- "+shellQuote(path)); err != nil {
+	if _, _, err := c.worker.Run(ctx, "rm -f -- "+shellQuote(path)); err != nil {
 		c.exec.logger.Warn("nomad cleanup left the staged bootstrap environment file",
 			zap.String("reason", "bootstrap_secret_removal_failed"), zap.String("execution_id", c.state.ExecutionID))
 	}
@@ -428,12 +427,12 @@ func (c *nomadCleanup) releaseFence(ctx context.Context) error {
 		return err
 	}
 	if c.worker == nil {
-		worker, err := c.exec.dialPinnedNomadWorker(ctx, c.profile)
+		worker, err := c.exec.dialNomadCleanupWorker(ctx, c.client, c.profile, c.state)
 		if err != nil {
 			return err
 		}
 		c.worker = worker
 	}
-	_, _, err = runSSHCommand(ctx, c.worker, command)
+	_, _, err = c.worker.Run(ctx, command)
 	return err
 }

@@ -202,6 +202,8 @@ var trustedExecutorConfigKeys = map[string]bool{
 	nomadMetadataKeyNodeID: true, nomadMetadataKeyPlatform: true, nomadMetadataKeySSHTarget: true,
 	nomadMetadataKeyWorkspaceRoot: true, nomadMetadataKeyAllocationRoot: true,
 	nomadMetadataKeyCPUMHz: true, nomadMetadataKeyMemoryMB: true, nomadMetadataKeyToken: true, nomadMetadataKeyLostAfter: true,
+	nomadMetadataKeyNodePool: true, nomadMetadataKeyPlacement: true, nomadMetadataKeyPinNodeID: true,
+	nomadMetadataKeyExcludeLoc: true, nomadMetadataKeyPreferLoc: true, nomadMetadataKeyMemoryMaxMB: true,
 }
 
 func isTrustedExecutorConfigKey(k string) bool { return trustedExecutorConfigKeys[k] }
@@ -363,6 +365,9 @@ func (m *Manager) authorizeNomadTaskEnvironment(
 }
 
 func nomadCanonicalProfileMetadata(parsed nomadexecutor.ProfileConfig) map[string]string {
+	if parsed.Mode == nomadexecutor.ModePool {
+		return nomadCanonicalPoolProfileMetadata(parsed)
+	}
 	return map[string]string{
 		nomadMetadataKeyAddress: parsed.Address, "namespace": parsed.Namespace, nomadMetadataKeyRegion: parsed.Region,
 		nomadMetadataKeyDatacenter: parsed.Datacenter, nomadMetadataKeyNodeID: parsed.NodeID, nomadMetadataKeyPlatform: parsed.Platform,
@@ -371,6 +376,20 @@ func nomadCanonicalProfileMetadata(parsed nomadexecutor.ProfileConfig) map[strin
 		nomadMetadataKeyAllocationRoot: parsed.AllocationRoot, nomadMetadataKeyCPUMHz: fmt.Sprint(parsed.CPUMHz),
 		nomadMetadataKeyMemoryMB: fmt.Sprint(parsed.MemoryMB), nomadMetadataKeyToken: models.ExecutorProfileSecretReference(parsed.NomadTokenSecretID),
 		nomadMetadataKeyLostAfter: parsed.DisconnectLostAfter.String(),
+	}
+}
+
+func nomadCanonicalPoolProfileMetadata(parsed nomadexecutor.ProfileConfig) map[string]string {
+	return map[string]string{
+		nomadMetadataKeyAddress: parsed.Address, nomadMetadataKeyNamespace: parsed.Namespace, nomadMetadataKeyRegion: parsed.Region,
+		nomadMetadataKeyDatacenter: parsed.Datacenter, nomadMetadataKeyPlatform: parsed.Platform,
+		nomadMetadataKeyNodePool: parsed.NodePool, nomadMetadataKeyPlacement: parsed.Placement,
+		nomadMetadataKeyPinNodeID: parsed.PinNodeID, nomadMetadataKeyExcludeLoc: fmt.Sprint(parsed.ExcludeLocal),
+		nomadMetadataKeyPreferLoc: fmt.Sprint(parsed.PreferLocal), nomadMetadataKeySSHUser: parsed.SSHUser,
+		nomadMetadataKeyCPUMHz: fmt.Sprint(parsed.CPUMHz), nomadMetadataKeyMemoryMB: fmt.Sprint(parsed.MemoryMB),
+		nomadMetadataKeyMemoryMaxMB: fmt.Sprint(parsed.MemoryMaxMB),
+		nomadMetadataKeyToken:       models.ExecutorProfileSecretReference(parsed.NomadTokenSecretID),
+		nomadMetadataKeyLostAfter:   parsed.DisconnectLostAfter.String(),
 	}
 }
 

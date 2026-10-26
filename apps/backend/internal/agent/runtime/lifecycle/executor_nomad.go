@@ -48,6 +48,10 @@ type NomadExecutor struct {
 	cleanupActive      map[string]struct{}
 	drainDeadline      time.Duration
 	stopConfirmTimeout time.Duration
+
+	// Pool-mode seams; empty values select the production locations.
+	hostIdentityPath string
+	kandevHomeDir    string
 }
 
 func (r *NomadExecutor) setCleanupCoordinator(coordinator nomadCleanupCoordinator) {
@@ -107,6 +111,9 @@ func (r *NomadExecutor) CreateInstance(ctx context.Context, req *ExecutorCreateR
 			return nil, err
 		}
 		return r.attachRetainedOperation(ctx, req, id.profile, state)
+	}
+	if id.profile.Mode == nomad.ModePool {
+		return r.launchPoolOperation(ctx, req, id)
 	}
 	return r.launchNewOperation(ctx, req, id)
 }
@@ -342,10 +349,11 @@ func (r *NomadExecutor) attachRetainedOperation(
 	if err != nil {
 		return nil, fmt.Errorf("reattach retained Nomad allocation: %w", err)
 	}
+	profile = profile.EffectiveProfile(allocated)
 	if err := reconcileRetainedNomadAllocation(ctx, req, profile, state, &allocated); err != nil {
 		return nil, err
 	}
-	connection, err := r.connectRetainedNomadWorker(ctx, req, profile, &allocated)
+	connection, err := r.connectRetainedNomadWorker(ctx, req, client, profile, &allocated)
 	if err != nil {
 		return nil, err
 	}
@@ -454,9 +462,13 @@ func reconcileRetainedNomadAllocation(
 func (r *NomadExecutor) connectRetainedNomadWorker(
 	ctx context.Context,
 	req *ExecutorCreateRequest,
+	client *nomad.Client,
 	profile nomad.ProfileConfig,
 	allocated *nomad.EnvironmentState,
 ) (*nomadAgentctlConnection, error) {
+	if allocated.PlacementMode == nomad.ModePool {
+		return r.connectRetainedPoolWorker(ctx, req, client, profile, allocated)
+	}
 	target, err := ResolveSSHTarget(SSHConnConfig{
 		HostAlias: profile.SSHHost, Host: profile.SSHHost, Port: profile.SSHPort, User: profile.SSHUser,
 		PinnedFingerprint: profile.SSHHostFingerprint,
@@ -551,7 +563,7 @@ func nomadRecoveryIdentity(record *models.ExecutorRunning) (nomad.EnvironmentSta
 	if err != nil || !nomadRecoveryStateComplete(state, record) {
 		return state, profile, errors.New("nomad recovery requires a complete ready allocation and workspace identity")
 	}
-	profile, err = nomadProfileFromMetadata(record.Metadata)
+	profile, err = nomadEffectiveProfile(record.Metadata, state)
 	if err != nil || profile.NodeID != state.NodeID || profile.WorkspaceRoot != state.WorkspaceRoot {
 		return state, profile, errors.New("nomad recovery profile differs from the retained worker or workspace identity")
 	}
@@ -601,6 +613,12 @@ func nomadProfileFromMetadata(metadata map[string]interface{}) (nomad.ProfileCon
 		nomadMetadataKeyAddress, "namespace", nomadMetadataKeyRegion, nomadMetadataKeyDatacenter, nomadMetadataKeyNodeID, nomadMetadataKeyPlatform, nomadMetadataKeySSHTarget, "ssh_port",
 		"ssh_host_fingerprint", nomadMetadataKeyWorkspaceRoot, nomadMetadataKeyAllocationRoot, nomadMetadataKeyCPUMHz, nomadMetadataKeyMemoryMB, nomadMetadataKeyToken, nomadMetadataKeyLostAfter,
 	} {
+		value := getMetadataString(metadata, key)
+		if value != "" {
+			config[key] = value
+		}
+	}
+	for _, key := range nomadPoolMetadataKeys {
 		value := getMetadataString(metadata, key)
 		if value != "" {
 			config[key] = value
@@ -667,7 +685,7 @@ func jobMetaMatchesState(job *nomad.JobRecord, state nomad.EnvironmentState) boo
 		job.Meta["kandev.generation"] == strconv.FormatInt(state.Generation, 10) &&
 		job.Meta["kandev.operation_id"] == state.OperationID &&
 		job.Meta["kandev.installation_id"] == state.InstallationID &&
-		job.Meta["kandev.input_digest"] == state.InputDigest && job.Meta["kandev.node_id"] == state.NodeID &&
+		job.Meta["kandev.input_digest"] == state.InputDigest && nomadJobNodeMetaMatches(job, state) &&
 		job.Meta["kandev.native_job_policy_version"] == strconv.Itoa(state.NativeJobPolicyVersion) &&
 		job.Meta["kandev.native_job_spec_sha256"] == state.NativeJobSpecSHA256
 }
@@ -708,6 +726,9 @@ func bindRunningNomadAllocation(
 	state nomad.EnvironmentState,
 	stub nomad.AllocationRecord,
 ) (nomad.EnvironmentState, error) {
+	if state.PlacementMode == nomad.ModePool && state.NodeID == "" {
+		return bindUnplacedPoolAllocation(ctx, client, namespace, state, stub)
+	}
 	if stub.ID == "" || stub.CreateIndex == 0 || stub.JobID != state.JobID || stub.NodeID != state.NodeID || stub.Namespace != namespace {
 		return state, errors.New("nomad allocation summary identity does not match the immutable job")
 	}
