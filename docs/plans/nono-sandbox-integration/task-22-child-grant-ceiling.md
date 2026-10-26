@@ -23,7 +23,7 @@ Check requested child grants against the parent guard at creation, in the child-
 
 ## Scope
 
-- Typed error `sandbox_outside_ceiling`; role-and-access containment; inherit-exactly for a child requesting nothing; no ceiling for an unguarded parent.
+- Optional `sandbox_grants` object on task creation; the pre-insert `InheritTaskGuard` and `AdmitTask` hook in `sandbox_creation.go` moves inside the insert transaction; typed error `sandbox_outside_ceiling`; role-and-access containment; inherit-exactly for a child requesting nothing; no ceiling for an unguarded parent.
 - Parent guard read in the insert transaction; launch-time `checkParentGuard` stays.
 
 ## Acceptance

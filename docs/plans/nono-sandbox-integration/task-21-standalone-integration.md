@@ -28,9 +28,11 @@ When the standalone MCP session token change and the standalone managed Git isol
 - Remove duplicated code from Tasks 12 and 13 that the standalone changes now own.
 - Update the journey steps and the canary mapping to the final names.
 
+- Write the attempt columns `guard_enforced` (guard present and the server-side class table registered for the session's MCP endpoint) and `git_isolation_active` at admission for items 012.4 and 012.7.
+
 ## External merge gates
 
-Build of this work order waits for the standalone managed Git isolation change (card df7b4bf2) and the standalone MCP session token change (card 4f060a95) to open and merge. When their PRs open, re-read their specs and update this work order and the plan.
+Build of this work order waits for the standalone managed Git isolation change and the standalone MCP session token change to open and merge. When their PRs open, re-read their specs and update this work order and the plan.
 
 ## Acceptance
 

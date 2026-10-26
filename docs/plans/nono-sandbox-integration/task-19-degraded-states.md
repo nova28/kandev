@@ -47,7 +47,7 @@ Each listed criterion in `docs/specs/agents/requirements/sandbox-session-conform
 ## Verification
 
 - Unit: data directory under a temporary root or symlink returns `state_root_denied` and the backend starts; installing the provider clears `provider_missing` without restart; each exit cause maps with precedence; stderr text never leaves agentctl; unsupported executor refuses.
-- Integration: Settings shows the reason; a refused launch writes a `refused` attempt and is retryable; refusal still returns if the write fails.
+- Integration: Settings shows the reason; a refused launch writes a `sandbox_launch_refusals` row, creates no attempt, and is retryable; refusal still returns if the write fails.
 - Frontend tests for summary states, shield and warning indicator on desktop and phone.
 
 ## Files likely touched
