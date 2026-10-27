@@ -342,7 +342,12 @@ func newLifecycleAdapter(mgr *lifecycle.Manager, reg *registry.Registry, log *lo
 // lifecycle directly. Errors that are not guard-related pass through
 // unchanged.
 func wrapSessionRecoveryGuardError(err error, sessionID string) error {
+	var nomadGuard *lifecycle.NomadRecoveryGuardError
 	switch {
+	case errors.As(err, &nomadGuard):
+		// Both codes stay Retryable: the non-retryable shape means "agent could
+		// not be stopped", which is not what operator_action reports.
+		return &orchestrator.SessionRecoveryGuardError{Cause: err, SessionID: sessionID, Retryable: true, Code: nomadGuard.Code}
 	case errors.Is(err, lifecycle.ErrSessionRecoveryGuarded):
 		return &orchestrator.SessionRecoveryGuardError{Cause: err, SessionID: sessionID, Retryable: true}
 	case errors.Is(err, lifecycle.ErrSessionUnstoppableAgent):
@@ -1905,8 +1910,25 @@ func clarificationQuestionData(question clarification.Question, options []interf
 		"prompt":  question.Prompt,
 		"options": options,
 	}
+	if len(question.Images) > 0 {
+		data["images"] = question.Images
+	}
 	if question.AllowCustomText != nil {
 		data["allow_custom_text"] = *question.AllowCustomText
+	}
+	return data
+}
+
+func clarificationOptionsData(options []clarification.Option) []interface{} {
+	data := make([]interface{}, len(options))
+	for j, opt := range options {
+		item := map[string]interface{}{
+			"option_id": opt.ID, "label": opt.Label, "description": opt.Description,
+		}
+		if len(opt.Images) > 0 {
+			item["images"] = opt.Images
+		}
+		data[j] = item
 	}
 	return data
 }
@@ -1915,14 +1937,7 @@ func (a *messageCreatorAdapter) CreateClarificationRequestMessages(ctx context.C
 	ids := make([]string, 0, len(questions))
 	total := len(questions)
 	for i, question := range questions {
-		options := make([]interface{}, len(question.Options))
-		for j, opt := range question.Options {
-			options[j] = map[string]interface{}{
-				"option_id":   opt.ID,
-				"label":       opt.Label,
-				"description": opt.Description,
-			}
-		}
+		options := clarificationOptionsData(question.Options)
 
 		questionData := clarificationQuestionData(question, options)
 

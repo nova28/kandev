@@ -1436,6 +1436,9 @@ func (m *Manager) StopAgentWithReason(ctx context.Context, executionID string, r
 		m.preserveTurnChangesBeforeStop(stopCtx, execution, reason)
 	}
 	agentStopFailed := m.stopExecutionAgentctl(stopCtx, executionID, execution, backendForce)
+	if agentStopFailed && backendForce && execution.RuntimeName == executor.NameNomad && !nomadStopDestroys(reason) {
+		return fmt.Errorf("stop agent for execution %q: agentctl did not confirm termination", executionID)
+	}
 	// Backend shutdown retains interrupted delivery outcomes. Its terminal
 	// checkpoint follows confirmed process termination, before runtime cleanup.
 	if reason == StopReasonBackendShutdown && !backendForce && !agentStopFailed {
@@ -1477,7 +1480,7 @@ func (m *Manager) StopAgentWithReason(ctx context.Context, executionID string, r
 	// environment recovery cannot mistake a stopped resumable session for a
 	// live consumer. A passthrough TUI also needs its stopped execution ID to
 	// resume the same conversation after a graceful backend restart.
-	if execution.Owner.Kind == ExecutionOwnerRun || preservePassthroughConversation {
+	if execution.Owner.Kind == ExecutionOwnerRun || preservePassthroughConversation || execution.RuntimeName == executor.NameNomad {
 		if err := m.persistExecutorRunningResult(ctx, execution); err != nil {
 			return err
 		}
@@ -1486,7 +1489,7 @@ func (m *Manager) StopAgentWithReason(ctx context.Context, executionID string, r
 	execution.EndSessionSpan()
 
 	m.RemoveExecution(executionID)
-	if execution.Owner.Kind != ExecutionOwnerRun && !preservePassthroughConversation {
+	if execution.Owner.Kind != ExecutionOwnerRun && !preservePassthroughConversation && execution.RuntimeName != executor.NameNomad {
 		m.deleteExecutorRunning(ctx, executionInventorySessionID(execution), execution.ID)
 	}
 	if pendingRecovery != nil {
@@ -1550,6 +1553,12 @@ func (m *Manager) detachAgentExecution(executionID string, execution *AgentExecu
 	return nil
 }
 
+// nomadAgentctlStopTimeout bounds the agentctl stop call on a Nomad worker. A
+// frozen or unreachable worker must cost a bounded wait, never the client's
+// default timeout, because the stop runs under the execution's lifecycle locks.
+// Package-level so tests can shorten it.
+var nomadAgentctlStopTimeout = 10 * time.Second
+
 func (m *Manager) stopExecutionAgentctl(
 	ctx context.Context,
 	executionID string,
@@ -1563,8 +1572,15 @@ func (m *Manager) stopExecutionAgentctl(
 		return false
 	}
 	defer client.Close()
-	if force {
+	// A forced Nomad stop preserves the allocation, so the agent process only
+	// ends through agentctl.
+	if force && execution.RuntimeName != executor.NameNomad {
 		return false
+	}
+	if execution.RuntimeName == executor.NameNomad {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, nomadAgentctlStopTimeout)
+		defer cancel()
 	}
 	if err := client.Stop(ctx); err != nil {
 		// During shutdown the instance may already be stopping through another

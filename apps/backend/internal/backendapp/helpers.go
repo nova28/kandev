@@ -1797,6 +1797,7 @@ func registerTaskRoutes(p routeParams, planService *taskservice.PlanService, han
 	taskhandlers.RegisterWorkspaceFileRoutes(p.router, processHandlers)
 	analyticshandlers.RegisterStatsRoutes(p.router, p.analyticsRepo, p.taskSvc, p.log)
 	agenthandlers.RegisterShellRoutes(p.router, p.lifecycleMgr, p.log)
+	agenthandlers.RegisterNomadReadmitRoutes(p.router, p.lifecycleMgr, p.log)
 	if p.services.Share != nil {
 		p.services.Share.RegisterRoutes(p.router)
 		p.log.Debug("Registered Public Share Links handlers (HTTP)")
@@ -1820,6 +1821,9 @@ func configureMCPServices(
 	mcpSelectionService := mcpconfig.NewSelectionService(selectionRepo, catalogRepo)
 	mcpSelectionService.SetWorkspaceAuthorizer(p.taskSvc.AuthorizeWorkspaceAccess)
 	mcpSelectionService.SetOwnerValidator(mcpSelectionOwnerValidator(p))
+	if profileReader, ok := p.agentSettingsRepo.(mcpUsageProfileReader); ok {
+		mcpSelectionService.SetUsageOwnerReader(mcpUsageOwnerReader(profileReader, p.taskSvc))
+	}
 	mcpSelectionService.SetSessionResolutionContext(mcpSessionResolutionContext(p))
 	if stateRepo, ok := p.agentSettingsRepo.(mcpconfig.SessionMCPSelectionStateRepository); ok {
 		mcpSelectionService.SetSessionMCPStateRepository(stateRepo)
@@ -1927,6 +1931,7 @@ func registerSecondaryRoutes(
 		p.taskSvc,
 		p.taskRepo,
 		p.features.NeedsYouInbox,
+		&questionImageReaderAdapter{lifecycle: p.lifecycleMgr},
 	)
 	p.log.Debug("Registered Clarification handlers (HTTP)")
 

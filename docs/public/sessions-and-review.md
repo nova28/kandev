@@ -13,6 +13,21 @@ A session is one agent conversation on a task. Use it to direct work, inspect ch
 2. Watch chat and tool activity; answer clarification or permission requests.
 3. Inspect the diff, run required checks, and send focused feedback until the change is ready.
 
+## Answer clarification questions
+
+Questions support links, bold, italic, strikethrough, inline code, paragraphs, and simple lists.
+Select an HTTP or HTTPS reference in question text to open it in another tab.
+Links inside answer choices select the choice.
+
+To read an older question, open **Inbox > History** and expand its row.
+The expanded question supports the same formatting and reference links.
+Selecting a reference label in the collapsed summary expands the row.
+Opening a reference does not answer the question or change its status.
+
+Context paragraphs, permission requests, and your custom answers remain literal text.
+Clarification questions do not display embedded HTML, images, tables, or code panels.
+File references remain labels rather than opening workspace files.
+
 ## Start a parallel session
 
 You need a task with an environment and at least one agent profile compatible with that environment's executor.
@@ -29,6 +44,13 @@ On desktop:
 The New Session dialog does not accept a session name. Rename the session from its tab menu after it is created.
 
 The empty-panel watermark has the same **New Agent** action. On mobile, open the **Sessions** picker and select **New session**.
+
+To add MCP servers before launch, expand **Advanced settings** below the prompt.
+Select the count beside **MCP servers** to open the picker. On phones and touch
+tablets, the picker opens as a bottom sheet. The count includes only your session
+additions. Servers inherited from the profile, repositories, and task remain
+included. Closing the picker or collapsing Advanced settings preserves the draft.
+Handoff uses the same controls.
 
 If simultaneous starts are still preparing the shared workspace, the later
 start waits for that preparation and tries to attach once. Failed or unfinished
@@ -593,7 +615,7 @@ available.
 
 When Kandev has unambiguous repository context, file toolbars in Changes, Review, built-in viewers and editors, and their mobile layouts show **Open file in GitHub**, **Open file in GitLab**, or **Open file in Azure DevOps**. The action opens the provider page in a new browser tab. GitLab links support both `gitlab.com` and configured self-managed hosts.
 
-The link uses the published source branch from a linked pull or merge request for that repository when available; otherwise it uses the task repository's base branch. Added or untracked files do not show the action until they exist on a published source branch. Deleted files open their base-branch version, while renamed files open the new path on a published source branch or the previous path on the base branch.
+The link uses the published source branch from a linked pull or merge request for that repository when available. For a merged GitHub pull request, Kandev uses its saved head commit so the link survives source-branch deletion and opens the reviewed task snapshot. Without a saved revision, the link falls back to the task repository's base branch. Added or untracked files require a published branch or saved head commit. Deleted files open their base-branch version, while renamed files open the new path at the published revision or the previous path on the base branch.
 
 Kandev hides the action instead of guessing when a repository is local-only, unsupported, incompletely configured, or ambiguous. If a colleague cannot open the resulting page, check their permissions on the external repository; opening a link does not change provider access.
 
