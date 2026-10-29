@@ -33,7 +33,6 @@ S: ~40 source, ~250 test lines.
 - A fixture manifest that declares only slice 2 capabilities (`admission_context`, `pending_placement`, `provision_refusal`) plus their slice 1 prerequisites, and a conformance test that launches, stops, and destroys it.
 - A test that a provider declaring no capability keeps today's synchronous launch, deadline, and behavior with slice 2 present.
 - The launch-order test `TestLaunchPolicyRefusalHoldsNoReservation` and the two trees: see Acceptance. Ownership follows tree contents, not the time the gate ran.
-- A test that the codes slice 2 emits are all localized (the exhaustive-code test of work order 11 enumerates only emitters present on the tree; the two `launch_policy_*` codes are work order 13's, plan, Slices).
 
 ## Out of scope
 
@@ -42,7 +41,7 @@ S: ~40 source, ~250 test lines.
 ## Acceptance
 
 - Always: this slice's tests pass on tree (a), the slice-only tree (this slice's branch off the slice-1 head, with no commit of slice 3).
-- Launch-order ownership is decided by tree contents. Before this slice merges, rebase its branch onto current main and rerun this gate. If main then contains the other slice (tree (b) = this slice's branch rebased onto that main), `TestLaunchPolicyRefusalHoldsNoReservation` (plan, Shared surfaces, Launch order) must exist in the lifecycle package and pass on tree (b); this slice's PR adds it when it is absent. If main does not contain the other slice, tree (b) does not exist and is not required, and the other slice's gate carries the test when it merges second. Passing this gate before the other slice lands is therefore not a waiver: the rebase-and-rerun is a merge precondition.
+- Launch-order ownership is decided by tree contents. Before this slice merges, rebase its branch onto current main and rerun this gate. If main then contains the other slice (tree (b) = this slice's branch rebased onto that main), `TestLaunchPolicyRefusalHoldsNoReservation` (plan, Shared surfaces, Launch order) must exist in the lifecycle package and pass on tree (b); this slice's PR adds it when it is absent. If main does not contain the other slice, tree (b) does not exist and is not required, and the other slice's gate carries the test when it merges second. Passing this gate before the other slice lands is therefore not a waiver: the rebase-and-rerun is a merge precondition. The last command of Verification is the presence check of the plan (Shared surfaces, Launch order); it exits non-zero when both markers are defined and the test is missing or does not pass.
 
 ## Tests (regression guards unless stated)
 
@@ -58,6 +57,7 @@ Run from the repository root.
 (cd apps/web && pnpm run i18n:check && pnpm run typecheck)
 make -C pluginsdk proto && git diff --exit-code -- pluginsdk
 make -C pluginsdk test
+(cd apps/backend/internal/agent/runtime/lifecycle && if grep -Eq 'func .*admitLaunch\(' $(ls *.go | grep -v _test.go) && grep -Eq 'func .*checkLaunchPolicy\(' $(ls *.go | grep -v _test.go); then go test -race -trimpath -run '^TestLaunchPolicyRefusalHoldsNoReservation$' -v -count=1 . | grep -q -- '^--- PASS: TestLaunchPolicyRefusalHoldsNoReservation'; fi)
 (cd apps/backend && test -n "$KANDEV_TEST_POSTGRES_DSN" && go test -race -trimpath ./internal/agent/runtime/lifecycle/... -count=1)
 ```
 

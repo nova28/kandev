@@ -32,7 +32,7 @@ S: ~40 source, ~250 test lines.
 - A test that a provider declaring no capability keeps today's behavior with slice 3 present.
 - A check that no slice 3 registry row, proto message, or Go package imports or requires a slice 2 capability or type (`admission_context`, `pending_placement`, `provision_refusal`, placement phases), and that the proto compiles with only slice 1 and slice 3 work orders applied.
 - The launch-order test `TestLaunchPolicyRefusalHoldsNoReservation` and the two trees: see Acceptance. Ownership follows tree contents, not the time the gate ran.
-- A test that on tree (a) the status surface renders localized text for `launch_policy_unsupported` and `launch_policy_unenforced` (copy keys owned by work order 13, plan, Slices), and that `pnpm run i18n:check` passes in seven languages.
+- Gate 19 asserts the codes `launch_policy_unsupported` and `launch_policy_unenforced` are emitted and carried in the session failure record; their localized copy is work order 11's and is not asserted here (plan, Slices).
 - A provider declaring no capability, with a profile that carries no `launch_policy` key, behaves as today; a profile carrying a `launch_policy` other than `none` on such a provider is refused with `launch_policy_unsupported` and no allocation (LAUNCHPOLICY-001.2), which is the specified behavior and not a regression.
 
 ## Out of scope
@@ -42,7 +42,7 @@ S: ~40 source, ~250 test lines.
 ## Acceptance
 
 - Always: this slice's tests pass on tree (a), the slice-only tree (this slice's branch off the slice-1 head, with no commit of slice 2).
-- Launch-order ownership is decided by tree contents. Before this slice merges, rebase its branch onto current main and rerun this gate. If main then contains the other slice (tree (b) = this slice's branch rebased onto that main), `TestLaunchPolicyRefusalHoldsNoReservation` (plan, Shared surfaces, Launch order) must exist in the lifecycle package and pass on tree (b); this slice's PR adds it when it is absent. If main does not contain the other slice, tree (b) does not exist and is not required, and the other slice's gate carries the test when it merges second. Passing this gate before the other slice lands is therefore not a waiver: the rebase-and-rerun is a merge precondition.
+- Launch-order ownership is decided by tree contents. Before this slice merges, rebase its branch onto current main and rerun this gate. If main then contains the other slice (tree (b) = this slice's branch rebased onto that main), `TestLaunchPolicyRefusalHoldsNoReservation` (plan, Shared surfaces, Launch order) must exist in the lifecycle package and pass on tree (b); this slice's PR adds it when it is absent. If main does not contain the other slice, tree (b) does not exist and is not required, and the other slice's gate carries the test when it merges second. Passing this gate before the other slice lands is therefore not a waiver: the rebase-and-rerun is a merge precondition. The last command of Verification is the presence check of the plan (Shared surfaces, Launch order); it exits non-zero when both markers are defined and the test is missing or does not pass.
 
 ## Tests (regression guards unless stated)
 
@@ -57,9 +57,10 @@ Run from the repository root.
 (cd apps/backend && go test -race -trimpath ./internal/plugins/... ./internal/agent/runtime/lifecycle/... ./cmd/plugin-fixture/... ./pkg/pluginsdk/... ./internal/notifications/... ./internal/common/launchwrapper/... ./internal/agentctl/server/process/... -count=1)
 make -C pluginsdk proto && git diff --exit-code -- pluginsdk
 make -C pluginsdk test
+(cd apps/backend/internal/agent/runtime/lifecycle && if grep -Eq 'func .*admitLaunch\(' $(ls *.go | grep -v _test.go) && grep -Eq 'func .*checkLaunchPolicy\(' $(ls *.go | grep -v _test.go); then go test -race -trimpath -run '^TestLaunchPolicyRefusalHoldsNoReservation$' -v -count=1 . | grep -q -- '^--- PASS: TestLaunchPolicyRefusalHoldsNoReservation'; fi)
 ```
 
-"Slice 3 tests" means the Go packages above, which are the union of the packages that work orders 12, 13, and 14 list; slice 3 has no web or PostgreSQL verification. The same commands also cover compiling the packages of the notification and agentctl code, so a hidden dependency on a slice 2 type fails the build on tree (a).
+"Slice 3 tests" means the Go packages above, which are the union of the packages that work orders 12, 13, and 14 list; slice 3 has no web or PostgreSQL verification, and gate 19 has none because localized copy belongs to work order 11. The same commands also cover compiling the packages of the notification and agentctl code, so a hidden dependency on a slice 2 type fails the build on tree (a).
 
 The proto source is `pluginsdk/proto/kandev/plugin/v1/plugin.proto`; the `git diff --exit-code` after `make -C pluginsdk proto` proves the committed generated code matches it and that the slice's added fields compile without a duplicate number. Building the trees: tree (a) is this slice's branch, built off the slice-1 head and never stacked on the other slice (plan, Slices, Build layout); tree (b) is this slice's branch rebased onto a main that contains the other slice. The commands run on each tree that exists when the gate is rerun after rebase.
 

@@ -39,18 +39,15 @@ Slice 3 does not depend on slice 2: the registry dependency closure (`provider_m
 `launch_policy` needs `workspace_descriptor`; `preparation_hints` needs `repository_intent`) never names a slice 2 capability, and
 no slice 3 requirement or design cites a placement or admission phase, field, or type.
 
-One coupling in the slice-1 branch files is removed by decision: PLACEMENT-001.9 and work order 11 make slice 2 the owner of the
-localized text for every host failure code, including `launch_policy_unsupported` and `launch_policy_unenforced`, which only
-slice 3 emits. For Build, the two copy keys `executors:pluginFailure.launch_policy_unsupported` and
-`executors:pluginFailure.launch_policy_unenforced` (seven catalogs, `pnpm run i18n:check`) belong to work order 13 (slice 3); work order 11
-localizes the codes slice 2 emits, and its exhaustive-code test enumerates only the codes whose emitter is present on the tree. AC
-PLACEMENT-001.9 therefore holds on the merged tree, and on each slice-only tree for the codes that slice emits. A slice-3-only tree
-shows the localized text for both launch-policy codes through the same status surface, and gate 19 asserts it (open question Q-O6
-asks the owner to confirm this move).
+Localized failure copy stays with work order 11 (slice 2), as AC PLACEMENT-001.9 and task-11 already state: work order 11 builds the status surface
+and the `executors:pluginFailure` catalog keys for every host failure code of that AC, including the two slice 3 codes
+`launch_policy_unsupported` and `launch_policy_unenforced`, and its own tests and work order 16's parametrized Playwright spec prove them on the merged tree.
+Gate 18 therefore adds no localization test and gate 19 asserts the codes only, not their copy. A slice-3-only tree has no status surface for those codes;
+their localized text appears when slice 2 merges, which is accepted (Out of scope, Localized text on a slice-3-only tree).
 
 The slice-1 branch plan states `depends_on` chains that do contradict this: its task-12 depends on 11, task-13 on 12, task-14 on
 13 and 07, so a scheduler reading those files would block slice 3 behind slice 2. That plan is owned by another card and is not
-edited here. For Build, this table of effective dependencies is authoritative and overrides the slice-1 plan files for work orders 12, 13, and 14:
+edited here. For Build, this table of effective dependencies is authoritative and overrides the slice-1 plan files for work orders 12, 13, 14, and 16:
 
 | Work order | Effective `depends_on` | Slice-1 plan file says |
 | --- | --- | --- |
@@ -110,6 +107,10 @@ only a history reference (Out of scope, Host environment listing).
   Ownership of the ordering test is decided by tree contents, not by gate time: the test is `TestLaunchPolicyRefusalHoldsNoReservation` in the lifecycle package, and a slice's merge is
   blocked until, on that slice's branch rebased onto current main, it exists whenever both the `validateLaunch` launch-policy step and `admitLaunch` are present, and passes. The slice
   that merges second therefore adds it in its own PR; each gate's task file carries the precondition and the rerun after rebase.
+  Work order 13 names its launch-policy step function `checkLaunchPolicy`, called from `validateLaunch`; work order 10 names its gate `admitLaunch` (task-10). Those two
+  identifiers are the presence markers of the check below. Each gate's Verification runs a presence check that fails when both markers are defined in non-test Go files of the
+  lifecycle package and `go test -run '^TestLaunchPolicyRefusalHoldsNoReservation$' -v` does not print `--- PASS`. The same check is a merge precondition on the exact head that merges, so
+  the second of two back-to-back slice merges (each rebased onto a main that lacked the other) fails it on its rebased head; merging through the merge queue or one at a time satisfies this (open question Q-M8).
 
 ## Interleavings
 
@@ -141,7 +142,6 @@ maintenance idempotency map and the event limiter are in memory).
 For the owner:
 
 - Q-O3: the `readmit_node` operation is how R6 and C6 readmission land. Confirm that no separate readmit RPC is wanted.
-- Q-O6: confirm the decision in Slices that the two `launch_policy_*` copy keys belong to work order 13 (slice 3) instead of work order 11, so a slice-3-only tree shows localized text.
 - Q-O4: M1, M8, resource class and labels stay cut. Confirm the plugin's first release does not need an applied resource class
   from the provider (the Nomad plugin roadmap lists no use of one).
 
@@ -154,12 +154,19 @@ For the Kandev maintainer:
   acceptable, or should events use an existing type?
 - Q-M5: is a 600 second fixed placement deadline acceptable now that the provider cannot report one (PLACEMENT-001.2)?
 - Q-M7: slice 1's registry names the slice 2 and 3 capabilities before they exist; should it mark them unavailable until their slice merges, or may the unmerged slice's rows be removed before the first release, given that AC-EXECUTORS-PLUGIN-CAPABILITY-001.2 pins the 16-name set (plan, Capability window)?
+- Q-M8: are the two slice PRs merged through the merge queue (which tests the combined head) or one at a time? The launch-order presence check relies on one of the two.
 - Q-M6: may the slice-1 plan's task-12 `depends_on` change from 11 to 08, so slice 3 does not wait on slice 2?
 
 ## Out of scope
 
 Autoscaling, per-person Nomad quotas, fleet UI beyond the M4 status read, hostile-workload isolation, the mirror itself, and the
 cut items above. No production code in this card.
+
+### Localized text on a slice-3-only tree, cut in Spec Review round 5
+
+- **Flow cut:** moving the copy keys `executors:pluginFailure.launch_policy_unsupported` and `executors:pluginFailure.launch_policy_unenforced` (and the status surface that renders them) to work order 13 so a slice-3-only tree shows localized launch-policy failures, plus the gate 19 assertion of that text and its `i18n:check` run (former open question Q-O6).
+- **Why cut:** the status surface and catalog namespace are built by work order 11 (slice 2); work order 13 lists no web files, so the move needed a second surface that would collide with work order 11's on merge. The owner chose to keep copy with work order 11 (2026-10-29).
+- **What a follow-up needs:** a decision on who builds the minimal failure-copy surface and `pluginFailure` namespace without slice 2, a reconcile rule for the second slice to merge, web verification commands and a named rendering test in gate 19, and an edit to task-11's ownership sentence for the slice 1 card.
 
 ### Host environment listing (plugin gap 6), cut in Spec Review round 3
 
