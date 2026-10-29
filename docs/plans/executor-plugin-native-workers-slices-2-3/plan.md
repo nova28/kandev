@@ -157,7 +157,7 @@ For the Kandev maintainer:
 - Q-M5: is a 600 second fixed placement deadline acceptable now that the provider cannot report one (PLACEMENT-001.2)?
 - Q-M7: slice 1's registry names the slice 2 and 3 capabilities before they exist; should it mark them unavailable until their slice merges, or may the unmerged slice's rows be removed before the first release, given that AC-EXECUTORS-PLUGIN-CAPABILITY-001.2 pins the 16-name set (plan, Capability window)?
 - Q-M8: are the two slice PRs merged through the merge queue (which tests the combined head) or one at a time? The launch-order presence check relies on one of the two.
-- Q-M9: may the slice-1 plan's task-12 gain the web files and the `executors:pluginEvent` catalog keys and rendering test that this delta assigns to work order 12 (OPS-001.3, .4), which task-12 does not list today?
+- Q-M9: may the slice-1 plan's task-12 gain the web files and the `executors:pluginEvent` catalog keys and the rendering test `pluginEvent localizes every kind` in `apps/web/lib/plugin-event-copy.test.ts` that this delta assigns to work order 12 (OPS-001.3, .4), which task-12 does not list today?
 - Q-M6: may the slice-1 plan's task-12 `depends_on` change from 11 to 08, so slice 3 does not wait on slice 2?
 
 ## Out of scope
