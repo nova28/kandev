@@ -38,10 +38,10 @@ S: ~300 source, ~500 test lines.
 
 - Registry row; `TestRegistryHoldsTheClosedNameSetAtVersionOne` extended to 17 names; dependency-closure assertion.
 - Additive proto (`ListExecutorEnvironments*`, `ExecutorEnvironmentEntry`) and the optional `pluginsdk.ExecutorEnvironmentLister` interface.
-- `activeExecutorProviderOperation.negotiated` filled by `beginExecutorProviderOperation`; handler in `internal/plugins` (lease, rate limit, capability, validation) delegating to the new `ExecutorProviderHostHandler.ListExecutorEnvironments`, implemented by `*lifecycle.Manager` over `ListExecutorsRunningPluginRemote`.
-- `pluginExecutorListedState` and its exhaustive go/parser phase-constant test.
+- Handler in `internal/plugins` (lease, rate limit, handler lookup) delegating to the new optional `ExecutorEnvironmentListingHandler`, implemented by `*lifecycle.Manager`, which decides the capability from the launch's callback registration (name part of `RequiredCapabilities`), validates, and reads through `ListExecutorsRunningPluginRemote`. `authorize`, `activeExecutorProviderOperation`, and the request context are unchanged.
+- `pluginExecutorListedState` and its exhaustive go/parser phase-constant test over every non-test file of the lifecycle package (including `creating`); the 60-second warning limiter for skipped rows.
 - Metrics `executor_plugin_environment_listing_total` and `executor_plugin_environment_listing_skipped_total`.
-- Fixture provider reads the listing before it places, skips the entry flagged `is_calling_environment`, and refuses a launch that would exceed its fixture capacity through `provision_refusal`.
+- Fixture provider lists during its own Provision and sees its own record flagged `is_calling_environment`.
 
 ## Out of scope
 
@@ -54,11 +54,11 @@ S: ~300 source, ~500 test lines.
 
 ## Failing-first tests
 
-- Check order: lease, then rate (11 calls at one fake instant, refill after 100 ms), then capability, then validation, with a counting store.
+- Check order: lease, then rate (11 calls at one fake instant, refill after 100 ms), then capability (launch registration), then validation, with a counting store; an operation with no registration is `unsupported`; no handler configured is `unavailable`.
 - Cursor paging with a record inserted between pages (SQLite and PostgreSQL scans), page_size 0 / negative / above 100, malformed and over-long cursor.
 - Foreign installation and provider key rows; several rows with one `environment_id`; `absent` rows; undecodable envelope and empty `environment_id` rows.
 - Phase mapping table covering every `pluginExecutorPhase*` constant (go/parser), including `ready` with each `last_inspection_state`.
-- 256 KiB size cut with `include_state` and 20 KiB states; store error and 5 second bound; cancelled caller.
+- 256 KiB size cut with `include_state` and 20 KiB and 32 KiB states, asserting `proto.Size(response) <= 262144` (100 entries at 32 KiB); store error, unwired store, and 5 second bound give `unavailable`; a cancelled caller gets transport cancellation and no response; `ready` with an unrecognised inspection state is `cleaning`; `creating` is `starting`; registry test that no `IntroducedIn` is later than the build version.
 - The listing never delays a concurrent launch (blocking-store unit test).
 - Fixture provider lists during its own Provision and sees its own record flagged.
 
@@ -81,4 +81,4 @@ Run from the repository root:
 - `apps/backend/internal/agent/runtime/lifecycle/executor_plugin_callbacks.go` and a new `executor_plugin_listing.go`
 - `pluginsdk/proto/kandev/plugin/v1/plugin.proto`, `pluginsdk/executor_provider.go`
 - Risk: the closed-name-set test changes in the same commit as the registry row.
-- Risk: lease and `negotiated` recording touch the dispatch begin path used by every executor callback; the existing callback tests must pass unchanged.
+- Risk: the listing reuses the launch callback registration; any change to how work order 11 registers (or does not register) the placement continuation changes which dispatches may list (open question Q-O5).

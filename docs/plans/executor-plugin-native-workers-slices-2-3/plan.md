@@ -60,6 +60,10 @@ Only the 12 to 11 edge is overridden; 13 and 14 reach 08 through 12. When the sl
 `"11"` for `"08"`; until then this table is the record of the deviation (open question Q-M6 asks the maintainer to confirm).
 Either slice then merges upstream alone, in either order, provided slice 1 is merged.
 
+### Capability window while one slice is merged
+
+Slice 1's registry already names all eight slice-2 and slice-3 capabilities at version 1, so on a tree with only one slice merged a provider that requires the other slice's capability passes the registry and echo gates and nothing enforces it. This is an accepted, recorded window, not a behaviour either gate asserts: the contract is unreleased (the registry constant `firstRelease` is 0.99.0), so no installed provider can depend on it. The rule that closes it: before a release containing only one slice is cut, the registry rows of the unmerged slice are removed in that release's change (they are append-only only after a release); the release owner applies it, and open question Q-M7 asks the maintainer whether the slice-1 registry should instead mark rows as unavailable until their slice merges.
+
 ## Work orders
 
 | Order | Work order | Slice | Size |
@@ -80,7 +84,7 @@ gates are separate orders so neither slice's gate waits for the other slice.
   states the number in the work order; a duplicate number in one message is a protobuf compile error on rebase, the contract is unreleased, and the second slice to merge renumbers its field.
   The merge-gate tests (19 and 20) compile the proto with only their slice's work orders applied.
 - **Launch order.** The profile's launch-policy check (slice 3, `validateLaunch`) runs before `admitLaunch` (slice 2), so a policy refusal
-  never holds a reservation. A launch-policy outcome failure reported after allocation is an ordinary launch failure and releases the reservation through the existing launch-failure cleanup of slice 2. With only one slice present the other step is absent and the order is unaffected.
+  never holds a reservation. A launch-policy outcome failure reported after allocation is an ordinary launch failure and releases the reservation through the existing launch-failure cleanup of slice 2. With only one slice present the other step is absent and the order is unaffected. The ordering test belongs to whichever slice merges second: work order 20 if slice 2 is already on main, work order 19 if slice 3 is (each gate's task file states the two trees it runs on).
 
 ## Interleavings
 
@@ -115,7 +119,7 @@ For the owner:
   rather than by a smaller entry count. Is the provider state wanted at all, or is the reference plus listed state enough for the
   Nomad plugin? (Dropping it removes one request field and the size-cut rule.)
 - Q-O2: the rate limit (burst 10, 10 per second per installation), the 100-entry page, the 256 KiB response bound, and the 5 second read bound are first values. Confirm or replace.
-- Q-O5: the listing is callable only inside a host-admitted provider operation (during Provision). Does the Nomad plugin ever need it outside one (a timer)? If yes, that is a new capability, not a change to this one.
+- Q-O5: the listing is callable only inside a launch's Provision operation (the dispatch with a launch callback registration). Does the Nomad plugin ever need it during a resume, recover, or placement poll, or outside an operation (a timer)? If yes, that is a widened registration rule or a new capability, not a change to this one.
 - Q-O3: the `readmit_node` operation is how R6 and C6 readmission land. Confirm that no separate readmit RPC is wanted.
 - Q-O4: M1, M8, resource class and labels stay cut. Confirm the plugin's first release does not need an applied resource class
   from the provider (the Nomad plugin roadmap lists no use of one).
@@ -130,6 +134,7 @@ For the Kandev maintainer:
 - Q-M4: `executor.plugin_event` is a new notification event type outside every default subscription (OPS-001.4). Is that
   acceptable, or should events use an existing type?
 - Q-M5: is a 600 second fixed placement deadline acceptable now that the provider cannot report one (PLACEMENT-001.2)?
+- Q-M7: slice 1's registry names the slice 2 and 3 capabilities before they exist; should it mark them unavailable until their slice merges, or is removing the unmerged slice's rows before the first release acceptable (plan, Capability window)?
 - Q-M6: may the slice-1 plan's task-12 `depends_on` change from 11 to 08, so slice 3 does not wait on slice 2? Is an optional `ExecutorEnvironmentLister` interface in `pluginsdk` acceptable instead of a method on `ExecutorProviderHostAPI`?
 
 ## Out of scope

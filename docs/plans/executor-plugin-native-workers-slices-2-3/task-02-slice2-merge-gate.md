@@ -31,6 +31,7 @@ S: ~40 source, ~250 test lines.
 
 - A fixture manifest that declares only slice 2 capabilities (`admission_context`, `pending_placement`, `provision_refusal`, `environment_listing`) plus their slice 1 prerequisites, and a conformance test that launches, stops, and destroys it.
 - A test that a provider declaring no capability keeps today's synchronous launch, deadline, and behavior with slice 2 present.
+- The launch-order test (launch-policy check before `admitLaunch`, a policy refusal holds no reservation) runs here only when slice 3 is already on main (tree b), otherwise it is carried by work order 20. The gate's two trees: (a) the slice-only run, on the slice branch with slice 1 merged and the slice 3 work-order commits absent; (b) the run on main with slice 3 merged.
 - A check that no slice 2 registry row, proto message, or Go package imports or requires a slice 3 capability or type, and that the proto compiles with only slice 1 and slice 2 work orders applied.
 
 ## Out of scope
@@ -39,7 +40,7 @@ S: ~40 source, ~250 test lines.
 
 ## Acceptance
 
-- Slice 2 tests pass on a tree with the slice 3 work orders absent.
+- Slice 2 tests pass on a tree with the slice 3 work orders absent (tree a), and on main with slice 3 merged, including the launch-order test (tree b).
 
 ## Failing-first tests
 
