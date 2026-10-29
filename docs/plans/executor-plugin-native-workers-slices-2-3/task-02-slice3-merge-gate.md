@@ -33,6 +33,7 @@ S: ~40 source, ~250 test lines.
 - A check that no slice 3 registry row, proto message, or Go package imports or requires a slice 2 capability or type (`admission_context`, `pending_placement`, `provision_refusal`, placement phases), and that the proto compiles with only slice 1 and slice 3 work orders applied.
 - The launch-order test `TestLaunchPolicyRefusalHoldsNoReservation` and the two trees: see Acceptance. Ownership follows tree contents, not the time the gate ran.
 - Gate 19 asserts the codes `launch_policy_unsupported` and `launch_policy_unenforced` are emitted and carried in the session failure record; their localized copy is work order 11's and is not asserted here (plan, Slices).
+- Provider events (OPS-001.3, OPS-001.4): work order 12 owns the `executors:pluginEvent.<kind>` catalog keys for the eight event kinds in all seven locales and the client-side localization of the `executor.plugin_event` payload, which does not use work order 11's failure-copy surface. Gate 19 runs the web checks and a rendering test named `pluginEvent localizes every kind` that fails when any kind lacks a key or an unknown code does not fall back to the kind's generic text.
 - A provider declaring no capability, with a profile that carries no `launch_policy` key, behaves as today; a profile carrying a `launch_policy` other than `none` on such a provider is refused with `launch_policy_unsupported` and no allocation (LAUNCHPOLICY-001.2), which is the specified behavior and not a regression.
 
 ## Out of scope
@@ -54,13 +55,14 @@ S: ~40 source, ~250 test lines.
 Run from the repository root.
 
 ```bash
-(cd apps/backend && go test -race -trimpath ./internal/plugins/... ./internal/agent/runtime/lifecycle/... ./cmd/plugin-fixture/... ./pkg/pluginsdk/... ./internal/notifications/... ./internal/common/launchwrapper/... ./internal/agentctl/server/process/... -count=1)
+(cd apps/backend && go test -race -trimpath ./internal/plugins/... ./internal/agent/runtime/lifecycle/... ./cmd/plugin-fixture/... ./internal/notifications/... ./internal/common/launchwrapper/... ./internal/agentctl/server/process/... -count=1)
+(cd apps/web && pnpm run i18n:check && pnpm run typecheck && pnpm exec vitest run -t "pluginEvent localizes every kind")
 make -C pluginsdk proto && git diff --exit-code -- pluginsdk
 make -C pluginsdk test
-(cd apps/backend/internal/agent/runtime/lifecycle && if grep -Eq 'func .*admitLaunch\(' $(ls *.go | grep -v _test.go) && grep -Eq 'func .*checkLaunchPolicy\(' $(ls *.go | grep -v _test.go); then go test -race -trimpath -run '^TestLaunchPolicyRefusalHoldsNoReservation$' -v -count=1 . | grep -q -- '^--- PASS: TestLaunchPolicyRefusalHoldsNoReservation'; fi)
+(cd apps/backend/internal/agent/runtime/lifecycle && if grep -Eq 'func .*admitLaunch\(' $(ls *.go | grep -v _test.go) && grep -Eq 'func .*checkLaunchPolicy\(|launch_policy_unenforced' $(ls *.go | grep -v _test.go); then go test -race -trimpath -run '^TestLaunchPolicyRefusalHoldsNoReservation$' -v -count=1 . | grep -q -- '^--- PASS: TestLaunchPolicyRefusalHoldsNoReservation'; fi)
 ```
 
-"Slice 3 tests" means the Go packages above, which are the union of the packages that work orders 12, 13, and 14 list; slice 3 has no web or PostgreSQL verification, and gate 19 has none because localized copy belongs to work order 11. The same commands also cover compiling the packages of the notification and agentctl code, so a hidden dependency on a slice 2 type fails the build on tree (a).
+"Slice 3 tests" means the Go packages above, which are the union of the packages that work orders 12, 13, and 14 list; slice 3 has no PostgreSQL verification. Its web verification is limited to the provider-event copy of work order 12 (above); localized launch-policy failure copy belongs to work order 11 and is not asserted here. The same commands also cover compiling the packages of the notification and agentctl code, so a hidden dependency on a slice 2 type fails the build on tree (a).
 
 The proto source is `pluginsdk/proto/kandev/plugin/v1/plugin.proto`; the `git diff --exit-code` after `make -C pluginsdk proto` proves the committed generated code matches it and that the slice's added fields compile without a duplicate number. Building the trees: tree (a) is this slice's branch, built off the slice-1 head and never stacked on the other slice (plan, Slices, Build layout); tree (b) is this slice's branch rebased onto a main that contains the other slice. The commands run on each tree that exists when the gate is rerun after rebase.
 

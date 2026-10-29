@@ -45,6 +45,8 @@ and the `executors:pluginFailure` catalog keys for every host failure code of th
 Gate 18 therefore adds no localization test and gate 19 asserts the codes only, not their copy. A slice-3-only tree has no status surface for those codes;
 their localized text appears when slice 2 merges, which is accepted (Out of scope, Localized text on a slice-3-only tree).
 
+Provider-event copy is different: the `executors:pluginEvent.<kind>` keys and the client localization of `executor.plugin_event` (OPS-001.3, .4) belong to work order 12 (slice 3), because the web client localizes the notification payload on its own and needs nothing from work order 11's status surface. The slice-1 task-12 file does not list web files; this delta states the ownership and gate 19 verifies it (open question Q-M9).
+
 The slice-1 branch plan states `depends_on` chains that do contradict this: its task-12 depends on 11, task-13 on 12, task-14 on
 13 and 07, so a scheduler reading those files would block slice 3 behind slice 2. That plan is owned by another card and is not
 edited here. For Build, this table of effective dependencies is authoritative and overrides the slice-1 plan files for work orders 12, 13, 14, and 16:
@@ -107,8 +109,8 @@ only a history reference (Out of scope, Host environment listing).
   Ownership of the ordering test is decided by tree contents, not by gate time: the test is `TestLaunchPolicyRefusalHoldsNoReservation` in the lifecycle package, and a slice's merge is
   blocked until, on that slice's branch rebased onto current main, it exists whenever both the `validateLaunch` launch-policy step and `admitLaunch` are present, and passes. The slice
   that merges second therefore adds it in its own PR; each gate's task file carries the precondition and the rerun after rebase.
-  Work order 13 names its launch-policy step function `checkLaunchPolicy`, called from `validateLaunch`; work order 10 names its gate `admitLaunch` (task-10). Those two
-  identifiers are the presence markers of the check below. Each gate's Verification runs a presence check that fails when both markers are defined in non-test Go files of the
+  Work order 13 shall implement its launch-policy step as a function named `checkLaunchPolicy`, called from `validateLaunch`; work order 10 names its gate `admitLaunch` (task-10). Those two
+  identifiers are the presence markers of the check below; because the slice-1 task-13 file does not name the function, the check also treats a non-test lifecycle file that emits `launch_policy_unenforced` as the launch-policy marker, so an inline implementation cannot make the check skip. Each gate's Verification runs a presence check that fails when `admitLaunch` and either marker are defined in non-test Go files of the
   lifecycle package and `go test -run '^TestLaunchPolicyRefusalHoldsNoReservation$' -v` does not print `--- PASS`. The same check is a merge precondition on the exact head that merges, so
   the second of two back-to-back slice merges (each rebased onto a main that lacked the other) fails it on its rebased head; merging through the merge queue or one at a time satisfies this (open question Q-M8).
 
@@ -155,6 +157,7 @@ For the Kandev maintainer:
 - Q-M5: is a 600 second fixed placement deadline acceptable now that the provider cannot report one (PLACEMENT-001.2)?
 - Q-M7: slice 1's registry names the slice 2 and 3 capabilities before they exist; should it mark them unavailable until their slice merges, or may the unmerged slice's rows be removed before the first release, given that AC-EXECUTORS-PLUGIN-CAPABILITY-001.2 pins the 16-name set (plan, Capability window)?
 - Q-M8: are the two slice PRs merged through the merge queue (which tests the combined head) or one at a time? The launch-order presence check relies on one of the two.
+- Q-M9: may the slice-1 plan's task-12 gain the web files and the `executors:pluginEvent` catalog keys and rendering test that this delta assigns to work order 12 (OPS-001.3, .4), which task-12 does not list today?
 - Q-M6: may the slice-1 plan's task-12 `depends_on` change from 11 to 08, so slice 3 does not wait on slice 2?
 
 ## Out of scope

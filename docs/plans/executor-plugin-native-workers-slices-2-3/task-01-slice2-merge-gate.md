@@ -53,11 +53,11 @@ S: ~40 source, ~250 test lines.
 Run from the repository root.
 
 ```bash
-(cd apps/backend && go test -race -trimpath ./internal/plugins/... ./internal/agent/runtime/lifecycle/... ./cmd/plugin-fixture/... ./pkg/pluginsdk/... -count=1)
+(cd apps/backend && go test -race -trimpath ./internal/plugins/... ./internal/agent/runtime/lifecycle/... ./cmd/plugin-fixture/... -count=1)
 (cd apps/web && pnpm run i18n:check && pnpm run typecheck)
 make -C pluginsdk proto && git diff --exit-code -- pluginsdk
 make -C pluginsdk test
-(cd apps/backend/internal/agent/runtime/lifecycle && if grep -Eq 'func .*admitLaunch\(' $(ls *.go | grep -v _test.go) && grep -Eq 'func .*checkLaunchPolicy\(' $(ls *.go | grep -v _test.go); then go test -race -trimpath -run '^TestLaunchPolicyRefusalHoldsNoReservation$' -v -count=1 . | grep -q -- '^--- PASS: TestLaunchPolicyRefusalHoldsNoReservation'; fi)
+(cd apps/backend/internal/agent/runtime/lifecycle && if grep -Eq 'func .*admitLaunch\(' $(ls *.go | grep -v _test.go) && grep -Eq 'func .*checkLaunchPolicy\(|launch_policy_unenforced' $(ls *.go | grep -v _test.go); then go test -race -trimpath -run '^TestLaunchPolicyRefusalHoldsNoReservation$' -v -count=1 . | grep -q -- '^--- PASS: TestLaunchPolicyRefusalHoldsNoReservation'; fi)
 (cd apps/backend && test -n "$KANDEV_TEST_POSTGRES_DSN" && go test -race -trimpath ./internal/agent/runtime/lifecycle/... -count=1)
 ```
 
