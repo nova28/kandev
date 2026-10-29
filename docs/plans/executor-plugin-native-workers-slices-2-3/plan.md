@@ -34,23 +34,53 @@ leaving the reviewed drafts untouched; add plugin gap 6 as a requirement and car
 
 | Slice | Content | Work orders | Capabilities (all opt-in) | Depends on |
 | --- | --- | --- | --- | --- |
-| 2 | Admission and placement | 10 (M2), 11 (M3), 18 (listing, new) | `admission_context`, `pending_placement`, `provision_refusal`, `environment_listing` | slice 1 merged |
-| 3 | Operations and launch policy | 12 (M4), 13 (M5), 14 (M6) | `provider_operations`, `provider_maintenance`, `launch_policy`, `preparation_hints` | slice 1 merged; not slice 2 |
+| 2 | Admission and placement | 10 (M2), 11 (M3), 18 (listing, new), 19 (gate) | `admission_context`, `pending_placement`, `provision_refusal`, `environment_listing` | slice 1 merged |
+| 3 | Operations and launch policy | 12 (M4), 13 (M5), 14 (M6), 20 (gate) | `provider_operations`, `provider_maintenance`, `launch_policy`, `preparation_hints` | slice 1 merged; not slice 2 |
 
 Slice 3 does not depend on slice 2: the registry dependency closure (`provider_maintenance` needs `provider_operations`;
-`launch_policy` needs `workspace_descriptor`; `preparation_hints` needs `repository_intent`) never names a slice 2 capability.
-The one cross-slice touch is work order 14, which the existing plan lists as depending on 13 and 07 only, and work order 12,
-which the existing plan sequences after 11 for review order only. Both are re-stated here as having no code dependency on
-slice 2, so each slice merges upstream alone in either order.
+`launch_policy` needs `workspace_descriptor`; `preparation_hints` needs `repository_intent`) never names a slice 2 capability, and
+no slice 3 requirement or design cites a placement or admission phase, field, or type.
+
+The slice-1 branch plan states `depends_on` chains that do contradict this: its task-12 depends on 11, task-13 on 12, task-14 on
+13 and 07, so a scheduler reading those files would block slice 3 behind slice 2. That plan is owned by another card and is not
+edited here. For Build, this table of effective dependencies is authoritative and overrides the slice-1 plan files for work orders 12, 13, and 14:
+
+| Work order | Effective `depends_on` | Slice-1 plan file says |
+| --- | --- | --- |
+| 10 | 08 | 08 |
+| 11 | 10 | 10 |
+| 18 | 11 | (new) |
+| 19 (slice 2 gate) | 18 | (new) |
+| 12 | 08 | 11 |
+| 13 | 12 | 12 |
+| 14 | 13, 07 | 13, 07 |
+| 20 (slice 3 gate) | 14 | (new) |
+
+Only the 12 to 11 edge is overridden; 13 and 14 reach 08 through 12. When the slice-1 plan is next edited its task-12 should drop
+`"11"` for `"08"`; until then this table is the record of the deviation (open question Q-M6 asks the maintainer to confirm).
+Either slice then merges upstream alone, in either order, provided slice 1 is merged.
 
 ## Work orders
 
 | Order | Work order | Slice | Size |
 | --- | --- | --- | --- |
-| 18 | [Host environment listing](task-01-environment-listing.md) (ADMISSION-002) | 2 | S: ~250 source, ~450 test lines. |
-| 19 | [Slice merge gates](task-02-slice-merge-gates.md) | 2 and 3 | S: ~80 source, ~400 test lines. |
+| 18 | [Host environment listing](task-01-environment-listing.md) (ADMISSION-002) | 2 | S: ~300 source, ~500 test lines. |
+| 19 | [Slice 2 merge gate](task-02-slice2-merge-gate.md) | 2 | S: ~40 source, ~250 test lines. |
+| 20 | [Slice 3 merge gate](task-03-slice3-merge-gate.md) | 3 | S: ~40 source, ~250 test lines. |
 
-Numbers 18 and 19 continue the numbering of the earlier plan (the files are named task-01 and task-02 in this directory).
+Numbers 18 to 20 continue the numbering of the earlier plan (the files are named task-01 to task-03 in this directory). The two
+gates are separate orders so neither slice's gate waits for the other slice.
+
+## Shared surfaces between the slices
+
+- **Envelope budget.** The 1536-byte row that holds placement, admission, drain, and the `launch_policy` outcome belongs to the `hostFieldBudget` table introduced
+  by slice 1, which already has an entry for every field of both slices. Each slice's worst-case envelope test fills its own fields to the
+  maximum and every other field of that row at the maximum recorded in the table, so neither test depends on the other slice's code being present.
+- **Proto field numbers.** The listing adds new messages only. Where a work order adds a field to an existing message it
+  states the number in the work order; a duplicate number in one message is a protobuf compile error on rebase, the contract is unreleased, and the second slice to merge renumbers its field.
+  The merge-gate tests (19 and 20) compile the proto with only their slice's work orders applied.
+- **Launch order.** The profile's launch-policy check (slice 3, `validateLaunch`) runs before `admitLaunch` (slice 2), so a policy refusal
+  never holds a reservation. A launch-policy outcome failure reported after allocation is an ordinary launch failure and releases the reservation through the existing launch-failure cleanup of slice 2. With only one slice present the other step is absent and the order is unaffected.
 
 ## Interleavings
 
@@ -81,9 +111,11 @@ maintenance idempotency map and the event limiter are in memory).
 
 For the owner:
 
-- Q-O1: `environment_listing` returns provider state only on request (`include_state`) with 20 entries per page. Is the
-  provider state wanted at all, or is the reference plus state enough for the Nomad plugin?
-- Q-O2: the rate limit of 10 calls per second and the 256 KiB response bound are first values. Confirm or replace.
+- Q-O1: `environment_listing` returns provider state only on request (`include_state`); a page is cut by a 256 KiB size budget
+  rather than by a smaller entry count. Is the provider state wanted at all, or is the reference plus listed state enough for the
+  Nomad plugin? (Dropping it removes one request field and the size-cut rule.)
+- Q-O2: the rate limit (burst 10, 10 per second per installation), the 100-entry page, the 256 KiB response bound, and the 5 second read bound are first values. Confirm or replace.
+- Q-O5: the listing is callable only inside a host-admitted provider operation (during Provision). Does the Nomad plugin ever need it outside one (a timer)? If yes, that is a new capability, not a change to this one.
 - Q-O3: the `readmit_node` operation is how R6 and C6 readmission land. Confirm that no separate readmit RPC is wanted.
 - Q-O4: M1, M8, resource class and labels stay cut. Confirm the plugin's first release does not need an applied resource class
   from the provider (the Nomad plugin roadmap lists no use of one).
@@ -98,6 +130,7 @@ For the Kandev maintainer:
 - Q-M4: `executor.plugin_event` is a new notification event type outside every default subscription (OPS-001.4). Is that
   acceptable, or should events use an existing type?
 - Q-M5: is a 600 second fixed placement deadline acceptable now that the provider cannot report one (PLACEMENT-001.2)?
+- Q-M6: may the slice-1 plan's task-12 `depends_on` change from 11 to 08, so slice 3 does not wait on slice 2? Is an optional `ExecutorEnvironmentLister` interface in `pluginsdk` acceptable instead of a method on `ExecutorProviderHostAPI`?
 
 ## Out of scope
 
@@ -108,9 +141,9 @@ cut items above. No production code in this card.
 
 - Slice 1 is still changing on PR 4934 and its fixup card; line references in this delta can drift. Re-read the slice 1 head
   before Build.
-- A new registry row after slice 1 ships changes the registry golden file; the retired-identity test must be updated in the
-  same change.
-- Both SQL dialects: the listing query needs a SQLite and a PostgreSQL test.
+- A new registry row after slice 1 ships changes `TestRegistryHoldsTheClosedNameSetAtVersionOne`, which pins the 16 names of
+  AC-EXECUTORS-PLUGIN-CAPABILITY-001.2; it is updated to 17 names in the same change (`testdata/retired.golden` lists retired pairs only and does not change).
+- Both SQL dialects: the listing runs one `executors_running` scan and orders in Go, so the same statement runs on SQLite and PostgreSQL; the store test still runs on both.
 
 ## Verification strategy
 
