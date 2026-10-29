@@ -8,8 +8,12 @@ depends_on:
 plan: "plan.md"
 requirements:
   - REQ-EXECUTORS-PLUGIN-ADMISSION-001
+  - REQ-EXECUTORS-PLUGIN-PLACEMENT-001
+  - REQ-EXECUTORS-PLUGIN-PLACEMENT-002
 acceptance_criteria:
   - AC-EXECUTORS-PLUGIN-ADMISSION-001.6
+  - AC-EXECUTORS-PLUGIN-PLACEMENT-001.8
+  - AC-EXECUTORS-PLUGIN-PLACEMENT-002.5
 system_design:
   - ../../specs/executors/system-design/remote-executor-plugin-admission.md
 ---
@@ -28,8 +32,8 @@ S: ~40 source, ~250 test lines.
 
 - A fixture manifest that declares only slice 2 capabilities (`admission_context`, `pending_placement`, `provision_refusal`) plus their slice 1 prerequisites, and a conformance test that launches, stops, and destroys it.
 - A test that a provider declaring no capability keeps today's synchronous launch, deadline, and behavior with slice 2 present.
-- The launch-order test (launch-policy check before `admitLaunch`, a policy refusal holds no reservation) runs here only when slice 3 is already on main (tree b), otherwise it is carried by work order 19. The gate's two trees: (a) the slice-only run, on the slice branch with slice 1 merged and the slice 3 work-order commits absent; (b) the run on main with slice 3 merged.
-- A check that no slice 2 registry row, proto message, or Go package imports or requires a slice 3 capability or type, and that the proto compiles with only slice 1 and slice 2 work orders applied.
+- The launch-order test `TestLaunchPolicyRefusalHoldsNoReservation` and the two trees: see Acceptance. Ownership follows tree contents, not the time the gate ran.
+- A test that the codes slice 2 emits are all localized (the exhaustive-code test of work order 11 enumerates only emitters present on the tree; the two `launch_policy_*` codes are work order 13's, plan, Slices).
 
 ## Out of scope
 
@@ -37,23 +41,29 @@ S: ~40 source, ~250 test lines.
 
 ## Acceptance
 
-- Always: slice 2 tests pass on tree (a), the slice-only tree.
-- Only when slice 3 is already on main when this slice merges: the same tests, including the launch-order test, also pass on tree (b). When slice 2 merges first, tree (b) does not exist yet and is not required; work order 19 then carries the launch-order test when slice 3 merges, so neither gate can block the first merge.
+- Always: this slice's tests pass on tree (a), the slice-only tree (this slice's branch off the slice-1 head, with no commit of slice 3).
+- Launch-order ownership is decided by tree contents. Before this slice merges, rebase its branch onto current main and rerun this gate. If main then contains the other slice (tree (b) = this slice's branch rebased onto that main), `TestLaunchPolicyRefusalHoldsNoReservation` (plan, Shared surfaces, Launch order) must exist in the lifecycle package and pass on tree (b); this slice's PR adds it when it is absent. If main does not contain the other slice, tree (b) does not exist and is not required, and the other slice's gate carries the test when it merges second. Passing this gate before the other slice lands is therefore not a waiver: the rebase-and-rerun is a merge precondition.
 
-## Failing-first tests
+## Tests (regression guards unless stated)
 
-- Dependency closure test: no slice 2 row requires a slice 3 name.
-- No-capability provider conformance with slice 2 compiled in.
+- Regression guard, green from the start because the slice-1 registry already holds the final `Requires` rows (it fails if a later change adds a cross-slice requirement): dependency closure test: no slice 2 row requires a slice 3 name.
+- Regression guard (green from the start): no-capability provider conformance with slice 2 compiled in.
 
 ## Verification
 
-Run from the repository root. The gate runs the packages that hold its tests: the registry, the plugin host, the lifecycle package (no-capability launch tests), and the fixture provider.
+Run from the repository root.
 
 ```bash
-(cd apps/backend && go test -race -trimpath ./internal/plugins/hostcaps/... ./internal/plugins/... ./internal/agent/runtime/lifecycle/... ./cmd/plugin-fixture/... -count=1)
+(cd apps/backend && go test -race -trimpath ./internal/plugins/... ./internal/agent/runtime/lifecycle/... ./cmd/plugin-fixture/... ./pkg/pluginsdk/... -count=1)
+(cd apps/web && pnpm run i18n:check && pnpm run typecheck)
+make -C pluginsdk proto && git diff --exit-code -- pluginsdk
+make -C pluginsdk test
+(cd apps/backend && test -n "$KANDEV_TEST_POSTGRES_DSN" && go test -race -trimpath ./internal/agent/runtime/lifecycle/... -count=1)
 ```
 
-Building the trees: tree (a) is a branch off main with slice 1 merged that carries only this slice's work-order commits (the other slice's commits are not cherry-picked); tree (b) is main after the other slice has merged. The run above is repeated on each tree that exists at gate time.
+"Slice 2 tests" means the Go packages above (the packages work orders 10 and 11 list), the web `i18n:check` and `typecheck` of work order 11, and the PostgreSQL race tests of work order 11, which skip silently without `KANDEV_TEST_POSTGRES_DSN`: the gate fails when that variable is empty. The Playwright spec of work order 11 is owned by work order 11's own verification, not repeated here.
+
+The proto source is `pluginsdk/proto/kandev/plugin/v1/plugin.proto`; the `git diff --exit-code` after `make -C pluginsdk proto` proves the committed generated code matches it and that the slice's added fields compile without a duplicate number. Building the trees: tree (a) is this slice's branch, built off the slice-1 head and never stacked on the other slice (plan, Slices, Build layout); tree (b) is this slice's branch rebased onto a main that contains the other slice. The commands run on each tree that exists when the gate is rerun after rebase.
 
 ## Likely files and risks
 

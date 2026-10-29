@@ -39,6 +39,15 @@ Slice 3 does not depend on slice 2: the registry dependency closure (`provider_m
 `launch_policy` needs `workspace_descriptor`; `preparation_hints` needs `repository_intent`) never names a slice 2 capability, and
 no slice 3 requirement or design cites a placement or admission phase, field, or type.
 
+One coupling in the slice-1 branch files is removed by decision: PLACEMENT-001.9 and work order 11 make slice 2 the owner of the
+localized text for every host failure code, including `launch_policy_unsupported` and `launch_policy_unenforced`, which only
+slice 3 emits. For Build, the two copy keys `executors:pluginFailure.launch_policy_unsupported` and
+`executors:pluginFailure.launch_policy_unenforced` (seven catalogs, `pnpm run i18n:check`) belong to work order 13 (slice 3); work order 11
+localizes the codes slice 2 emits, and its exhaustive-code test enumerates only the codes whose emitter is present on the tree. AC
+PLACEMENT-001.9 therefore holds on the merged tree, and on each slice-only tree for the codes that slice emits. A slice-3-only tree
+shows the localized text for both launch-policy codes through the same status surface, and gate 19 asserts it (open question Q-O6
+asks the owner to confirm this move).
+
 The slice-1 branch plan states `depends_on` chains that do contradict this: its task-12 depends on 11, task-13 on 12, task-14 on
 13 and 07, so a scheduler reading those files would block slice 3 behind slice 2. That plan is owned by another card and is not
 edited here. For Build, this table of effective dependencies is authoritative and overrides the slice-1 plan files for work orders 12, 13, and 14:
@@ -51,15 +60,24 @@ edited here. For Build, this table of effective dependencies is authoritative an
 | 12 | 08 | 11 |
 | 13 | 12 | 12 |
 | 14 | 13, 07 | 13, 07 |
+| 16 (cross-capability proof) | 11, 14, 17 | 17 in its task file; 14, 17 in the slice-1 plan table |
 | 19 (slice 3 gate) | 14 | (new) |
 
-Only the 12 to 11 edge is overridden; 13 and 14 reach 08 through 12. When the slice-1 plan is next edited its task-12 should drop
+Only the 12 to 11 edge is overridden in the chain of 12 to 14; 13 and 14 reach 08 through 12. Work order 16 proves slice 2 behavior
+(ADMISSION-001.9, PLACEMENT-001.5, .9, .14) and used to reach work order 11 only through 14, 13, 12; with that edge cut, 11 is added
+to its dependencies explicitly. The gates 18 and 19 are merge proofs, not code that 16 consumes, so 16 does not depend on them.
+The `wave` column of the slice-1 plan is also overridden: waves order work within one slice and do not place slice 3 after slice 2.
+
+Build layout: each slice is built on its own branch off the slice-1 head (slice 2 carries 10 and 11 and gate 18; slice 3 carries 12,
+13, 14 and gate 19), never stacked on the other, so tree (a) of each gate is that branch itself. Work order 16 is built after both
+branches are on main. If a branch cannot be built without the other slice's code, the gate fails and the dependency is a spec defect
+to route back to Spec, not a reason to stack. When the slice-1 plan is next edited its task-12 should drop
 `"11"` for `"08"`; until then this table is the record of the deviation (open question Q-M6 asks the maintainer to confirm).
 Either slice then merges upstream alone, in either order, provided slice 1 is merged.
 
 ### Capability window while one slice is merged
 
-Slice 1's registry already names all seven slice-2 and slice-3 capabilities (`admission_context`, `pending_placement`, `provision_refusal`, `provider_operations`, `provider_maintenance`, `launch_policy`, `preparation_hints`) at version 1, so on a tree with only one slice merged a provider that requires the other slice's capability passes the registry and echo gates and nothing enforces it. This is an accepted, recorded window, not a behaviour either gate asserts: the contract is unreleased (the registry constant `firstRelease` is 0.99.0), so no installed provider can depend on it. No rule in this delta closes it: removing the unmerged slice's rows before a one-slice release would contradict AC-EXECUTORS-PLUGIN-CAPABILITY-001.2, which pins the closed 16-name set, and would edit the slice-1 registry test that the slice-1 card owns. Whether to remove the rows or mark them unavailable until their slice merges is a slice-1 contract decision, asked as open question Q-M7.
+Slice 1's registry already names all seven slice-2 and slice-3 capabilities (`admission_context`, `pending_placement`, `provision_refusal`, `provider_operations`, `provider_maintenance`, `launch_policy`, `preparation_hints`) at version 1, so on a tree with only one slice merged a provider that requires the other slice's capability passes the registry and echo gates and nothing enforces it. This is an accepted, recorded window, not a behaviour either gate asserts: the contract is unreleased (the registry constant `firstRelease` is 0.99.0), so no installed provider can depend on it. The window also exists on a tree with slice 1 alone, where all seven rows are unimplemented, and the argument expires when 0.99.0 ships: Q-M7 must be answered before any release that contains slice 1 without both slices 2 and 3. No rule in this delta closes it: removing the unmerged slice's rows before a one-slice release would contradict AC-EXECUTORS-PLUGIN-CAPABILITY-001.2, which pins the closed 16-name set, and would edit the slice-1 registry test that the slice-1 card owns. Whether to remove the rows or mark them unavailable until their slice merges is a slice-1 contract decision, asked as open question Q-M7.
 
 ## Work orders
 
@@ -69,18 +87,29 @@ Slice 1's registry already names all seven slice-2 and slice-3 capabilities (`ad
 | 19 | [Slice 3 merge gate](task-02-slice3-merge-gate.md) | 3 | S: ~40 source, ~250 test lines. |
 
 Numbers 18 and 19 continue the numbering of the earlier plan (the files are named task-01 and task-02 in this directory). The two
-gates are separate orders so neither slice's gate waits for the other slice.
+gates are separate orders so neither slice's gate waits for the other slice. Commits b029e75c6d and earlier on this branch used number
+18 for the environment listing work order that has since been cut; from 4d703386ee on, 18 is the slice 2 gate and the cut order is
+only a history reference (Out of scope, Host environment listing).
 
 ## Shared surfaces between the slices
 
-- **Envelope budget.** The 1536-byte row that holds placement, admission, drain, and the `launch_policy` outcome belongs to the `hostFieldBudget` table introduced
-  by slice 1, which already has an entry for every field of both slices. Each slice's worst-case envelope test fills its own fields to the
-  maximum and every other field of that row at the maximum recorded in the table, so neither test depends on the other slice's code being present.
-- **Proto field numbers.** Where a work order adds a field to an existing message it
-  states the number in the work order; a duplicate number in one message is a protobuf compile error on rebase, the contract is unreleased, and the second slice to merge renumbers its field.
-  The merge-gate tests (18 and 19) compile the proto with only their slice's work orders applied.
-- **Launch order.** The profile's launch-policy check (slice 3, `validateLaunch`) runs before `admitLaunch` (slice 2), so a policy refusal
-  never holds a reservation. A launch-policy outcome failure reported after allocation is an ordinary launch failure and releases the reservation through the existing launch-failure cleanup of slice 2. With only one slice present the other step is absent and the order is unaffected. The ordering test belongs to whichever slice merges second: work order 19 if slice 2 is already on main, work order 18 if slice 3 is (each gate's task file states the two trees it runs on).
+- **Envelope budget.** The `coordination` group of `hostFieldBudget` (`apps/backend/internal/agent/runtime/lifecycle/executor_plugin_state_budget.go`)
+  holds `phase`, `placement`, `admission`, `launch_policy`, and the slice-1 fields in one 1536-byte group maximum. The table records a group maximum, not a maximum per field.
+  Each slice's worst-case envelope test fills its own keys with the longest values their ACs permit, and fills every key of the group that its tree does not own with a
+  fixed-size filler string whose size is chosen so that the group total is exactly 1536 bytes, then asserts the marshaled group is at most 1536. The filler stands in for
+  the other slice's fields, so neither test needs the other slice's Go types; the merged tree runs the same test with real values for all keys.
+- **Proto field numbers and the proto check.** The proto source is `pluginsdk/proto/kandev/plugin/v1/plugin.proto`, a separate Go module generated by `make -C pluginsdk proto`
+  (the `apps/backend/proto/...` paths in work orders 10, 11, 12, 14 are stale and mean this file). Where a work order adds a field to an existing message it states the number
+  in the work order; a duplicate number in one message is a protobuf compile error on rebase, the contract is unreleased, and the second slice to merge renumbers its field.
+  Each gate runs `make -C pluginsdk proto` on its tree followed by `git diff --exit-code -- pluginsdk` (generated code is committed and must match the source) and `make -C pluginsdk test`.
+- **Launch order.** The profile's launch-policy check (slice 3, in `validateLaunch`) runs before `admitLaunch` (slice 2), so a policy refusal
+  never holds a reservation. With only one slice present the other step is absent and the order is unaffected.
+  After allocation, two cases differ. A descriptor weaker than the profile (LAUNCHPOLICY-001.3) is rejected with cleanup: the environment is destroyed, and the reservation is released when
+  that destroy confirms absence (ADMISSION-001.5). An agentctl start that reports `failed` or unenforced for `required` (LAUNCHPOLICY-001.4) fails the session with
+  `launch_policy_unenforced`, and the environment is retained, not destroyed, so its reservation stays held until the retained environment is later destroyed and absence is confirmed.
+  Ownership of the ordering test is decided by tree contents, not by gate time: the test is `TestLaunchPolicyRefusalHoldsNoReservation` in the lifecycle package, and a slice's merge is
+  blocked until, on that slice's branch rebased onto current main, it exists whenever both the `validateLaunch` launch-policy step and `admitLaunch` are present, and passes. The slice
+  that merges second therefore adds it in its own PR; each gate's task file carries the precondition and the rerun after rebase.
 
 ## Interleavings
 
@@ -112,6 +141,7 @@ maintenance idempotency map and the event limiter are in memory).
 For the owner:
 
 - Q-O3: the `readmit_node` operation is how R6 and C6 readmission land. Confirm that no separate readmit RPC is wanted.
+- Q-O6: confirm the decision in Slices that the two `launch_policy_*` copy keys belong to work order 13 (slice 3) instead of work order 11, so a slice-3-only tree shows localized text.
 - Q-O4: M1, M8, resource class and labels stay cut. Confirm the plugin's first release does not need an applied resource class
   from the provider (the Nomad plugin roadmap lists no use of one).
 

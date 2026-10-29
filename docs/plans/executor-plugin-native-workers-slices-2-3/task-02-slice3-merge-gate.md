@@ -8,8 +8,10 @@ depends_on:
 plan: "plan.md"
 requirements:
   - REQ-EXECUTORS-PLUGIN-OPS-001
+  - REQ-EXECUTORS-PLUGIN-LAUNCHPOLICY-001
 acceptance_criteria:
   - AC-EXECUTORS-PLUGIN-OPS-001.8
+  - AC-EXECUTORS-PLUGIN-LAUNCHPOLICY-001.2
 system_design:
   - ../../specs/executors/system-design/remote-executor-plugin-operations-migration.md
 ---
@@ -29,8 +31,9 @@ S: ~40 source, ~250 test lines.
 - A fixture manifest that declares only slice 3 capabilities (`provider_operations`, `provider_maintenance`, `launch_policy`, `preparation_hints`) plus their slice 1 prerequisites, and a conformance test that launches, stops, destroys, and reads status.
 - A test that a provider declaring no capability keeps today's behavior with slice 3 present.
 - A check that no slice 3 registry row, proto message, or Go package imports or requires a slice 2 capability or type (`admission_context`, `pending_placement`, `provision_refusal`, placement phases), and that the proto compiles with only slice 1 and slice 3 work orders applied.
-- The launch-order test (launch-policy check before `admitLaunch`, a policy refusal holds no reservation) is carried by whichever of work orders 18 and 19 runs on a tree where both slices are present: if slice 2 merges first, this gate (work order 19) carries it on the merged tree; if slice 3 merges first, work order 18 carries it. It is not part of this gate's slice-only run.
-- The gate's two trees: (a) the slice-only run, on the slice branch with slice 1 merged and the slice 2 work-order commits absent; (b) when slice 2 is already on main, the run on the merged tree, which adds the launch-order test above.
+- The launch-order test `TestLaunchPolicyRefusalHoldsNoReservation` and the two trees: see Acceptance. Ownership follows tree contents, not the time the gate ran.
+- A test that on tree (a) the status surface renders localized text for `launch_policy_unsupported` and `launch_policy_unenforced` (copy keys owned by work order 13, plan, Slices), and that `pnpm run i18n:check` passes in seven languages.
+- A provider declaring no capability, with a profile that carries no `launch_policy` key, behaves as today; a profile carrying a `launch_policy` other than `none` on such a provider is refused with `launch_policy_unsupported` and no allocation (LAUNCHPOLICY-001.2), which is the specified behavior and not a regression.
 
 ## Out of scope
 
@@ -38,23 +41,27 @@ S: ~40 source, ~250 test lines.
 
 ## Acceptance
 
-- Always: slice 3 tests pass on tree (a), the slice-only tree.
-- Only when slice 2 is already on main when this slice merges: the same tests, including the launch-order test, also pass on tree (b). When slice 3 merges first, tree (b) does not exist yet and is not required; work order 18 then carries the launch-order test when slice 2 merges, so neither gate can block the first merge.
+- Always: this slice's tests pass on tree (a), the slice-only tree (this slice's branch off the slice-1 head, with no commit of slice 2).
+- Launch-order ownership is decided by tree contents. Before this slice merges, rebase its branch onto current main and rerun this gate. If main then contains the other slice (tree (b) = this slice's branch rebased onto that main), `TestLaunchPolicyRefusalHoldsNoReservation` (plan, Shared surfaces, Launch order) must exist in the lifecycle package and pass on tree (b); this slice's PR adds it when it is absent. If main does not contain the other slice, tree (b) does not exist and is not required, and the other slice's gate carries the test when it merges second. Passing this gate before the other slice lands is therefore not a waiver: the rebase-and-rerun is a merge precondition.
 
-## Failing-first tests
+## Tests (regression guards unless stated)
 
-- Dependency closure test: no slice 3 row requires a slice 2 name.
-- No-capability provider conformance with slice 3 compiled in.
+- Regression guard, green from the start because the slice-1 registry already holds the final `Requires` rows (it fails if a later change adds a cross-slice requirement): dependency closure test: no slice 3 row requires a slice 2 name.
+- Regression guard (green from the start): no-capability provider conformance with slice 3 compiled in.
 
 ## Verification
 
-Run from the repository root. The gate runs the packages that hold its tests: the registry, the plugin host, the lifecycle package (no-capability launch tests), and the fixture provider.
+Run from the repository root.
 
 ```bash
-(cd apps/backend && go test -race -trimpath ./internal/plugins/hostcaps/... ./internal/plugins/... ./internal/agent/runtime/lifecycle/... ./cmd/plugin-fixture/... -count=1)
+(cd apps/backend && go test -race -trimpath ./internal/plugins/... ./internal/agent/runtime/lifecycle/... ./cmd/plugin-fixture/... ./pkg/pluginsdk/... ./internal/notifications/... ./internal/common/launchwrapper/... ./internal/agentctl/server/process/... -count=1)
+make -C pluginsdk proto && git diff --exit-code -- pluginsdk
+make -C pluginsdk test
 ```
 
-Building the trees: tree (a) is a branch off main with slice 1 merged that carries only this slice's work-order commits (the other slice's commits are not cherry-picked); tree (b) is main after the other slice has merged. The run above is repeated on each tree that exists at gate time.
+"Slice 3 tests" means the Go packages above, which are the union of the packages that work orders 12, 13, and 14 list; slice 3 has no web or PostgreSQL verification. The same commands also cover compiling the packages of the notification and agentctl code, so a hidden dependency on a slice 2 type fails the build on tree (a).
+
+The proto source is `pluginsdk/proto/kandev/plugin/v1/plugin.proto`; the `git diff --exit-code` after `make -C pluginsdk proto` proves the committed generated code matches it and that the slice's added fields compile without a duplicate number. Building the trees: tree (a) is this slice's branch, built off the slice-1 head and never stacked on the other slice (plan, Slices, Build layout); tree (b) is this slice's branch rebased onto a main that contains the other slice. The commands run on each tree that exists when the gate is rerun after rebase.
 
 ## Likely files and risks
 
